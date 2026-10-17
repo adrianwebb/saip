@@ -1,7 +1,7 @@
 ---
 name: release-workflow
-description: Use when working on any code change in a Git/GitHub project — creating branches, opening or merging PRs, tagging releases, creating or updating issues, posting progress comments, or when asked to follow "the workflow" / AGENTS.md gates. Project-agnostic: branch model, documentation-first cycle, CI gates, commit conventions, issue/PR templates, cross-linking, and agent-vs-maintainer permissions.
-whenToUse: At the START of every new project or statement of work, and again BEFORE completing one. Also whenever branching, issuing, PR-ing, merging, releasing, or hotfixing.
+description: "Use when working on any code change in a Git/GitHub project - creating branches, opening or merging PRs, tagging releases, creating or updating issues, posting progress comments, or when asked to follow the workflow or AGENTS.md gates. Project-agnostic coverage of branch model, documentation-first cycle, CI gates, commit conventions, issue/PR templates, cross-linking, and agent-vs-maintainer permissions."
+whenToUse: "At the START of every new project or statement of work, and again BEFORE completing one. Also whenever branching, issuing, PR-ing, merging, releasing, or hotfixing."
 ---
 
 # Release Workflow (General Purpose)
