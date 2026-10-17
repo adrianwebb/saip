@@ -1,31 +1,35 @@
 ---
 name: release-workflow
-description: Mandatory Git/GitHub development and release workflow for dsh-chapters — branch model, feature/release/hotfix flows, CI gates, commit conventions, issue/PR templates, and cross-linking rules.
-whenToUse: When working on any code change, creating branches, opening PRs, merging, tagging releases, creating issues, commenting, or discussing the development workflow for this project.
+description: Use when working on any code change in a Git/GitHub project — creating branches, opening or merging PRs, tagging releases, creating or updating issues, posting progress comments, or when asked to follow "the workflow" / AGENTS.md gates. Project-agnostic: branch model, documentation-first cycle, CI gates, commit conventions, issue/PR templates, cross-linking, and agent-vs-maintainer permissions.
+whenToUse: At the START of every new project or statement of work, and again BEFORE completing one. Also whenever branching, issuing, PR-ing, merging, releasing, or hotfixing.
 ---
 
-# dsh-chapters Release Workflow
+# Release Workflow (General Purpose)
 
-This skill defines the mandatory Git/GitHub development and release workflow for the dsh-chapters project. Follow these rules in every session. They are non-negotiable unless explicitly overridden by the project maintainer.
+The mandatory Git/GitHub development and release workflow for any software project. Non-negotiable unless explicitly overridden by the project maintainer.
+
+**Project-specific values are placeholders.** Wherever this skill shows `<...>` or says *configure*, read the project's own configuration first (see [Per-Project Configuration](#per-project-configuration)) and substitute it. Never invent commands the project does not have.
 
 ## ⚠️ MANDATORY: Starting Any New Work
 
 **Before writing a single line of code or making any change, you MUST:**
 
-1. **Load this skill** (`release-workflow`) at the start of every new project or statement of work.
-2. **Create or adopt a GitHub Issue** that describes the work. If no issue exists, create one NOW using the templates below. Every piece of work — feature, fix, refactor, docs — requires an issue.
-3. **Create a feature branch from the latest staging.** Never work directly on `staging` or `main`.
+1. **Load this skill** at the start of every new project or statement of work.
+2. **Create or adopt an Issue** describing the work. Every piece of work — feature, fix, refactor, docs — requires an issue. If none exists, create one NOW from the templates below.
+3. **Create a feature branch from the latest integration branch.** Never work directly on `main` or `staging`.
    ```bash
    git checkout staging && git pull origin staging
    git checkout -b feature/<issue-number>-short-description
    ```
-4. **Commit incrementally.** After completing each logical segment of work (a fix, a sub-feature, a test suite), commit and push to the feature branch. Do not accumulate uncommitted changes across sessions.
-5. **Open a PR when complete.** When the project is done, open a PR targeting `staging` with `Closes #<issue>` in the body. Wait for CI green before merging.
-6. **Load this skill again before completion.** Re-read this workflow before opening the PR to verify branch naming, commit messages, PR template, and cross-linking are correct.
+4. **Commit incrementally.** After each logical segment of work (a fix, a sub-feature, a test suite), commit and push to the feature branch. Do not accumulate uncommitted changes across sessions.
+5. **Open a PR when complete**, targeting `staging`, with `Closes #<issue>` in the body. Wait for CI green before merging.
+6. **Reload this skill before completion.** Re-read it before opening the PR to verify branch naming, commit messages, PR template, and cross-linking are correct.
 
-**Agents may merge PRs to staging after all acceptance tests pass. Agents may NOT approve or merge PRs to main.** Only the project maintainer approves releases to production.
+**Agents may merge PRs to `staging` after all acceptance tests pass. Agents may NOT approve or merge PRs to `main`.** Only the project maintainer approves releases to production. This permission boundary is part of the workflow and is never relaxed by convenience, deadline, or green CI.
 
-If you find yourself with uncommitted work on `staging` or `main`, stop: create the issue and branch NOW, then move the changes to the proper branch.
+**What "may merge to staging" requires.** Merging your own PR to `staging` needs all four: green CI, every acceptance criterion checked against reality, the PR's testing boxes checked from an actual CI run, and review addressed. An agent cannot supply a human approval, so where the project requires a reviewer other than the author, the agent opens the PR and stops; where the project gates only on the four conditions above, the agent merges. If you cannot tell which the project wants, open the PR and ask the maintainer — never assume the merge is yours to take. You may NEVER approve a PR at all, on any branch.
+
+If you find uncommitted work on `staging` or `main`, stop: create the issue and branch NOW, then move the changes onto the proper branch.
 
 ## ⚠️ MANDATORY: Documentation-First Development Cycle
 
@@ -36,14 +40,10 @@ Plan/Issue → Documentation → Tests → Implementation → Release
 ```
 
 ### 1. Plan / Issue
-Create or adopt a GitHub Issue. Define what changes, why, and the acceptance criteria.
+Create or adopt an Issue. Define what changes, why, and the acceptance criteria.
 
 ### 2. Documentation FIRST
-**Write or update the documentation BEFORE writing any code.** This locks in the programmatic
-interface, forces clarity on what is changing, and prevents docs from going stale. Update all
-affected pages: site docs (`site/src/content/docs/`), repo docs (`docs/`), README, skills, and
-AGENTS.md as applicable. If the change adds new functionality, write the docs that describe it.
-If it changes existing behavior, update the docs that describe that behavior. Commit the docs.
+**Write or update the documentation BEFORE writing any code.** This locks in the programmatic interface, forces clarity on what is changing, and prevents docs from going stale. Update every affected surface — user docs, API/reference docs, repo docs, README, skills, and agent instruction files (`AGENTS.md` / `CLAUDE.md`) as applicable. If the change adds functionality, write the docs that describe it; if it changes behavior, update the docs that describe that behavior. Commit the docs.
 
 ### 3. Tests (outside-in)
 Write tests in this order, committing after each layer:
@@ -52,86 +52,108 @@ Write tests in this order, committing after each layer:
 3. **Integration tests** — component boundaries, service interactions, host wiring
 4. **Unit tests** — pure logic, isolated functions, data transformations
 
-Testing outside-in ensures the interface is stable before internals are built. A test that cannot
-be written because the interface does not exist yet is a signal that step 2 (documentation) is
-incomplete.
+Outside-in testing ensures the interface is stable before internals are built. A test you cannot write because the interface does not exist yet means step 2 is incomplete.
 
 ### 4. Implementation
-Write the code that makes the tests pass. Commit incrementally — each logical unit of work gets
-its own commit referencing the issue number.
+Write the code that makes the tests pass. Commit incrementally — each logical unit gets its own commit referencing the issue number.
 
 ### 5. Release
-Open PR, wait for CI green, merge to staging. For production releases, follow the Release
-Candidate workflow below.
+Open PR, wait for CI green, merge to `staging`. For production, follow the Release Candidate workflow.
 
-**Why this order matters:** Documentation written after code describes what was built, not what
-should be built — it captures implementation details instead of intent, and it is perpetually
-behind. Tests written after code verify the implementation, not the specification. The cycle
-forces specification-driven development: the docs ARE the spec, the tests validate the spec,
-and the code satisfies the tests.
+**Why this order:** documentation written after code describes what *was* built, not what *should* be — it captures implementation detail instead of intent and is perpetually behind. Tests written after code verify the implementation, not the specification. The docs ARE the spec, the tests validate the spec, the code satisfies the tests.
 
 ## Branch Model
 
 | Branch | Purpose | Protection |
 |--------|---------|------------|
-| `main` | Production. Tags and releases are cut ONLY from main. | All merges require a PR from staging with green CI. |
-| `staging` | Integration branch. All feature work lands here first. | Never behind main except during hotfix windows. |
-| `feature/*`, `fix/*` | Feature or bugfix branches, created FROM staging. | Merged back to staging via PR. |
-| `hotfix/*` | Emergency fixes, created FROM main. | Bypasses staging when speed is critical. |
+| `main` | Production. Tags and releases are cut ONLY from main. | Merge only via PR from `staging` with green CI. |
+| `staging` | Integration branch. All feature work lands here first. | Never behind `main` except during a hotfix window. |
+| `feature/*`, `fix/*` | Feature or bugfix branches, created FROM `staging`. | Merged back to `staging` via PR. |
+| `hotfix/*` | Emergency fixes, created FROM `main`. | Bypasses `staging` when speed is critical. |
+
+Some projects name these differently (`master`/`develop`, `release/*`). Map the roles, not the names, and record the mapping in the project config.
+
+**Which prefix for a bug?** Use `fix/<issue>-desc` for a bug fix and `feature/<issue>-desc` for new capability. Both follow the identical workflow — branch off `staging`, PR to `staging`, squash-merge; only the word in the name differs. Choose it from the issue type and never mix them for the same work.
 
 ## The Golden Rules
 
-1. **All merges to main go through staging.** No direct commits or feature-branch merges to main.
-2. **Tags and releases are cut from main only.** Never tag staging or a feature branch.
-3. **All CI must be green before merging to main.** The release workflow (npm publish) is triggered by pushing a tag on main; if CI isn't green, don't tag.
-4. **Staging is never behind main** except during a hotfix window. After a hotfix merges to main, the next release candidate PR must merge main back into staging to catch up.
-5. **Every feature/fix branch tracks a GitHub Issue.** Either adopt an existing issue or create one before starting work. Reference it in the branch name and PR.
-6. **Merge staging INTO your feature branch before merging TO staging.** Resolve conflicts on the feature branch, not on staging.
+1. **All merges to `main` go through `staging`.** No direct commits, no feature-branch merges to `main`.
+2. **Tags and releases are cut from `main` only.** Never tag `staging` or a feature branch.
+3. **All CI must be green before merging to `main`.** If the project publishes on tag-push, don't tag red CI.
+4. **`staging` is never behind `main`** except during a hotfix window. After a hotfix merges to `main`, the next release candidate PR must merge `main` back into `staging` to catch up.
+5. **Every feature/fix branch tracks an Issue.** Adopt or create one before starting work; reference it in the branch name, commits, and PR.
+6. **Merge `staging` INTO your feature branch before merging TO `staging`.** Resolve conflicts on the feature branch, never on `staging`.
+
+## Per-Project Configuration
+
+Read these once per project — from its manifest, CI workflows, and existing tags — and use them everywhere `<...>` appears. Ask the maintainer only when the project genuinely has no answer.
+
+| Setting | Where to find it | Example |
+|---------|------------------|---------|
+| Version format (prefix? prerelease scheme?) | `git tag -l \| tail -5`, manifest file | `v1.4.2` / `1.4.2` |
+| Manifest holding the version field | `package.json`, `pyproject.toml`, `Cargo.toml`, `*.csproj`, `pom.xml`, `gradle.properties` | `package.json` |
+| Test command | CI workflow, `Makefile`, README | `npm test` / `pytest` / `make test` |
+| Static-check / typecheck command | CI workflow | `npm run typecheck` / `mypy` / `cargo clippy` |
+| Build command | CI workflow | `npm run build` / `go build ./...` |
+| Release trigger | CI workflow `on:` block | tag push on `main` |
+| Docs locations | repo tree | `docs/`, `README.md`, site content dir |
+| Changelog file + how it is generated | repo root, release tooling | `CHANGELOG.md` (hand-written) / auto from PR list |
+| Merge style for feature PRs | branch protection settings, maintainer | squash (changelog from PR titles) |
+| Required labels / issue templates | `.github/ISSUE_TEMPLATE`, `gh label list` | `bug`, `enhancement` |
+| Integration + production branch names | `git branch -r` | `staging` + `main` |
+
+**No GitHub / no `gh`?** The flow is identical; only the tool layer changes. Substitute per forge:
+
+| Intent | GitHub (`gh`) | GitLab (`glab`) | Gitea (`tea`) | Fallback |
+|--------|---------------|-----------------|---------------|----------|
+| Create issue | `gh issue create` | `glab issue create` | `tea issues create` | web UI / `git push -o` options |
+| Comment on issue | `gh issue comment N` | `glab issue note N` | `tea issues comment N` | web UI |
+| Open PR/MR | `gh pr create --base B` | `glab mr create --target-branch B` | `tea pulls create --base B` | web UI |
+| Watch CI | `gh pr checks N --watch` | `glab ci status --branch <mr-source>` (repeat until green/red) | `tea pulls checks N` | forge CI page |
+| Merge (squash) | `gh pr merge N --squash` | `glab mr merge N --squash` | `tea pulls merge --squash N` | web UI |
+| Merge (no squash) | `gh pr merge N --merge` | `glab mr merge N` | `tea pulls merge N` | web UI |
+
+`N` is the issue/PR/MR number. On GitLab, confirm the auto-close keyword actually fires for your project (`Closes #<issue>` closes same-project issues only); if it does not, link the issue manually rather than assuming closure.
+
+Where no CLI exists, do the same actions in the forge's web UI and keep every discipline rule intact. **The permission boundary does not change with the forge:** agents still may merge to `staging` under the four conditions above and may never approve or merge to `main`. If your work predates any issue tracker at all, create one before starting — the workflow requires an issue, not specifically a GitHub issue.
 
 ## Version & Tag Format
 
-Tags and package versions MUST follow strict **semantic versioning** with NO `v` prefix:
+Follow strict semantic versioning in **whatever prefix convention the project's existing tags already use** — do not introduce or remove a `v` prefix mid-stream.
 
 ```
-Format:  <major>.<minor>.<patch>           (stable release)
-         <major>.<minor>.<patch>-dev.<N>   (development/prerelease)
-```
-
-```
-0.1.19        ✅ correct
-0.1.19-dev.1  ✅ correct (development prerelease)
-v0.1.19       ❌ WRONG — no 'v' prefix, ever
-0.1           ❌ WRONG — all three components required
-1.0           ❌ WRONG — patch component required
-0.1.19-beta   ❌ WRONG — only -dev.<N> suffix allowed
+Stable:       <major>.<minor>.<patch>            e.g. v1.4.2 or 1.4.2
+Prerelease:   <major>.<minor>.<patch>-<pre>.<N>  e.g. v2.0.0-dev.3
 ```
 
 **Rules:**
-- Tags are bare semver: `<major>.<minor>.<patch>` — **NO `v` prefix**
-- The `package.json` version field matches exactly: `"version": "0.1.19"`
-- Development/prerelease tags use `-dev.<N>` suffix: `0.2.0-dev.1`, `0.2.0-dev.2`
-- Bump rules: breaking change → major, new feature → minor, fix/chore/docs → patch
-- Never reuse a tag. If a tag was pushed incorrectly, delete it (`git tag -d X.Y.Z && git push origin :refs/tags/X.Y.Z`) before creating the correct one.
-- Always verify the tag format BEFORE pushing: `git tag -l | tail -5`
+- All three components required; never `1.0` or `1`.
+- Prerelease suffix format follows the project's established scheme (`-dev.N`, `-rc.N`, `-beta.N`).
+- The version in the manifest matches the tag exactly.
+- **If `<manifest>` and the newest tag disagree** (e.g. manifest says `0.8.0`, latest tag is `v0.7.3`), do not pick one yourself. Ask the maintainer which is authoritative, then record the answer in the project config so it never recurs.
+- Bump rules: breaking change → major, new feature → minor, fix/chore/docs → patch.
+- **Never reuse a tag.** If one was pushed wrong, delete it before creating the correct one:
+  ```bash
+  git tag -d <tag> && git push origin :refs/tags/<tag>
+  ```
+- Verify format BEFORE pushing: `git tag -l | tail -5`.
 
 ## Issue Guidelines
 
-### Creating Issues
-
-Every piece of work starts with an issue. **All issue types require acceptance criteria** — even refactors and chores. Acceptance criteria are living checkboxes that MUST be updated as work progresses (see Progress Comments below).
+Every piece of work starts with an issue. **All issue types require acceptance criteria** — even refactors and chores. Acceptance criteria are living checkboxes that MUST be updated as work progresses.
 
 **Bug Report:**
 ```bash
 gh issue create --title "fix: <short description>" --label "bug" --body '
 ## Problem
-<What is broken? What behavior did you expect vs what happened?>
+<What is broken? Expected vs actual behavior?>
 
 ## Reproduction
-<Steps to reproduce, or "N/A" if discovered through code inspection>
+<Steps to reproduce, or "N/A" if found by code inspection>
 
 ## Environment
-- DSH version: <version>
-- Node version: <version>
+- Version: <app version>
+- Runtime: <language/runtime version>
 - OS: <os>
 
 ## Impact
@@ -156,12 +178,12 @@ gh issue create --title "feat: <short description>" --label "enhancement" --body
 ## Acceptance Criteria
 - [ ] <functional requirement 1>
 - [ ] <functional requirement 2>
-- [ ] Documented in site docs / README / AGENTS.md as applicable
+- [ ] Documented in user/repo docs and README as applicable
 - [ ] Unit tests covering the new behavior
 - [ ] Integration or e2e test verifying end-to-end flow (if user-facing)
 
 ## Related
-<Link to related issues, PRs, discussions, or external references>
+<Link to related issues, PRs, discussions, external references>
 '
 ```
 
@@ -180,35 +202,33 @@ gh issue create --title "refactor: <short description>" --label "refactor" --bod
 ## Acceptance Criteria
 - [ ] Refactoring complete — no behavioral change
 - [ ] All existing tests pass without modification
-- [ ] TypeCheck clean
+- [ ] Typecheck / static analysis clean
 - [ ] Documentation updated if public API surface changed
 '
 ```
 
 ### ⚠️ MANDATORY: Acceptance Criteria Are Living Checkboxes
 
-Acceptance criteria are NOT write-once. They are a **progress tracker**:
+They are NOT write-once. They are the progress tracker:
 
-1. **At issue creation:** Write all criteria as unchecked `- [ ]` items
-2. **During work:** Edit the issue body to check off items as they are completed: `- [x]`
-3. **Before opening PR:** ALL acceptance criteria must be checked. If any cannot be met, comment explaining why and update the criterion
-4. **At PR review:** Reviewer verifies each checked criterion is actually satisfied
+1. **At creation:** all criteria unchecked `- [ ]`
+2. **During work:** edit the issue body to check items off `- [x]` as they are met
+3. **Before opening the PR:** ALL criteria checked. If one cannot be met, comment explaining why and revise the criterion.
+4. **At review:** the reviewer verifies each checked criterion is actually satisfied.
 
-Use `gh issue edit <number> --body '...'` or the GitHub web UI to update checkboxes. A PR that closes an issue with unchecked acceptance criteria is incomplete.
+Use `gh issue edit <number> --body '...'` or the web UI. A PR closing an issue with unchecked acceptance criteria is incomplete.
 
 ### Issue Hygiene
 
 - **Title format:** `<type>: <imperative description>` — mirrors commit convention (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`)
-- **Labels:** Apply at creation. At minimum one of: `bug`, `enhancement`, `refactor`, `docs`, `chore`. Add `priority` for urgent work.
-- **Related links:** Always link related issues, PRs, or external references in the body or comments using `#<number>` or full URLs.
-- **Close keywords:** PRs should use `Closes #<issue>` or `Fixes #<issue>` in the body to auto-close on merge.
-- **Update, don't duplicate:** If an issue evolves, edit it or comment. Don't create a new one for the same concern.
+- **Labels:** apply at creation, using the labels the project actually defines. At minimum one of `bug` / `enhancement` / `refactor` / `docs` / `chore`; add priority labels for urgent work.
+- **Related links:** always link related issues, PRs, or external references with `#<number>` or full URLs.
+- **Close keywords:** PR bodies use `Closes #<issue>` / `Fixes #<issue>` to auto-close on merge.
+- **Update, don't duplicate:** if an issue evolves, edit or comment. Don't open a second issue for the same concern.
 
 ## Pull Request Guidelines
 
-### PR Templates
-
-**Feature/Fix PR (targeting staging):**
+**Feature/Fix PR (targeting `staging`):**
 ```bash
 gh pr create --base staging \
   --title "feat: <description> (#<issue>)" \
@@ -220,45 +240,47 @@ gh pr create --base staging \
 - <bullet list of concrete changes>
 
 ## Acceptance Criteria (from #<issue>)
-<!-- Copy the acceptance criteria from the issue. Check each one as verified. -->
+<!-- Copy from the issue; check each as verified -->
 - [ ] <criterion 1>
 - [ ] <criterion 2>
 
 ## Testing
-<!-- Fill these AFTER CI runs, not at PR creation. Update via gh pr edit or web UI. -->
-- [ ] CI green (typecheck + build + unit/integration)
-- [ ] E2E replay passed (if applicable)
+<!-- Fill AFTER CI runs, not at creation -->
+- [ ] CI green (<typecheck> + <build> + <tests>)
+- [ ] Manual verification: <describe, if user-facing>
 - [ ] New tests added for new behavior
-- [ ] Existing tests pass without modification (for refactors)
+- [ ] Existing tests pass unmodified (for refactors)
 
 ## Related
 Closes #<issue>
-<Links to related PRs, issues, docs, or external references>
+<Links to related PRs, issues, docs, external references>
 '
 ```
 
-**Release Candidate PR (staging → main):**
+**Release Candidate PR (`staging` → `main`):**
 ```bash
 gh pr create --base main --head staging \
-  --title "Release candidate: <major>.<minor>.<patch>" \
+  --title "Release candidate: <version>" \
   --body '
-## Release <major>.<minor>.<patch>
+## Release <version>
 
-### Changes since <previous>
+### Changes since <previous version>
 - <bullet list from merged PRs/issues since last tag>
 
 ### Verification
 - [ ] All CI checks green
-- [ ] Deterministic suite passes (unit + integration)
-- [ ] E2E replay passes (if tapes updated)
-- [ ] Version bumped in package.json
+- [ ] Deterministic suite passes (<test command>)
+- [ ] Static analysis clean (<typecheck command>)
+- [ ] Version bumped in <manifest> (committed on staging, part of this diff)
+- [ ] Changelog updated for this version (if the project keeps one)
+- [ ] <main-back-merge-into-staging done, if a hotfix landed since the last release>
 
 ### Tag after merge
-`<major>.<minor>.<patch>`
+`<version>`
 '
 ```
 
-**Hotfix PR (targeting main):**
+**Hotfix PR (targeting `main`):**
 ```bash
 gh pr create --base main \
   --title "HOTFIX: <description> (#<issue>)" \
@@ -274,8 +296,8 @@ Bypassing staging due to urgency.
 <What changed and why it is safe>
 
 ## Testing
-- [ ] Deterministic suite passes (`npm test`)
-- [ ] TypeCheck clean (`npm run typecheck`)
+- [ ] Deterministic suite passes (`<test command>`)
+- [ ] Static analysis clean (`<typecheck command>`)
 - [ ] Manual verification: <describe>
 
 ## Related
@@ -288,143 +310,163 @@ Closes #<issue>
 
 ### PR Hygiene
 
-- **Title format:** `<type>: <description> (#<issue>)` — include the issue number in parentheses
-- **Base branch:** Features/fixes target `staging`. Hotfixes and release candidates target `main`.
-- **Body must include:** Summary, testing checklist, and `Closes #<issue>` (or `Fixes #<issue>`)
-- **Link everything:** Reference related issues (`#<number>`), prior PRs, docs, and external resources
-- **Keep PRs small:** If a PR touches >10 files or takes >15 min of CI, split it into stacked PRs
-- **Self-review before requesting review:** Read your own diff. Catch typos, leftover debug code, missing tests.
+- **Title format:** `<type>: <description> (#<issue>)` — issue number in parentheses
+- **Base branch:** features/fixes target `staging`; hotfixes and release candidates target `main`.
+- **Body must include:** summary, testing checklist, `Closes #<issue>`
+- **Link everything:** related issues (`#<number>`), prior PRs, docs, external resources
+- **Keep PRs small:** touching >10 files or >15 min of CI → split into stacked PRs
+- **Self-review before requesting review:** read your own diff; catch typos, leftover debug code, missing tests.
 
 ## Commenting Conventions
 
 ### On Issues
 
-- **Progress updates (MANDATORY):** When completing a logical segment of work, post a comment updating the acceptance criteria state. Use this format:
+- **Progress updates (MANDATORY):** when completing a logical segment of work, post a comment updating acceptance-criteria state:
 
   ```
   ## Progress Update
-  
+
   Completed:
-  - [x] <criterion that was just met>
+  - [x] <criterion just met>
   - [x] <another completed criterion>
-  
+
   Remaining:
   - [ ] <what is left>
-  
-  <Brief note on what was done, any decisions made, or blockers encountered>
+
+  <Brief note on what was done, decisions made, or blockers encountered>
   ```
 
-  Also **edit the issue body** to check off the completed criteria there. The comment provides context; the issue body is the source of truth.
+  Also **edit the issue body** to check off completed criteria there. The comment provides context; the issue body is the source of truth.
 
-- **Work started:** Comment when beginning work: "Starting implementation on `feature/N-desc`."
-- **Blocked:** Comment immediately when blocked. Name the blocker and what is needed to unblock.
-- **Scope change:** Comment explaining what changed and why before modifying acceptance criteria.
-- **Decisions:** Record architectural or scope decisions as comments so future readers understand the "why."
-- **Cross-references:** Link to related PRs, commits, or other issues: "Addressed in #<pr>", "See also #<issue>"
-- **Closing:** Let the PR auto-close via `Closes #<issue>`. Only close manually if the issue is invalid or won't-fix (with explanation).
+- **Work started:** comment when beginning: "Starting implementation on `feature/N-desc`."
+- **Blocked:** comment immediately; name the blocker and what is needed to unblock.
+- **Scope change:** comment explaining what changed and why BEFORE modifying acceptance criteria.
+- **Decisions:** record architectural/scope decisions as comments so future readers get the "why."
+- **Cross-references:** "Addressed in #<pr>", "See also #<issue>".
+- **Closing:** let the PR auto-close via `Closes #<issue>`. Close manually only for invalid / won't-fix issues, with explanation.
 
 ### On PRs
 
-- **Testing verification (MANDATORY):** After CI completes, **edit the PR body** to check off the testing checkboxes based on actual CI results. Do not leave them as unchecked from creation. Use `gh pr edit <number> --body '...'` or the web UI.
-- **CI failures:** Comment on the PR with the failure diagnosis and fix plan. Don't leave red CI unexplained. After fixing, update the testing checkboxes.
-- **Review comments:** Be specific. Reference line numbers. Suggest fixes, not just problems.
-- **Author responses:** Reply to every review comment. Resolve threads when addressed. If disagreeing, explain why.
-- **Post-merge:** No need to comment "merged" — GitHub shows this automatically. Comment only if there is follow-up work.
+- **Testing verification (MANDATORY):** after CI completes, **edit the PR body** to check off testing boxes based on actual CI results. Never leave them unchecked from creation, and never check them without having seen the run.
+- **CI failures:** comment with diagnosis and fix plan. Don't leave red CI unexplained. After fixing, update the checkboxes.
+- **Review comments:** be specific; reference lines; suggest fixes, not just problems.
+- **Author responses:** reply to every review comment; resolve threads when addressed; explain disagreements.
+- **Post-merge:** no "merged" comment needed — GitHub shows it. Comment only about follow-up work.
 
 ### General
 
-- **Be concise.** One thought per comment. Use bullet points for lists.
-- **Use markdown.** Code blocks for snippets, links for references, checkboxes for action items.
-- **@mention sparingly.** Only when someone needs to see it. Don't @mention for FYI.
-- **Never edit others' comments.** Reply instead.
+- Be concise; one thought per comment; bullets for lists.
+- Use markdown: code blocks for snippets, links for references, checkboxes for action items.
+- @mention sparingly — only when someone must see it, never for FYI.
+- Never edit others' comments. Reply instead.
 
 ## Cross-Linking Requirements
 
-Linking creates traceability. These are REQUIRED, not optional:
+Traceability. These are REQUIRED, not optional:
 
 | From | To | How | Required? |
 |------|----|-----|-----------|
-| PR | Issue | `Closes #<N>` or `Fixes #<N>` in PR body | **Yes** |
+| PR | Issue | `Closes #<N>` / `Fixes #<N>` in PR body | **Yes** |
 | Feature branch | Issue | Issue number in branch name: `feature/42-desc` | **Yes** |
 | Commit | Issue | `(#<N>)` in commit message | **Yes** |
 | Issue | Related issue/PR | `#<N>` or full URL in body/comment | **Yes** |
-| RC PR | Previous tag | `Changes since <X.Y.Z>` in RC body | **Yes** |
-| Hotfix PR | Staging sync reminder | Checklist item in hotfix PR body | **Yes** |
-| Comment | Code/file | Permalink or file:line reference | Encouraged |
+| RC PR | Previous tag | `Changes since <version>` in RC body | **Yes** |
+| Hotfix PR | Staging sync | Checklist item in hotfix PR body | **Yes** |
+| Comment | Code/file | Permalink or `file:line` reference | Encouraged |
 | Comment | External resource | Full URL with description | Encouraged |
 
 ## Feature/Fix Workflow
 
 ```
-1. Create or adopt a GitHub Issue (with acceptance criteria checkboxes)
+1. Create or adopt an Issue (acceptance criteria as unchecked checkboxes)
    gh issue create --title "feat: ..." --label "enhancement" --body '...'
-   # or: gh issue list --state open  (find existing)
+   # or: gh issue list --state open
 
 2. Branch from staging
    git checkout staging && git pull origin staging
    git checkout -b feature/<issue-number>-short-description
 
-3. Work, commit, push — update issue checkboxes after each segment
+3. Docs first, then tests outside-in, then implementation — commit each layer,
+   update issue checkboxes after each segment
    git add ... && git commit -m "feat: description (#<issue>)"
    git push origin feature/<issue-number>-short-description
-   # Edit issue body: check off completed acceptance criteria
-   # Post progress comment with what was done and what remains
+   # Edit issue body: check off completed criteria; post a progress comment
 
 4. Before opening PR: sync staging in, verify ALL acceptance criteria checked
-   git fetch origin staging
-   git merge origin/staging
-   # Resolve conflicts if any, then:
-   git push origin feature/<issue-number>-short-description
+   git fetch origin staging && git merge origin/staging
+   # resolve conflicts on the feature branch, then push
 
-5. Open PR targeting staging (copy acceptance criteria from issue into PR body)
-   gh pr create --base staging --title "feat: description (#<issue>)" \
-     --body "..."
+5. Open PR targeting staging (copy acceptance criteria into the PR body)
+   gh pr create --base staging --title "feat: description (#<issue>)" --body "..."
 
-6. After CI completes: edit PR body to check off testing checkboxes
-   gh pr edit <number> --body '...'   # update based on actual CI results
+6. After CI completes: edit PR body to check off testing boxes from real results
+   gh pr edit <number> --body '...'
 
-7. Address review, merge to staging
-   gh pr merge <number> --squash   # after approval + green CI + all checkboxes checked
+7. Address review, then merge to staging (or stop for the maintainer if a non-author approval is required)
+   gh pr merge <number> --squash   # only after: green CI + all boxes checked from real results + review addressed
 ```
 
-## Release Candidate Workflow (staging → main)
+### Pre-PR Verification Checklist
 
-When staging is ready for release:
+Run this every time, immediately before opening the PR (this is the artifact the "reload this skill before completion" step asks for). Every line must be true against something you actually observed this session — not intended, not assumed.
+
+- [ ] On a `feature/*` or `fix/*` branch off `staging`, never on `main`/`staging` directly
+- [ ] Issue exists and is linked; branch name carries its number
+- [ ] Documentation updated **and committed** before code (diff shows the doc files changed)
+- [ ] Tests written outside-in and committed per layer; `<test command>` run now → 0 failures
+- [ ] `<typecheck command>` and `<build command>` run now → clean / exit 0
+- [ ] All acceptance criteria checked in the **issue body**, plus a progress comment posted
+- [ ] `origin/staging` merged into this branch; conflicts resolved here, pushed
+- [ ] Cross-links present: `(#<issue>)` in commits, `Closes #<issue>` ready in PR body
+- [ ] PR small (< ~10 files, < ~15 min CI) or split into stacked PRs
+- [ ] Self-reviewed own diff: no debug leftovers, no stray files
+- [ ] Changelog entry added, if the project keeps one
+
+## Release Candidate Workflow (`staging` → `main`)
+
+When `staging` is ready for release. **Agent role ends at "RC PR opened": an agent may do steps 1–4 and watch CI in step 5, but never merges or tags — steps 6–8 are maintainer actions.**
 
 ```
-1. Determine the next version: <major>.<minor>.<patch>
-   # Check current: grep '"version"' package.json
-   # Bump: patch for fixes, minor for features, major for breaking changes
+1. Determine the next version
+   # current: grep the version field in <manifest>; git tag -l | tail -5
+   # bump: patch for fixes, minor for features, major for breaking changes
+   # If <manifest> and the newest tag disagree, do NOT guess — ask the maintainer which is authoritative.
 
-2. Open a release candidate PR from staging to main (use RC template above)
-   gh pr create --base main --head staging \
-     --title "Release candidate: <major>.<minor>.<patch>" \
-     --body "..."
+2. If a hotfix landed since the last release, merge main into staging first
+   git checkout staging && git pull origin staging
+   git merge origin/main && git push origin staging
 
-3. ALL CI must pass on this PR. No exceptions for normal releases.
+3. Bump the version in <manifest> on staging, and update the changelog if the project keeps one.
+   Commit on staging (or a short-lived release/<version> branch merged to staging), then push.
+   # The bump belongs to the RC so that "Version bumped in <manifest>" is verifiable BEFORE merge.
+   git add <manifest> CHANGELOG.md && git commit -m "<version>"
+
+4. Open the release candidate PR from staging to main (RC template above)
+   gh pr create --base main --head staging --title "Release candidate: <version>" --body "..."
+
+5. ALL CI must pass on this PR. No exceptions for normal releases.
    gh pr checks <number> --watch
 
-4. After green CI + review approval, merge to main
-   gh pr merge <number> --merge   # use merge commit, not squash, for RCs
+6. [MAINTAINER] Approve and merge to main
+   gh pr merge <number> --merge   # merge commit, not squash, for RCs
 
-5. Bump version in package.json, commit, push
-   # Edit package.json version field to "<major>.<minor>.<patch>"
-   git add package.json && git commit -m "<major>.<minor>.<patch>"
-   git push origin main
-
-6. Tag and push — this triggers the release workflow
-   # VERIFY FORMAT: must be <major>.<minor>.<patch> — NO 'v' PREFIX
-   git tag -a <major>.<minor>.<patch> -m "<major>.<minor>.<patch> — summary"
+7. [MAINTAINER] Tag and push — this triggers the release pipeline
+   # VERIFY FORMAT against the project's convention (prefix included)
+   # The tag MUST equal the version already committed in <manifest> on main.
+   git tag -a <version> -m "<version> — summary"
    git push origin main --tags
 
-7. Verify the release succeeded
-   gh run list --workflow=Release --limit 1
-   gh release view <major>.<minor>.<patch>
+8. [MAINTAINER] Verify the release succeeded
+   gh run list --limit 1 ; gh release view <version>
 ```
+
+**One open release at a time.** Only one RC may be pending (`staging` → `main`) at any moment. Work that lands on `staging` after an RC is opened joins the *next* release unless the maintainer updates the existing RC to include it — never open a second RC over the same window, and never decide silently which release your change ships in. If an RC is already open when you finish, ask the maintainer whether to fold your change into it or hold it for the next one.
 
 ## Hotfix Workflow (Emergency Only)
 
-Hotfixes bypass staging when waiting for full CI would cause unacceptable delay.
+For production-breaking fixes where waiting on the full staging cycle causes unacceptable delay. Everything else goes through `staging`.
+
+**Is this a hotfix?** Only if production is broken *now* and the fix cannot wait for the next scheduled release. A crash, data loss, security hole, or outage qualifies; a bug that only affects unreleased code does not — that is a normal `feature/*` or `fix/*` branch off `staging`. **The maintainer declares hotfix status.** If you are an agent and no one has declared it, default to the staging path and ask; do not self-authorize bypassing `staging`.
 
 ```
 1. Branch from main
@@ -432,71 +474,95 @@ Hotfixes bypass staging when waiting for full CI would cause unacceptable delay.
    git checkout -b hotfix/<issue-number>-short-description
 
 2. Fix, commit, push
-   git add ... && git commit -m "fix: urgent description (#<issue>)"
+   git commit -m "fix: urgent description (#<issue>)"
    git push origin hotfix/<issue-number>-short-description
 
-3. Open PR targeting main (NOT staging, use hotfix template above)
-   gh pr create --base main --title "HOTFIX: description (#<issue>)" \
-     --body "..."
+3. Open PR targeting main (NOT staging; hotfix template above)
+   gh pr create --base main --title "HOTFIX: description (#<issue>)" --body "..."
 
-4. Run ONLY the deterministic suite (fast gate), not full e2e
-   # The CI workflow runs this automatically on PRs to main.
-   # If you need to verify locally: npm test && npm run typecheck
+4. Run ONLY the deterministic fast gate, not the full suite
+   # CI runs it automatically on PRs to main. Locally: <test command> && <typecheck command>
 
-5. Merge to main after fast-gate green + maintainer approval
+5. [MAINTAINER] Merge to main after fast-gate green + approval
    gh pr merge <number> --merge
 
-6. Tag and release as normal (steps 5-7 of Release Candidate above)
-   # Remember: <major>.<minor>.<patch> format — NO 'v' prefix
+6. [MAINTAINER] Bump version + tag as in RC steps 3 and 7–8 (project tag format).
+   # The hotfix patch bump goes on main here, then main is merged back to staging (step 7).
 
-7. AFTER the hotfix is on main: sync staging
+7. Sync staging IMMEDIATELY after the hotfix is on main
    git checkout staging && git pull origin staging
-   git merge origin/main
-   git push origin staging
-   # This ensures staging catches up and the next RC includes the fix.
+   git merge origin/main && git push origin staging
+   # Otherwise the next RC silently reverts the fix.
 ```
 
 ## Large Changes: Avoiding CI Bottlenecks
 
-When a change is too large for a single PR (huge refactor, major feature):
+When a change is too large for one PR (huge refactor, major feature):
 
-1. **Decompose into stacked PRs.** Each PR is independently mergeable to staging and passes CI on its own. Later PRs build on earlier ones.
+1. **Decompose into stacked PRs.** Each is independently mergeable to `staging` and passes CI alone; later PRs build on earlier ones.
    ```
    PR 1: refactor(core): extract module X (no behavior change)
-   PR 2: refactor(core): update callers of X (depends on PR 1)
-   PR 3: feat: new capability using refactored X (depends on PR 2)
+   PR 2: refactor(core): update callers of X        (depends on PR 1)
+   PR 3: feat: new capability using refactored X    (depends on PR 2)
    ```
-
-2. **Each PR targets staging.** Merge sequentially as each goes green.
-
-3. **Reference the parent issue in all PRs.** Use GitHub's task lists or link them in the body.
-
-4. **Never hold a long-lived branch that diverges from staging.** Rebase or merge staging in frequently (at least daily for multi-day work).
-
-5. **If a single PR would take >15 minutes of CI, split it.** The goal is rapid feedback loops, not batching.
+2. **Each PR targets `staging`.** Merge sequentially as each goes green.
+3. **Reference the parent issue in all PRs** (task lists or links in the body).
+4. **Never hold a long-lived branch that diverges from `staging`.** Merge `staging` in at least daily for multi-day work.
+5. **If one PR would take >15 minutes of CI, split it.** Rapid feedback beats batching.
 
 ## Staging Hygiene
 
-- **Staging should always be deployable.** If it's broken, fixing it is the top priority.
-- **After every hotfix to main, merge main into staging immediately.** Don't let staging drift.
-- **Before starting any feature work, pull staging.** `git checkout staging && git pull origin staging` is step zero.
-- **Never force-push to staging or main.** If history needs rewriting, discuss with the maintainer first.
+- **`staging` must always be deployable.** If it breaks, fixing it is the top priority.
+- **After every hotfix to `main`, merge `main` into `staging` immediately.** Don't let it drift.
+- **Pull `staging` before starting any feature work.** `git checkout staging && git pull origin staging` is step zero.
+- **Never force-push to `staging` or `main`.** History rewriting needs the maintainer first.
 
 ## Commit Message Conventions
 
-Follow conventional commits for automated changelog extraction:
+Conventional commits, for automated changelog extraction:
 
 ```
-feat: add CodeGraph integration (#42)
+feat: add pluggable provider registry (#42)
 fix: correct search scoring when symbols absent (#38)
-refactor: extract codegraph resolver into own module (#45)
-test: add unit tests for codegraphBoost (#42)
-docs: update AGENTS.md with CodeGraph integration notes (#42)
-chore: bump tsx devDependency for build fix (#46)
-0.1.19  ← version bump commit (no v prefix)
+refactor: extract resolver into its own module (#45)
+test: add unit tests for scoring boost (#42)
+docs: update README with provider setup notes (#42)
+chore: bump build toolchain dependency (#46)
+1.4.2   ← version-bump commit (matches the project's tag format)
 ```
 
-The type prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`) drives release notes grouping. Always reference the issue number in parentheses.
+The type prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`) drives release-notes grouping. Always reference the issue number in parentheses. Keep the subject imperative and ≤ ~72 chars; put detail in the body.
+
+**Squash-merge vs. per-layer commits — how both survive.** Feature branches keep incremental conventional commits (docs, test, fix) for reviewability *during* development. On squash-merge to `staging`, those collapse into one commit, so the changelog is written from **the PR title and merged PR list, not from individual branch commits** — which is why the PR title must itself be a valid conventional-commit subject (`fix: ... (#91)`). If a project extracts its changelog from raw `git log` on `main` instead of the PR list, use a merge commit rather than squash for that PR and confirm with the maintainer before choosing. Never let the two mechanisms disagree silently: pick one, record it in the project config.
+
+## Evidence Before Claims
+
+This workflow's gates are claims until verified. Apply `verification-before-completion` at every one of them:
+
+| About to say | Requires (run it, read the output) | Not sufficient |
+|---|---|---|
+| "Tests pass" | `<test command>` output showing 0 failures, this session | Last run, "should pass" |
+| "CI green" | `gh pr checks <N>` showing all pass | Assuming the push fixed it |
+| "Docs updated" | Diff showing the doc file changed | Intent to do it later |
+| "Acceptance criteria met" | Each checkbox re-checked against reality | Copying them over from the issue |
+| "Ready to merge" | Green CI **+** all boxes checked **+** review addressed | Green CI alone |
+| "Release published" | `gh release view <version>` / pipeline run succeeded | Tag pushed |
+
+Checking a PR's testing box before reading the CI result is a false claim, not a shortcut.
+
+## Red Flags — STOP
+
+These mean you have left the workflow; fix it before continuing:
+
+- Writing code with no issue, or on `staging`/`main`
+- Code committed before its docs or tests
+- Uncommitted work carried across a session
+- About to merge while CI is red, or with unchecked acceptance criteria
+- About to check a testing box you have not verified against a real run
+- Approving or merging a PR to `main` as an agent
+- Tagging anything other than `main`, or reusing an existing tag
+- Long-lived branch that has not synced `staging` recently
+- Hotfix that skipped the `main` → `staging` sync
 
 ## Quick Reference
 
@@ -506,13 +572,15 @@ The type prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`) drives rele
 | Sync staging into feature | `git fetch origin staging && git merge origin/staging` |
 | Open PR to staging | `gh pr create --base staging --title "..." --body "Closes #N"` |
 | Check CI status | `gh pr checks <N> --watch` |
-| Merge PR (squash) | `gh pr merge <N> --squash` |
-| Open release candidate | `gh pr create --base main --head staging --title "RC: X.Y.Z"` |
-| Merge RC to main | `gh pr merge <N> --merge` |
-| Tag a release | `git tag -a X.Y.Z -m "message" && git push origin main --tags` |
-| Delete a bad tag | `git tag -d X.Y.Z && git push origin :refs/tags/X.Y.Z` |
-| Emergency hotfix | Branch from main → PR to main → fast-gate → merge → tag → sync staging |
 | View failed CI logs | `gh run view <id> --log-failed` |
+| Merge PR (squash) | `gh pr merge <N> --squash` |
+| Open release candidate | `gh pr create --base main --head staging --title "RC: <version>"` |
+| Merge RC to main | `gh pr merge <N> --merge` *(maintainer)* |
+| Tag a release | `git tag -a <version> -m "msg" && git push origin main --tags` *(maintainer)* |
+| Delete a bad tag | `git tag -d <version> && git push origin :refs/tags/<version>` |
+| Emergency hotfix | branch from main → PR to main → fast gate → merge → tag → sync staging |
 | List open issues | `gh issue list --state open` |
 | Create an issue | `gh issue create --title "..." --body "..." --label "..."` |
 | Comment on issue/PR | `gh issue comment <N> --body "..."` / `gh pr comment <N> --body "..."` |
+| Update issue body | `gh issue edit <N> --body "..."` |
+| Update PR body | `gh pr edit <N> --body "..."` |
