@@ -7,26 +7,26 @@ hero:
   tagline: Teach an AI model new skills and knowledge, then serve it through a chat API — all on a single GPU.
   actions:
     - text: Get Started →
-      link: /tutorials/getting-started/
+      link: ./tutorials/getting-started/
       variant: primary
     - text: Understand the Architecture
-      link: /explanation/architecture/
+      link: ./explanation/architecture/
       variant: secondary
 ---
 
 import { CardGrid, Card, LinkCard, Icon } from '@astrojs/starlight/components';
 
 <CardGrid>
-  <LinkCard title="Tutorials" href="/tutorials/getting-started/" icon="open-book">
+  <LinkCard title="Tutorials" href="./tutorials/getting-started/" icon="open-book">
     Step-by-step lessons to deploy SAIP and train your first adapter.
   </LinkCard>
-  <LinkCard title="Guides" href="/guides/deploy-local/" icon="pencil">
+  <LinkCard title="Guides" href="./guides/deploy-local/" icon="pencil">
     Practical recipes for deployment, configuration, and daily operations.
   </LinkCard>
-  <LinkCard title="Reference" href="/reference/configuration/" icon="information">
+  <LinkCard title="Reference" href="./reference/configuration/" icon="information">
     Technical specifications for configuration, APIs, and data formats.
   </LinkCard>
-  <LinkCard title="Understanding SAIP" href="/explanation/architecture/" icon="bulb">
+  <LinkCard title="Understanding SAIP" href="./explanation/architecture/" icon="bulb">
     Concepts and design decisions behind the platform architecture.
   </LinkCard>
 </CardGrid>
@@ -37,7 +37,7 @@ Large language models start as **base models** — general-purpose AI trained on
 
 SAIP automates this cycle: collect real interactions, score them, train new adapters, and serve the improved model — continuously, on a single consumer GPU.
 
-📖 **[See the full glossary](/reference/glossary/)** for definitions of every technical term used in these docs.
+📖 **[See the full glossary](./reference/glossary/)** for definitions of every technical term used in these docs.
 
 ## What is SAIP?
 
@@ -48,7 +48,7 @@ SAIP is a two-service platform that closes the loop between serving AI responses
 
 Both services share a Cloudflare R2 object store (S3-compatible cloud storage) for adapters, knowledge documents, session histories, and feedback. They can run on a single 7 GB VRAM GPU or scale to remote GPU nodes.
 
-Both services are built from interchangeable plugins — extend anything without forking. Every capability, from API endpoints to adapter management to session collection, is a [Cordis](/reference/glossary/#cordis) plugin that can be added, removed, or replaced independently.
+Both services are built from interchangeable plugins — extend anything without forking. Every capability, from API endpoints to adapter management to session collection, is a [Cordis](./reference/glossary/#cordis) plugin that can be added, removed, or replaced independently.
 
 ## What You Can Do
 

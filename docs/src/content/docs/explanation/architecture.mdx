@@ -89,7 +89,7 @@ Like vLLM, Axolotl runs in its own container. The training gateway builds datase
 
 ### Cordis for Service Composition
 
-Both gateways are composed of Cordis plugins rather than monolithic application code. See [Cordis Plugin Model](/explanation/cordis-plugin-model/) for the full rationale, but the short version:
+Both gateways are composed of Cordis plugins rather than monolithic application code. See [Cordis Plugin Model](./cordis-plugin-model/) for the full rationale, but the short version:
 
 - **Lifecycle management**: plugins declare dependencies on other plugins' services; Cordis handles load ordering, restart propagation, and graceful shutdown.
 - **Hot reload**: update a plugin's code or config without restarting the entire gateway. Critical for development and for swapping adapters at runtime.
