@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
+
 ### Added
 - Download for AI: Repomix context packs (XML/Markdown/JSON) at stable URLs with header selector (#10)
 - Project architecture documentation and README (#1)
