@@ -9,8 +9,11 @@ describe('providerFor', () => {
   it('returns the local provider for kind=local', () => {
     expect(providerFor('local').kind).toBe('local')
   })
-  it('throws UnregisteredProviderError for hyperstack (until PR K)', () => {
-    expect(() => providerFor('hyperstack')).toThrow(UnregisteredProviderError)
+  it('resolves the hyperstack provider (gated) for kind=hyperstack', () => {
+    expect(providerFor('hyperstack').kind).toBe('hyperstack')
+  })
+  it('throws UnregisteredProviderError for an unknown kind', () => {
+    expect(() => providerFor('aws' as any)).toThrow(UnregisteredProviderError)
   })
 })
 
