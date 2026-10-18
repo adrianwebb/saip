@@ -1,21 +1,23 @@
 /**
  * SAIP Training Gateway — Cordis application entry point
  *
- * Loads plugins for Axolotl runner, knowledge store, feedback store,
- * dataset builder, and the Hono API server.
+ * Composes the training plugins: shared adapter registry service, learning API
+ * (strategy registration + job linkage), Axolotl runner, and R2 sync as those
+ * are implemented.
  */
 
 import { Context } from 'cordis'
+import { AdapterRegistryService } from '@saip/shared/services'
+import { LearningApiService } from './plugins/learning-api.js'
 
-const ctx = new Context()
+export async function createApp() {
+  const ctx = new Context()
+  await ctx.plugin(AdapterRegistryService)
+  await ctx.plugin(LearningApiService)
+  // Remaining plugins (axolotlRunner, r2Sync) register here as they are implemented.
+  return ctx
+}
 
-// TODO: Load configuration from saip.yaml
-// TODO: Register plugins:
-//   ctx.plugin(axolotlRunner, config)
-//   ctx.plugin(knowledgeStore, config)
-//   ctx.plugin(feedbackStore, config)
-//   ctx.plugin(datasetBuilder, config)
-//   ctx.plugin(api, config)
-
-console.log('[saip-training] Gateway starting...')
-console.log('[saip-training] TODO: Implement plugin loading and Axolotl integration')
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void createApp().then(() => console.log('[saip-training] Gateway starting...'))
+}

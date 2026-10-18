@@ -45,3 +45,9 @@ jobs:
 
       - name: Test inference
         run: pnpm --filter @saip/inference test
+
+      - name: Typecheck & build training
+        run: pnpm --filter @saip/training build
+
+      - name: Test training
+        run: pnpm --filter @saip/training test
