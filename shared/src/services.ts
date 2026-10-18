@@ -8,6 +8,8 @@
  */
 
 import { Service } from 'cordis'
+import { readFileSync, existsSync } from 'node:fs'
+import { parse as parseYaml } from 'yaml'
 import type { AdapterDefinition } from './types.js'
 import {
   validateRegistry,
@@ -15,6 +17,14 @@ import {
   type RegistryInput,
   type ValidationResult,
 } from './adapter-registry.js'
+import {
+  validateHostRegistry,
+  EnvSecrets,
+  type HostConfig,
+  type HostRegistryFile,
+  type HostValidationError,
+  type SecretsProvider,
+} from './hosting.js'
 
 /** Namespaced service key used across all SAIP packages. */
 export const ADAPTER_REGISTRY_SERVICE = 'adapterRegistry'
@@ -56,4 +66,43 @@ export class AdapterRegistryService extends Service {
     const latest = latestFor(parsed.name)
     return { name: parsed.name, version: latest == null ? undefined : String(latest).padStart(6, '0') }
   }
+}
+
+export const SECRETS_SERVICE = 'secrets'
+export const HOST_REGISTRY_SERVICE = 'hosts'
+
+/** Wraps a SecretsProvider (default EnvSecrets) on the Cordis reflect surface. */
+export class SecretsService extends Service {
+  static readonly provide = SECRETS_SERVICE
+  private readonly provider: SecretsProvider
+
+  constructor(ctx: any, config: { provider?: SecretsProvider } = {}) {
+    super(ctx, SECRETS_SERVICE)
+    this.provider = config.provider ?? new EnvSecrets()
+  }
+
+  get(name: string): Promise<string | undefined> { return this.provider.get(name) }
+  require(name: string): Promise<string> { return this.provider.require(name) }
+}
+
+/** Loads + validates a host registry from a file path or inline object. */
+export class HostRegistryService extends Service {
+  static readonly provide = HOST_REGISTRY_SERVICE
+  private hosts: HostConfig[] = []
+
+  constructor(ctx: any, config: { path?: string; inline?: HostRegistryFile } = {}) {
+    super(ctx, HOST_REGISTRY_SERVICE)
+    if (config.inline) {
+      this.hosts = config.inline.hosts ?? []
+    } else if (config.path && existsSync(config.path)) {
+      this.hosts = (parseYaml(readFileSync(config.path, 'utf8'))?.hosts ?? []) as HostConfig[]
+    }
+  }
+
+  list(): HostConfig[] { return this.hosts }
+
+  resolve(name: string): HostConfig | undefined { return this.hosts.find((h) => h.name === name) }
+
+  /** Structured validation errors for the loaded registry (empty = valid). */
+  assertValid(): HostValidationError[] { return validateHostRegistry({ hosts: this.hosts }) }
 }
