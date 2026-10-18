@@ -101,40 +101,57 @@ List registered training strategy plugins.
 
 ## POST /v1/learning/jobs
 
-Trigger a new training job using a registered training strategy.
+Trigger a new training job. Jobs target a **leaf adapter** in the registry; when `strategy` and data selection are omitted, they are inherited from the adapter's declared [training linkage](/saip/reference/adapter-definitions/#training-linkage-training).
 
 ### Request Body
 
 | Field           | Type     | Required | Description                                          |
 |-----------------|----------|----------|------------------------------------------------------|
-| `strategy`      | `string` | Yes      | Name of a registered training strategy plugin.       |
-| `adapter_id`    | `string` | No       | Target adapter ID. Defaults to user's training adapter. |
-| `data_ids`      | `string[]` | No     | Document/feedback IDs to include as training input.  |
-| `params`        | `object` | No       | Strategy-specific parameter overrides.               |
+| `adapter`       | `string` | No       | Target adapter name from the registry. Defaults to the caller's `users[].adapters.training`. Must be a leaf — composites return `422`. |
+| `strategy`      | `string` | No       | Registered training strategy plugin. Defaults to the adapter's declared `training.strategy`. |
+| `data_ids`      | `string[]` | No     | Explicit document/session/feedback IDs. Default: all untrained data within the adapter's declared `data_scopes`. |
+| `params`        | `object` | No       | Strategy-specific parameter overrides (defaults merge from the adapter's `training.params`). |
+
+:::note[Adapter → Strategy → Data Path]
+The registry is what makes this chain explicit: `user → users[].adapters.training → adapter definition → training.strategy + training.data_scopes → matching strategy plugin → dataset`. A job that names only an adapter inherits everything else; explicit fields override per-job for experimentation.
+:::
 
 ### Response `202 Accepted`
 
 ```json
 {
   "job_id": "train-20250115-001",
-  "strategy": "knowledge_embedding",
+  "adapter": "treeseed-project",
+  "strategy": "corrective_sft",
+  "inherited": { "data_scopes": ["sessions", "feedback"] },
   "status": "queued",
   "created_at": "2025-01-15T12:00:00Z"
 }
 ```
 
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `422` | `adapter` names a composite (`trainable: false`) or unknown strategy |
+| `404` | Adapter not found in registry |
+
 ### Example
 
 ```bash
+# Minimal: inherit strategy + data scopes from the adapter's registry entry
+curl -X POST http://localhost:8001/v1/learning/jobs \
+  -H "Content-Type: application/json" \
+  -d '{ "adapter": "treeseed-project" }'
+
+# Explicit: override strategy params for one experiment
 curl -X POST http://localhost:8001/v1/learning/jobs \
   -H "Content-Type: application/json" \
   -d '{
+    "adapter": "coding",
     "strategy": "knowledge_embedding",
     "data_ids": ["doc-20250115-001"],
-    "params": {
-      "epochs": 3,
-      "learning_rate": 2e-5
-    }
+    "params": { "epochs": 3, "learning_rate": 2e-5 }
   }'
 ```
 

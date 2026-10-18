@@ -1,0 +1,133 @@
+---
+title: Adapter Definitions
+description: Contract for the adapter registry — scopes, training linkage, and composite user adapters in saip.yaml
+---
+
+The **adapter registry** is a top-level `adapters:` array in `saip.yaml`. Adapters are first-class definitions independent of users: any number of users, projects, or composites can reference the same adapter. Each entry is either a **leaf** (trained directly via a declared strategy) or a **composite** (derived by merging weighted components).
+
+Type contracts live in [`@saip/shared`](https://github.com/adrianwebb/saip/blob/staging/shared/src/types.ts): `AdapterDefinition`, `AdapterScope`, `TrainingLinkage`, `CompositeSpec`, `CompositeComponent`, `CompositionRecord`.
+
+## Registry Entry Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique adapter name; referenced by `users[].adapters.*` and composite components |
+| `scope` | enum | Yes | Visibility boundary: `global`, `domain`, `project`, `user` |
+| `project` | string | When scope=`project` | Project identifier this adapter belongs to |
+| `user` | string | No | Owner annotation when scope=`user` |
+| `description` | string | No | Human-readable purpose |
+| `trainable` | boolean | No (default `true`) | `false` marks purely-derived adapters (composites) |
+| `base` | string | No | Base model target; must match all components at compile time |
+| `training` | object | Leaf only | Training linkage (below) |
+| `composite` | object | Composite only | Composition spec (below) |
+
+An entry must define exactly one of `training` or `composite`.
+
+## Scopes
+
+| Scope | Meaning | Reuse rule |
+|-------|---------|-----------|
+| `global` | General-purpose capability (e.g. coding, research) | Referenced by anything |
+| `domain` | A knowledge/behavior domain without project ties | Referenced by anything |
+| `project` | Scoped to one project (`project:` required) | Only that project's composites/users |
+| `user` | Owned by one user identity | Referenced by that user's mapping and their composites |
+
+Scopes exist so adapters can be "more general purpose, or scoped differently than users" — a shared `coding` adapter trains once from everyone's sessions; a `treeseed-project` adapter learns only that project's conventions.
+
+## Training Linkage (`training:`)
+
+Declares how a leaf adapter learns — the formal path from accumulated data to updated weights:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `strategy` | string | Yes | Registered training strategy plugin name (`knowledge_embedding`, `corrective_sft`, `weighted_kto`, …) |
+| `data_scopes` | string[] | Yes | Data types from the Data API registry feeding this adapter (`documents`, `sessions`, `feedback`, …) |
+| `params` | object | No | Strategy-specific job defaults (epochs, learning_rate, …) |
+
+A learning job that targets an adapter inherits its `strategy` and `data_scopes` unless the request overrides them explicitly. See [Learning API](/saip/reference/api-training/).
+
+## Composition Spec (`composite:`)
+
+Composites merge component deltas offline into one artifact so vLLM can serve them as a single adapter (its per-request constraint):
+
+```
+ΔW_composite = gain × Σ( wᵢ · ΔW_componentᵢ )
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `gain` | number | No | 1.0 | Overall λ on the merged delta — an evaluated hyperparameter, not an arbitrary dial |
+| `merge` | enum | No | `weighted_linear` | Merge algorithm: `weighted_linear`, `ties`, `dare` |
+| `components` | array | Yes (≥2) | — | Weighted component references |
+
+Each component:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `adapter` | string | Yes | Component name (cycle-free reference) |
+| `weight` | number | Yes (≥0) | Per-component composition weight wᵢ |
+| `version` | string | No | Version pin (e.g. `@000012`); default `@latest` resolved at compile time |
+
+### Two independent knobs
+
+- **Composition weight (wᵢ)** — how much each component contributes *inside* the composite.
+- **Gain (λ)** — how strongly the whole composite perturbs the base model *after* merging.
+
+They are different parameters with different failure modes; see [Adapter Composition](/saip/explanation/adapter-composition/).
+
+## Independent Cadences
+
+Components version separately in R2. A fast-moving `coding` adapter may promote daily while `treeseed-project` changes weekly; the composite re-references whichever versions are current at compile time (or pinned ones). This is the point of composites: **a user adapter can depend on adapters that train at different speeds** without any of them knowing about the others.
+
+## Compile Semantics
+
+- Composites are **not trainable**. Training jobs target leaves; composites are derived artifacts. Requesting a job against a composite returns `422`.
+- Compilation runs in the **inference gateway** (adapter-compiler responsibility): training produces components, inference compiles and serves them.
+- The compiled artifact is stored in R2 like any adapter version, with a `composition` provenance record (component ids, resolved versions, weights, gain, merge algorithm).
+- A component promotion (or weight/gain edit) marks dependent composites **stale**; they recompile before serving the next version alias.
+- All components must share the same `base` model; mismatch fails compilation.
+- Reference cycles (direct or transitive) are invalid and rejected by the registry validator.
+
+## End-to-End Example
+
+```yaml
+adapters:
+  - name: coding
+    scope: global
+    training:
+      strategy: knowledge_embedding
+      data_scopes: [documents]
+
+  - name: treeseed-project
+    scope: project
+    project: treeseed
+    training:
+      strategy: corrective_sft
+      data_scopes: [sessions, feedback]
+
+  - name: northstar-architect
+    scope: user
+    user: adrian
+    trainable: false
+    composite:
+      gain: 1.25
+      components:
+        - { adapter: coding, weight: 0.7 }
+        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: research, weight: 0.45, version: "@000012" }
+
+users:
+  - id: adrian
+    adapters:
+      inference: "northstar-architect@latest"
+      training: "treeseed-project"
+```
+
+Adrian's requests resolve transparently to the compiled `northstar-architect` artifact. His project experience flows into `treeseed-project` sessions/feedback; documents feed `coding`; each moves at its own pace; every composite promotion records exactly which component versions produced it.
+
+## Related
+
+- [Configure Adapters guide](/saip/guides/configure-adapters/) — authoring walkthrough
+- [Adapter Manifest](/saip/reference/adapter-manifest/) — R2 metadata format incl. composition records
+- [Adapter Composition](/saip/explanation/adapter-composition/) — the math and design rationale
+- [Configuration Reference](/saip/reference/configuration/) — full saip.yaml schema

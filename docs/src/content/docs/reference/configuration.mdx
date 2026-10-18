@@ -88,21 +88,60 @@ storage:
     token_env: "SAIP_HF_TOKEN"
 ```
 
+## adapters
+
+Array of first-class adapter definitions — the **adapter registry**. Entries are independent of users and scoped (`global` / `domain` / `project` / `user`). Each entry is a leaf (declares `training:` linkage) or a composite (declares `composite:` weights). Full contract: [Adapter Definitions](/saip/reference/adapter-definitions/).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Unique adapter name (required) |
+| `scope` | enum | `global`, `domain`, `project`, `user` (required) |
+| `project` / `user` | `string` | Owner annotation; `project` required when scope=`project` |
+| `description` | `string` | Human-readable purpose |
+| `trainable` | `boolean` | Default `true`; `false` for derived composites |
+| `base` | `string` | Target base model; components must match at compile |
+| `training.strategy` | `string` | Registered training strategy plugin (leaf, required) |
+| `training.data_scopes` | `string[]` | Data types feeding training (leaf, required) |
+| `training.params` | `object` | Strategy-specific job defaults |
+| `composite.gain` | `number` | Overall λ on merged delta (default 1.0) |
+| `composite.merge` | enum | `weighted_linear` (default), `ties`, `dare` |
+| `composite.components[].adapter` | `string` | Component name (cycle-free) |
+| `composite.components[].weight` | `number` | Per-component weight wᵢ |
+| `composite.components[].version` | `string` | Optional pin (e.g. `@000012`); default `@latest` |
+
+```yaml
+adapters:
+  - name: coding
+    scope: global
+    training:
+      strategy: knowledge_embedding
+      data_scopes: [documents]
+
+  - name: northstar-architect
+    scope: user
+    trainable: false
+    composite:
+      gain: 1.25
+      components:
+        - { adapter: coding, weight: 0.7 }
+        - { adapter: treeseed-project, weight: 1.0 }
+```
+
 ## users
 
-Array of user-to-adapter mappings. Each entry binds a user ID to specific adapters for inference and training.
+Array of user-to-adapter mappings. Each entry binds a user ID to specific adapters for inference and training. Names resolve through the adapter registry — `inference` may reference a composite.
 
 | Field                | Type     | Description                                                     |
 |----------------------|----------|-----------------------------------------------------------------|
 | `id`                 | `string` | User identifier.                                                |
-| `adapters.inference` | `string` | Adapter alias or ID used for inference (e.g. `general@latest`). |
-| `adapters.training`  | `string` | Adapter ID used as the training target.                         |
+| `adapters.inference` | `string` | Adapter alias or ID used for inference (e.g. `northstar-architect@latest`). May be a composite. |
+| `adapters.training`  | `string` | Leaf adapter that receives this user's training jobs.           |
 
 ```yaml
 users:
   - id: "default"
     adapters:
-      inference: "general@latest"
+      inference: "default-agent@latest"
       training: "general"
 ```
 

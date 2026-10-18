@@ -63,6 +63,21 @@ implements: "read processed data from R2 → produce Axolotl dataset." Adding a 
 requires only one new plugin — zero changes to existing code. Document processing is handled
 entirely by the inference gateway.
 
+### Adapter Registry Linkage
+
+Every leaf adapter in the `saip.yaml` registry declares its training linkage — `strategy` plus
+`data_scopes` (see [Adapter Definitions](https://adrianwebb.github.io/saip/reference/adapter-definitions/)).
+A learning job targeting an adapter inherits that linkage, so the path from user experience to
+updated weights is explicit and auditable:
+
+```
+user → users[].adapters.training → adapter definition → training.strategy + data_scopes
+         → matching strategy plugin → Axolotl dataset → trained adapter version → R2
+```
+
+Composite adapters are **not trainable** — they are compiled by the inference gateway from their
+components' promoted versions. Training always targets leaves.
+
 **Gateway plugins** orchestrate training:
 
 | Plugin | Responsibility |

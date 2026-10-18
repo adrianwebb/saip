@@ -2,6 +2,62 @@
  * SAIP shared type definitions
  */
 
+/** Adapter scope — visibility/ownership boundary controlling reuse rules */
+export type AdapterScope = 'global' | 'domain' | 'project' | 'user'
+
+/** Training linkage declared by a leaf adapter in the registry */
+export interface TrainingLinkage {
+  /** Registered training strategy plugin name (e.g. 'knowledge_embedding') */
+  strategy: string
+  /** Data types from the Data API registry that feed this adapter's training */
+  data_scopes: string[]
+  /** Strategy-specific defaults for jobs targeting this adapter */
+  params?: Record<string, unknown>
+}
+
+/** One weighted component inside a composite adapter specification */
+export interface CompositeComponent {
+  /** Component adapter name (composites may not reference themselves; no cycles) */
+  adapter: string
+  /** Per-component composition weight wᵢ */
+  weight: number
+  /** Optional version pin (e.g. '@000012'); default '@latest' resolved at compile time */
+  version?: string
+}
+
+/** Composition spec for derived adapters merged into a single vLLM artifact */
+export interface CompositeSpec {
+  /** Overall λ applied to the merged delta; evaluated hyperparameter */
+  gain: number
+  /** PEFT merge algorithm */
+  merge: 'weighted_linear' | 'ties' | 'dare'
+  components: CompositeComponent[]
+}
+
+/** Adapter definition entry in the saip.yaml registry */
+export interface AdapterDefinition {
+  name: string
+  scope: AdapterScope
+  project?: string
+  user?: string
+  description?: string
+  /** False for purely-derived (composite) adapters without their own training runs */
+  trainable: boolean
+  /** Base model this adapter targets; must match all components when compiling */
+  base?: string
+  /** Present on leaf adapters: how this adapter learns */
+  training?: TrainingLinkage
+  /** Present on composite adapters: what it is built from */
+  composite?: CompositeSpec
+}
+
+/** Composition provenance recorded in a compiled adapter's manifest */
+export interface CompositionRecord {
+  gain: number
+  merge: string
+  components: Array<{ id: string; version: number; weight: number }>
+}
+
 /** Adapter manifest stored in R2 at adapters/<id>/manifest.json */
 export interface AdapterManifest {
   id: string
@@ -13,6 +69,11 @@ export interface AdapterManifest {
   parent?: string
   training_run?: string
   training_method?: 'knowledge_embedding' | 'corrective_sft' | 'weighted_kto'
+  /** Registry linkage that produced this version (leaf adapters) */
+  strategy?: string
+  data_scopes?: string[]
+  /** Present when this artifact was compiled from components (composite adapters) */
+  composition?: CompositionRecord
   metrics?: Record<string, number>
   created_at: string
   updated_at: string

@@ -9,6 +9,26 @@ description: Key terms and concepts used throughout the SAIP documentation
 
 A small set of learned modifications layered on top of a frozen base model. Think of it like a transparent overlay that changes how the model behaves for specific tasks without replacing the original model. Adapters are tiny (typically 1-5% of the base model size) and can be swapped in and out per request.
 
+### Adapter registry
+
+The top-level `adapters:` list in `saip.yaml` where adapters are defined once as first-class entries — independent of users — each with a scope, and either a training linkage (leaf) or a component recipe (composite). Users and other adapters reference registry names instead of redefining them.
+
+### Composite adapter
+
+A derived adapter compiled by merging several leaf adapters: each contributes a weighted delta (composition weight wᵢ), the merged result is scaled by an overall gain (λ), and the output is a single artifact vLLM can serve per-request. Composites are never trained directly; their components are.
+
+### Adapter scope
+
+An adapter's visibility/ownership boundary: `global` (shared capability anyone can use), `domain` (knowledge area), `project` (tied to one project), or `user` (owned by one identity). Scoping lets adapters be reused at the right level instead of duplicated per user.
+
+### Composition weight vs gain
+
+Two different dials on a composite adapter. **Composition weight** decides how much each component contributes inside the merge. **Gain (λ)** decides how strongly the whole merged adapter perturbs the base model. Tuning one does not tune the other.
+
+### Compile trigger
+
+The event that marks a composite stale and schedules recompilation: a component adapter promoting a new version, or an edit to the composition spec (weights, gain, components). The inference gateway owns compilation; the training gateway only produces components.
+
 ### Base model
 
 The foundational AI model (e.g., Qwen3.5-4B) that has been pretrained on vast amounts of text. It knows language and general knowledge but hasn't been specialized for any particular task. SAIP keeps the base model frozen and layers adapters on top.

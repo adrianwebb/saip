@@ -198,7 +198,7 @@ Validation happens at load time and reload time. Invalid config prevents the plu
 
 ## How SAIP Uses Cordis Differently
 
-The inference and training gateways use Cordis with different priorities:
+**All four Node.js packages in the monorepo are Cordis applications or Cordis service providers.** "Everything is a plugin" is a platform-wide rule, not a gateway-only convention. Each package composes with different priorities:
 
 ### Inference Gateway
 
@@ -207,18 +207,26 @@ The inference and training gateways use Cordis with different priorities:
 - **Event-driven session tracking**: session collector listens to API events, not direct calls
 - **Graceful degradation**: if the adapter registry fails, the API server continues serving requests with a fallback adapter rather than crashing
 
-Plugins: `vllmManager`, `adapterRegistry`, `userResolver`, `sessionCollector`, `api`
+Plugins: `vllmManager`, `adapterRegistry`, `adapterCompiler`, `userResolver`, `sessionCollector`, `dataApi`, `api`
 
 ### Training Gateway
 
-- **Batch-oriented services**: Axolotl runner starts, trains, and exits; dataset builder runs on demand
-- **Config-driven**: training jobs are configured via YAML, validated through StandardSchema
-- **Sequential lifecycle**: dataset building → config generation → training execution → artifact upload
+- **Batch-oriented services**: Axolotl runner starts, trains, and exits; strategy plugins convert R2 data into datasets on demand
+- **Config-driven**: jobs inherit strategy + data scopes from the [adapter registry](/saip/reference/adapter-definitions/), validated through StandardSchema
+- **Sequential lifecycle**: data pull → strategy conversion → training execution → artifact upload
 - **Error recovery**: failed training runs dispose cleanly, leaving partial artifacts for inspection
 
-Plugins: `axolotlRunner`, `knowledgeStore`, `feedbackStore`, `datasetBuilder`, `api`
+Plugins: `axolotlRunner`, `trainingStrategyRegistry`, `learningApi`, `r2Sync`
 
-The shared pattern: both gateways compose focused plugins that communicate through events and services, validate config at load time, and manage resources through disposables. The difference is temporal: inference plugins are long-lived and hot-reloadable; training plugins are batch-oriented and restart between jobs.
+### CLI (`saip`)
+
+Every command is a plugin that registers itself with the CLI's Cordis context — `awake`, `sleep`, `down`, `status` today; future commands (like `saip adapter compile` or `saip pack`) arrive as new plugins without touching the dispatcher. Commands share one composition model with the gateways: config loading, environment/secrets resolution, and Docker orchestration helpers are injected services, not per-command boilerplate.
+
+### Shared Package
+
+`@saip/shared` provides cross-cutting **Cordis services** rather than just type definitions: an R2 client service, a HuggingFace client service, an adapter-manifest resolver, and config-schema validation. All three applications above inject these same implementations, so CLI status output, inference resolution, and training sync can never disagree about what an adapter alias means — they consult the same service instance semantics.
+
+The shared pattern across all four: focused plugins/services that communicate through events and dependency injection, validate config at load time, and manage resources through disposables. The difference is temporal — inference plugins are long-lived and hot-reloadable; training plugins are batch-oriented; CLI plugins are short-lived request/response; shared services are stateless providers consumed by the others.
 
 ## Writing a Custom SAIP Plugin
 

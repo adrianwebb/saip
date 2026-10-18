@@ -205,3 +205,31 @@ The process works as follows:
 This approach treats adapter composition as an **optimization problem** rather than a manual tuning exercise. Over successive generations, the competition process converges toward compositions that reflect actual usage patterns and organizational priorities rather than initial guesses. The versioning system ensures every candidate is reproducible and every competition result is auditable.
 
 Competition is particularly valuable when combined with GRPO replay: GRPO-generated adapters can compete against KTO-trained adapters for the same specialization slot, letting empirical performance rather than methodological preference determine which training pathway contributes to the production agent.
+
+## From Concept to Configuration
+
+The math above is not hypothetical — it is the schema. The `adapters:` registry in `saip.yaml` makes every element of this model declarative:
+
+```yaml
+adapters:
+  - name: northstar-architect
+    scope: user
+    trainable: false
+    composite:
+      gain: 1.25                 # the λ on the merged delta
+      merge: weighted_linear     # Σ wᵢ·ΔWᵢ combination strategy
+      components:
+        - { adapter: coding, weight: 0.7 }            # w₁
+        - { adapter: treeseed-project, weight: 1.0 }  # w₂
+        - { adapter: research, weight: 0.45, version: "@000012" }  # pinned w₃
+```
+
+Three design consequences worth internalizing:
+
+**Components live independent lives.** Each leaf adapter has its own training linkage (`strategy` + `data_scopes`) and its own version lineage in R2. A composite just references names; at compile time each reference resolves to a concrete version (or a pin). This is what lets one user adapter depend on capabilities that train at different speeds — daily-updated global skills alongside weekly project conventions — without any coordination between them.
+
+**Division of service responsibility.** Training produces *components*: the training gateway runs jobs against leaves only. Inference *compiles and serves*: the inference gateway's adapter-compiler merges weighted deltas into a single artifact (PEFT-style `add_weighted_adapter`), publishes it to R2 with full composition provenance, and vLLM serves it as one file — honoring its one-adapter-per-request constraint while the composition remains logically multi-part.
+
+**Weights are hypotheses; gain is measurement.** Composition weights express intent ("coding should contribute less than project knowledge"), but both weights and gain are validated by evaluation, not assumed. The competition/breeding process above searches this space; the compiled manifest records exactly which recipe produced which artifact, so results are reproducible and auditable.
+
+The field-level contract — scopes, validation rules, cycle prevention, staleness triggers — is specified in [Adapter Definitions](/saip/reference/adapter-definitions/).

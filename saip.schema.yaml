@@ -91,10 +91,94 @@ properties:
           properties:
             inference:
               type: string
-              description: Adapter alias for inference (e.g., general@latest)
+              description: Adapter alias for inference (e.g., northstar-architect@latest). May reference any adapter in the registry, including composites.
             training:
               type: string
-              description: Adapter name for training output
+              description: Adapter name for training output (leaf adapters only; composites are derived, not trained directly)
+
+  # ─── Adapter Registry ──────────────────────────────────────
+  # Adapters are first-class definitions independent of users. Each is either
+  # a trainable leaf (with strategy + data-scope linkage) or a composite built
+  # from weighted components that version on independent cadences.
+  adapters:
+    type: array
+    items:
+      type: object
+      required: [name, scope]
+      oneOf:
+        - required: [training]     # leaf adapters declare a training linkage
+        - required: [composite]    # composites declare component weights
+      properties:
+        name:
+          type: string
+          description: Unique adapter name; referenced by users and composites
+        scope:
+          type: string
+          enum: [global, domain, project, user]
+          description: Visibility/ownership boundary for reuse rules
+        project:
+          type: string
+          description: Required when scope is 'project'
+        user:
+          type: string
+          description: Optional owner annotation when scope is 'user'
+        description:
+          type: string
+        trainable:
+          type: boolean
+          default: true
+          description: False for purely-derived adapters without their own training runs
+        base:
+          type: string
+          description: Base model this adapter targets (must match all components when compiling)
+        training:
+          type: object
+          description: Training linkage — how this adapter learns (leaf adapters)
+          required: [strategy, data_scopes]
+          properties:
+            strategy:
+              type: string
+              description: Registered training strategy plugin name (knowledge_embedding, corrective_sft, weighted_kto, …)
+            data_scopes:
+              type: array
+              items:
+                type: string
+              description: Data types (from the Data API registry) that feed this adapter's training (documents, sessions, feedback, …)
+            params:
+              type: object
+              description: Strategy-specific defaults for jobs targeting this adapter
+              additionalProperties: true
+        composite:
+          type: object
+          description: Composition spec — merged offline into a single vLLM artifact
+          required: [components]
+          properties:
+            gain:
+              type: number
+              default: 1.0
+              description: Overall λ applied to the merged delta (evaluated hyperparameter, not arbitrary)
+            merge:
+              type: string
+              enum: [weighted_linear, ties, dare]
+              default: weighted_linear
+              description: PEFT merge algorithm for combining component deltas
+            components:
+              type: array
+              minItems: 2
+              items:
+                type: object
+                required: [adapter, weight]
+                properties:
+                  adapter:
+                    type: string
+                    description: Component adapter name (no cycles allowed)
+                  weight:
+                    type: number
+                    minimum: 0
+                    description: Per-component composition weight wᵢ
+                  version:
+                    type: string
+                    description: Optional version pin (e.g. '@000012'); default @latest resolved at compile time
 
   inference:
     type: object

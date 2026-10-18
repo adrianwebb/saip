@@ -3,6 +3,15 @@
 A command-line interface for managing SAIP platform services. Controls Docker Compose
 lifecycles, mode switching, and status reporting.
 
+## Architecture
+
+The CLI is a **Cordis application**: each command (`awake`, `sleep`, `down`, `status`) is a
+plugin that registers itself with the CLI context, and cross-cutting concerns — config loading,
+secrets resolution, Docker orchestration helpers — are injected services from `@saip/shared`.
+New commands arrive as new plugins without modifying the dispatcher, and the CLI's view of
+adapter resolution uses the exact same shared service the inference gateway uses. See
+[Cordis Plugin Model](https://adrianwebb.github.io/saip/explanation/cordis-plugin-model/).
+
 ## Commands
 
 ### `saip awake`
