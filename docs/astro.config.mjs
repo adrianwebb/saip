@@ -32,6 +32,7 @@ export default defineConfig({
           items: [
             { label: 'Deploy Locally', slug: 'guides/deploy-local' },
             { label: 'Deploy to Hyperstack', slug: 'guides/deploy-hyperstack' },
+            { label: 'Deploy to Hyperstack (Cloud)', slug: 'guides/deploy-hyperstack-cloud' },
             { label: 'Configure Adapters', slug: 'guides/configure-adapters' },
             { label: 'Submit Knowledge', slug: 'guides/submit-knowledge' },
             { label: 'Submit Feedback', slug: 'guides/submit-feedback' },
@@ -49,6 +50,7 @@ export default defineConfig({
             { label: 'Learning API', slug: 'reference/api-training' },
             { label: 'Adapter Definitions', slug: 'reference/adapter-definitions' },
             { label: 'Adapter Manifest', slug: 'reference/adapter-manifest' },
+            { label: 'Hosts Configuration', slug: 'reference/hosts-config' },
             { label: 'Security Model', slug: 'reference/security-model' },
             { label: 'Cordis Plugins', slug: 'reference/cordis-plugins' },
             { label: 'Glossary', slug: 'reference/glossary' },
@@ -61,6 +63,7 @@ export default defineConfig({
             { label: 'The Learning Loop', slug: 'explanation/learning-loop' },
             { label: 'Training Methods', slug: 'explanation/training-methods' },
             { label: 'Adapter Composition', slug: 'explanation/adapter-composition' },
+            { label: 'Hosting Model', slug: 'explanation/hosting' },
             { label: 'Cordis Plugin Model', slug: 'explanation/cordis-plugin-model' },
           ],
         },

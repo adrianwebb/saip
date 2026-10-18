@@ -1,0 +1,11 @@
+# OpenTofu / Terraform working files — never commit state or provider plugins.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*override.tf
+terraform.tfvars
+terraform.rc

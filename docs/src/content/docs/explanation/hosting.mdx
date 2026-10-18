@@ -1,0 +1,52 @@
+---
+title: Hosting Model
+description: How SAIP deploys across local and cloud hosts, and why security/monitoring are pluggable seams
+---
+
+SAIP runs as containerized services on one or more hosts. The hosting design is a set of **pluggable seams** so that adding a host kind, an auth mechanism, or a metrics backend never means editing feature code — the same "everything is a plugin" principle the gateways use internally, applied outward to deployment.
+
+## Local is always the baseline
+
+Every SAIP install has at least one `local` host — the machine you develop on (a single consumer GPU). Cloud targets are *additional* named hosts, not replacements. This matters because the training loop needs somewhere to run even with no cloud account, and because testing against a real local stack keeps the abstractions honest.
+
+## Hosts are data, providers do the work
+
+A committed `hosts.yaml` describes each host declaratively (name, kind, role, how to reach it). A **DeploymentProvider** implements the verbs (`up`, `down`, `status`, optional `deploy`) for a given `kind`:
+
+| Kind | Provider | Status |
+|------|----------|--------|
+| `local` | drives Docker Compose directly | implemented |
+| `hyperstack` | SSH + compose for runtime; OpenTofu for provisioning | implemented, **gated** (see below) |
+
+The CLI resolves `--host <name>` through the shared `HostRegistryService` (identical validation everywhere), then dispatches to the provider chosen by the host's `kind`. An unknown host fails closed listing known ones; an unregistered kind errors rather than guessing credentials.
+
+## Two ways to target a host (one spine)
+
+Both entry points reuse the same providers:
+
+- **Target mode** — `saip awake|sleep|down|status --host <name>` operates an existing host.
+- **Deploy mode** — `saip deploy --target <name> -p key=value` provisions/copies a parameterized stack onto a host whose provider implements `deploy()`. Planning is pure and safe; applying is opt-in.
+
+They share resolution, provider selection, and secret handling, so there is no second implementation to drift.
+
+## Infrastructure as Code, deliberately gated
+
+Cloud provisioning uses **OpenTofu** (Terraform-compatible HCL) under `infra/tofu/hyperstack/`, defining the two-GPU environment (inference VM + training VM, security groups, floating IPs). Because the Hyperstack Terraform provider is alpha and `apply` creates billable resources, the hyperstack provider refuses to run `tofu apply` unless `SAIP_ALLOW_INFRA=true`. Default is plan-only. IaC owns provisioning; SAIP owns what runs on top.
+
+## Security seam
+
+Every HTTP API / MCP surface authenticates through an **AuthProvider**; web UIs through a password guard. The default is **fail-closed**: without a valid bearer token (and outside explicit dev-mode) protected routes return 401 — there is no silent fallback to an anonymous user. Token values live only in secrets resolved at runtime; committed config names them. See [Security Model](/saip/reference/security-model/).
+
+## Monitoring seam
+
+Gateways emit counters/gauges/histograms through a **MonitoringProvider** wrapped by a `MetricsService` that swallows all sink errors. Observation is decoupled from operation: a broken or absent metrics backend can never take down serving or training. Noop is the default; a Prometheus exporter plugs in behind the same interface.
+
+## Secrets rule
+
+Across every seam, committed files reference secrets by **name**. Values come from the shell environment or CI secret store via a `SecretsProvider` (env-backed today, Vault/cloud later). This is why `hosts.yaml`, `saip.yaml`, and tfvars examples contain no real tokens.
+
+## Related
+
+- [Configure Adapters](/saip/guides/configure-adapters/) and [Adapter Definitions](/saip/reference/adapter-definitions/) — the adapter side of the same plugin philosophy
+- [Hosts Configuration reference](/saip/reference/hosts-config/) — field-by-field schema
+- [Deploy to Hyperstack (cloud)](/saip/guides/deploy-hyperstack-cloud/) — end-to-end walkthrough

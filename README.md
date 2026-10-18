@@ -87,15 +87,19 @@ or on separate GPU nodes connected through R2.
 
 ```
 saip/
-├── saip.yaml              # Shared platform configuration
+├── saip.yaml              # Shared platform configuration (model, adapters, users, security)
 ├── saip.schema.yaml       # JSON Schema for config validation
-├── .env.example           # Secret variable template
-├── cli/                   # saip CLI tool (Cordis app: commands as plugins)
-├── inference/             # Inference Gateway (vLLM + Hono + Cordis)
-├── training/              # Training Gateway (Axolotl + Hono + Cordis)
-├── shared/                # Shared Cordis services (config, R2 client, adapter registry, types)
+├── hosts.yaml             # Host registry (local + cloud targets); template: hosts.example.yaml
+├── .env.example           # Secret variable template (prefer shell env)
+├── cli/                   # saip CLI tool (Cordis app: commands as plugins; --host targeting, deploy)
+├── inference/             # Inference Gateway (vLLM + Hono + Cordis; Data API + bearer auth)
+├── training/              # Training Gateway (Axolotl + Hono + Cordis; Learning API + bearer auth)
+├── shared/                # Shared Cordis services (config, hosting, auth, monitoring, adapter registry, types)
+├── infra/tofu/hyperstack/ # OpenTofu module for the 2-GPU cloud environment (gated provisioning)
 └── examples/cordis/       # Cordis framework reference
 ```
+
+Hosting, security, and monitoring are **pluggable seams** (`DeploymentProvider`, `AuthProvider`, `MonitoringProvider`) so adding a host kind, an auth mechanism, or a metrics backend never means editing feature code. Local is always the baseline host; cloud targets are additional named entries in `hosts.yaml`. See the [Hosting Model](https://adrianwebb.github.io/saip/explanation/hosting/) docs.
 
 Each subproject has its own `package.json`, `tsconfig.json`, `CHANGELOG.md`, and `README.md`.
 
