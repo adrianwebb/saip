@@ -13,9 +13,15 @@ Knowledge embedding teaches the model **domain familiarity**: vocabulary, factua
 
 Think of it as reading textbooks before attending lab. The model will not learn how to conduct experiments from textbooks alone, but without textbook knowledge, lab instruction is incomprehensible.
 
+### Document Processing Pipeline
+
+Knowledge embedding — like all SAIP training strategies — consumes documents through the **document processing pipeline**. When a document is uploaded via the Data API (`/v1/data/documents`), the document type router identifies its format and dispatches it to the appropriate document processor plugin. The processor converts the document into an intermediate format that preserves its full structure. The knowledge embedding training strategy plugin then converts that intermediate format into a **completion-format dataset** (raw text sequences) suitable for Axolotl's continued pretraining mode.
+
+This same pipeline feeds all training strategies. The system maintains **two independent plugin registries**: data type plugins (one per document format) and training strategy plugins (one per learning method). Both are Cordis plugins that register themselves at startup and communicate through an interface contract — neither knows about the other's internals. Adding a new document format or a new training method requires only one new plugin with zero changes to existing code. No chunking, embeddings, or vector databases are involved at any stage — documents are transformed, not split or indexed.
+
 ### Input Format
 
-Knowledge embedding uses **raw text completion datasets**. The model sees contiguous text and learns to predict the next token:
+Knowledge embedding uses **raw text completion datasets** produced by the document processing pipeline. The model sees contiguous text and learns to predict the next token:
 
 ```
 The Kubernetes API server exposes a RESTful interface on port 6443.

@@ -1,9 +1,9 @@
 ---
 title: Submit Knowledge
-description: Add documents, code, and datasets to the training pipeline
+description: Upload documents, code, and datasets through the Data API for training
 ---
 
-Knowledge submissions feed SAIP's continued pretraining and fine-tuning pipelines. This guide covers supported formats, the submission API, metadata conventions, and how documents flow through the training pipeline.
+Documents submitted through the Data API feed SAIP's training strategies. This guide covers supported formats, the submission endpoint, and how documents flow through the processing pipeline.
 
 ## Supported Formats
 
@@ -31,12 +31,12 @@ JSONL files contain one document per line:
 
 Each line must be a valid JSON object with at least a `text` field. Additional fields are stored as metadata.
 
-## API Endpoint
+## Data API Endpoint
 
-### Submit Documents
+### Upload Documents
 
 ```
-POST /v1/knowledge
+POST /v1/data/documents
 Content-Type: application/json
 ```
 
@@ -45,7 +45,7 @@ The training gateway listens on port **8001** (not the inference port 8000).
 #### Single Document
 
 ```bash
-curl -X POST http://localhost:8001/v1/knowledge \
+curl -X POST http://localhost:8001/v1/data/documents \
   -H "Content-Type: application/json" \
   -d '{
     "source": "internal/wiki/architecture.md",
@@ -59,7 +59,7 @@ curl -X POST http://localhost:8001/v1/knowledge \
 #### Dataset Submission
 
 ```bash
-curl -X POST http://localhost:8001/v1/knowledge \
+curl -X POST http://localhost:8001/v1/data/documents \
   -H "Content-Type: application/json" \
   -d '{
     "source": "external/arxiv/papers.jsonl",
@@ -74,26 +74,35 @@ curl -X POST http://localhost:8001/v1/knowledge \
 
 ```json
 {
-  "id": "kn-20250115-001",
+  "id": "doc-20250115-001",
   "source": "internal/wiki/architecture.md",
   "source_type": "document",
   "hash": "sha256:a1b2c3...",
   "size_bytes": 4096,
+  "processed_by": "markdown-processor",
   "created_at": "2025-01-15T10:30:00Z"
 }
 ```
 
-### List Submissions
+### List Documents
 
 ```
-GET /v1/knowledge?limit=20&offset=0
+GET /v1/data/documents?limit=20&offset=0
 ```
 
-Returns paginated results with metadata for each submission. Query the training gateway on port **8001**:
+Returns paginated results with metadata for each submission:
 
 ```bash
-curl "http://localhost:8001/v1/knowledge?tag=onboarding&limit=10"
+curl "http://localhost:8001/v1/data/documents?tag=onboarding&limit=10"
 ```
+
+### Delete a Document
+
+```bash
+curl -X DELETE http://localhost:8001/v1/data/documents/doc-20250115-001
+```
+
+This removes the document and its processed outputs from R2. Already-completed training runs retain their data but won't include this document in future jobs.
 
 ## Request Fields
 
@@ -112,59 +121,43 @@ Use consistent source identifiers to enable filtering and deduplication downstre
 - External datasets: `external/<provider>/<dataset-name>`
 :::
 
-## How Knowledge Flows Into Training
+## Document Processing Pipeline
+
+When you upload a document, it flows through a pluggable processing pipeline:
 
 ```
-Upload → Validation → Dedup → Chunking → R2 Storage → Training Queue
+Upload → Validation → Dedup → Document Type Router → Document Processor Plugin → Processed Output
+                                                                              ↓
+                                                              Training Strategy Plugins
+                                                              (convert to strategy-specific format)
 ```
 
-### Step-by-Step Pipeline
+### Step-by-Step
 
 1. **Validation** — File format, encoding, and size are checked. Invalid files are rejected immediately with a descriptive error.
 
-2. **Deduplication by hash** — Each document is SHA-256 hashed. If an identical hash already exists in the bucket, the submission is marked as `duplicate` and skipped. This prevents reprocessing the same content across multiple uploads.
+2. **Deduplication by hash** — Each document is SHA-256 hashed. If an identical hash already exists, the submission is marked as `duplicate` and skipped.
 
-3. **Chunking** — Documents are split into training chunks using format-aware strategies:
-   - **Code:** Split at function/class boundaries when possible; fall back to line-based chunking with overlap.
-   - **Markdown:** Split at heading boundaries; preserve heading hierarchy in chunk metadata.
-   - **Plain text:** Sliding window with 10% overlap.
-   - **JSONL:** Each line is treated as an independent chunk.
+3. **Document Type Router** — Inspects the document's `source_type` and file extension to select the appropriate document processor plugin.
 
-4. **R2 Storage** — Chunks are written to the shared R2 bucket:
+4. **Document Processor Plugin** — Converts the raw document into an intermediate format. For example, a Markdown processor strips frontmatter and normalizes headings; a code processor preserves file structure and language metadata. Processors transform format — they do not split or chunk data.
 
-```
-<bucket>/knowledge/
-├── raw/
-│   └── kn_20240315_a1b2c3d4.md       # Original uploaded file
-├── chunks/
-│   └── kn_20240315_a1b2c3d4/
-│       ├── chunk_000.json              # {"text": "...", "metadata": {...}}
-│       ├── chunk_001.json
-│       └── ...
-└── manifest.jsonl                      # Global index of all chunks
-```
+5. **Training Strategy Plugins** — Each registered training strategy receives the processed output and converts it into its own required Axolotl dataset format:
+   - **Knowledge Embedding** → completion-format text sequences
+   - **Corrective SFT** → feedback-weighted message pairs
+   - **Weighted KTO** → scalar reward records
 
-5. **Training Queue** — New chunks are added to the training queue. The next training run picks them up automatically based on the batch selector (`--knowledge-batch latest` includes everything since the last trained checkpoint).
+6. **R2 Storage** — The original document and processed outputs are stored in the shared R2 bucket under `knowledge/`.
 
-:::note[Deduplication Scope]
-Deduplication operates at the **document level** (full-file hash), not the chunk level. Two different documents containing overlapping paragraphs will both be processed. Chunk-level deduplication is planned for a future release.
+:::note[No Vector Database]
+SAIP does not use vector databases, embeddings, or chunking for knowledge ingestion. Documents are transformed from one format to another by processor and strategy plugins. The training strategies consume the full processed output directly.
 :::
 
-## Managing Knowledge
-
-### Delete a Submission
-
-```bash
-curl -X DELETE http://localhost:8001/v1/knowledge/kn-20250115-001
-```
-
-This removes the raw file and all associated chunks from R2. Already-trained chunks remain in completed training runs but won't appear in future batches.
-
-### Resubmit Updated Content
+## Resubmitting Updated Content
 
 If a document has been revised:
 
-1. Delete the old submission.
+1. Delete the old submission via `DELETE /v1/data/documents/:id`.
 2. Upload the new version with the same `source` identifier.
 3. The new hash ensures it passes deduplication.
 
@@ -177,5 +170,5 @@ You are responsible for ensuring submitted knowledge complies with its stated li
 - **Batch related documents** in JSONL format rather than uploading hundreds of individual files.
 - **Tag consistently** — use a controlled vocabulary for tags to make filtering effective.
 - **Set licenses accurately** — incorrect license metadata creates legal risk.
-- **Monitor chunk counts** — unusually high or low chunk counts for a given file size may indicate formatting issues.
-- **Review before training** — use `GET /v1/knowledge` to audit recent submissions before kicking off a training run.
+- **Review before training** — use `GET /v1/data/documents` to audit recent submissions before triggering a learning job.
+- **Check available strategies** — use `GET /v1/learning/strategies` to see which training strategies can consume your document type.

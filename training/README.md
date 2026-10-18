@@ -6,65 +6,114 @@ gateway and knowledge/feedback submitted through its API. It is one of two core 
 
 ## Design
 
-### Three Training Methods
+### Document Processing Pipeline
 
-| Method | Input | What it teaches | Axolotl config |
-|--------|-------|----------------|----------------|
-| Knowledge embedding | Documents, code, datasets | Domain familiarity, world model | `type: completion`, continued pretraining |
-| Corrective SFT | Session histories + per-turn feedback | How to correct mistakes, avoid repeating them | Custom SFT with feedback-weighted loss |
-| Weighted KTO | Scalar rewards (-3 to +3) + confidence | Behavioral policy shaping | Custom KTO with magnitude weighting |
+SAIP uses a document processing pipeline with pluggable training strategies. Documents are
+uploaded via the Data API, routed by type, processed into an intermediate format, and then
+converted into strategy-specific Axolotl dataset formats by registered training strategy plugins.
 
-All three methods consume the same canonical experience records from R2 and produce QLoRA
-adapters that are uploaded back to R2 for the inference gateway to serve.
+```
+Document Upload → Document Type Router → Document Processor Plugin → Intermediate Format
+                                                                        ↓
+                                                        Training Strategy Plugins (providers)
+                                                        ├── Knowledge Embedding (completion datasets)
+                                                        ├── Corrective SFT (feedback-weighted messages)
+                                                        ├── Weighted KTO (scalar reward records)
+                                                        └── ...extensible
+                                                                        ↓
+                                                                 Axolotl Runner
+                                                                        ↓
+                                                                  QLoRA Adapter
+                                                                        ↓
+                                                         Upload to R2 + update index
+```
 
-### Cordis Plugin Architecture
+No vector databases, chunking, or embeddings are involved. Document processors convert uploaded
+documents into structured intermediate formats. Training strategy plugins then transform that
+intermediate format into their specific Axolotl dataset format. Neither splits data — they
+transform formats based on rules.
+
+### Two API Surfaces
+
+| API | Path Prefix | Responsibility |
+|-----|-------------|----------------|
+| **Data API** | `/v1/data/*` | Data submission endpoints registered by data type plugins |
+| **Learning API** | `/v1/learning/*` | Training strategy registration, learning job management, optimization |
+
+The Data API is not a fixed set of routes — **each data type plugin registers its own endpoint**
+under `/v1/data/<name>` with standard CRUD operations. SAIP ships with three built-in endpoints:
+
+- `/v1/data/documents` — file/document upload for continued pretraining
+- `/v1/data/sessions` — session history upload for corrective SFT
+- `/v1/data/feedback` — feedback/reward submission for weighted KTO
+
+A new data type plugin with complicated input, processing, or output simply registers its own
+endpoint path and processor function. No changes to the gateway core are needed.
+
+The Learning API manages which training strategies are available and orchestrates training jobs.
+These two surfaces are intentionally separated: data ingestion is decoupled from training execution.
+
+### Two Plugin Registries
+
+The training gateway maintains two independent plugin registries connected by an interface contract:
+
+**Data Type Plugins** — each handles one document format:
+
+| Plugin | Accepts | Produces |
+|--------|---------|----------|
+| `markdown-processor` | `.md`, `.mdx` files | Structured text with heading hierarchy |
+| `code-processor` | Source code files | Language-tagged code with file structure metadata |
+| `pdf-processor` | PDF documents | Extracted text with section boundaries |
+| `jsonl-processor` | JSONL datasets | Validated record sequences |
+| *(extensible)* | *(new formats)* | *(canonical intermediate format)* |
+
+**Training Strategy Plugins** — each implements one learning method:
+
+| Plugin | Consumes | Produces |
+|--------|----------|----------|
+| `knowledge-embedding` | Processed documents | Completion-format text sequences |
+| `corrective-sft` | Feedback-weighted messages | SFT dataset with per-turn weights |
+| `weighted-kto` | Scalar reward records | KTO dataset with magnitude weights |
+| *(extensible)* | *(declared types)* | *(strategy-specific Axolotl format)* |
+
+Both are **Cordis plugins that register themselves at startup**. A data type plugin implements
+the interface: "accept raw document → return intermediate format." A training strategy plugin
+implements: "accept intermediate format of declared types → produce Axolotl dataset." Neither
+knows about the other's internals. Adding a new document type or a new training method requires
+only one new plugin — zero changes to existing code.
+
+**Gateway plugins** orchestrate the flow between the two registries:
 
 | Plugin | Responsibility |
 |--------|---------------|
+| `document-type-router` | Inspect document format, dispatch to matching data type plugin |
+| `training-strategy-registry` | Track registered strategies, route processed output to matching consumers |
+| `data-api` | Hono HTTP server for document upload, processing, and feedback endpoints |
+| `learning-api` | Hono HTTP server for strategy listing and job management |
 | `axolotl-runner` | Queue and execute Axolotl training jobs, manage GPU allocation |
-| `knowledge-store` | Accept knowledge submissions, store in R2, maintain index |
-| `feedback-store` | Accept feedback linked to sessions, store in R2 |
-| `dataset-builder` | Transform experiences into Axolotl-compatible training datasets |
-| `api` | Hono HTTP server for knowledge/feedback/training management |
 
 Plugins communicate through Cordis events:
 
 ```
-knowledge/submitted     — new knowledge document stored
+document/uploaded       — new document received via Data API
+document/processed      — document processor completed conversion
 feedback/submitted      — new feedback record stored
-training/queued         — training job added to queue
-training/started        — Axolotl job running
-training/complete       — adapter produced, ready for evaluation
+learning/job-queued     — learning job added to queue
+learning/job-started    — Axolotl job running
+learning/job-complete   — adapter produced, ready for evaluation
 adapter/promoted        — adapter passed evaluation, uploaded to R2
 ```
 
-### Training Pipeline
+### Training Strategies
 
-```
-Knowledge submissions ──────────┐
-Session histories (from R2) ────┤
-Feedback records ───────────────┤
-                                ▼
-                     Dataset Builder plugin
-                                │
-                    ┌───────────┼───────────┐
-                    ▼           ▼           ▼
-              Completion    SFT w/      KTO w/
-              dataset      feedback     weights
-                    │           │           │
-                    └───────────┼───────────┘
-                                ▼
-                     Axolotl Runner plugin
-                                │
-                          QLoRA adapter
-                                │
-                                ▼
-                     Upload to R2 + update index
-                                │
-                                ▼
-                     Inference Gateway picks up
-                     new adapter on next sync
-```
+| Strategy | Input | What it teaches | Axolotl config |
+|----------|-------|----------------|----------------|
+| Knowledge embedding | Processed documents → completion datasets | Domain familiarity, world model | `type: completion`, continued pretraining |
+| Corrective SFT | Feedback-weighted messages | How to correct mistakes, avoid repeating them | Custom SFT with feedback-weighted loss |
+| Weighted KTO | Scalar reward records (-3 to +3) + confidence | Behavioral policy shaping | Custom KTO with magnitude weighting |
+
+All strategies consume processed documents and/or feedback from the Data API and produce QLoRA
+adapters that are uploaded back to R2 for the inference gateway to serve.
 
 ### Background Processing
 

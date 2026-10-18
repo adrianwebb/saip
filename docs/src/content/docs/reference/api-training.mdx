@@ -1,15 +1,78 @@
 ---
-title: Training API
-description: HTTP endpoints for knowledge submission, feedback, and training management
+title: Training Gateway API
+description: HTTP endpoints for data ingestion and learning management, organized as Data API and Learning API
 ---
 
 The training gateway listens on the port configured in `training.port` (default `8001`). All endpoints accept and return JSON.
 
 Base URL: `http://<host>:<training.port>`
 
-## POST /v1/knowledge
+The API is organized into two surfaces:
 
-Submit a knowledge document for ingestion and embedding.
+- **Data API** (`/v1/data/*`) — document upload, processing, storage, and retrieval
+- **Learning API** (`/v1/learning/*`) — training strategy registration, job management, feedback, and optimization
+
+## Architecture Overview
+
+The training gateway uses **two plugin registries** connected by a clean interface contract:
+
+```
+Data Type Plugins              Training Strategy Plugins
+─────────────────              ─────────────────────────
+markdown-processor        →    knowledge-embedding
+code-processor            →    corrective-sft
+pdf-processor             →    weighted-kto
+jsonl-processor           →    (future strategies...)
+(future types...)         →
+```
+
+### Data Type Plugins Register Their Own Endpoints
+
+Data type plugins don't just process data — **they also register their own API endpoints** under `/v1/data/<name>`. The gateway's `data-api` Cordis plugin provides the HTTP framework and common middleware (auth, validation, R2 storage), but the routes come from registered data type plugins.
+
+SAIP ships with three built-in data submission endpoints:
+
+| Endpoint | Purpose | Processor | Output Format |
+|----------|---------|-----------|---------------|
+| `/v1/data/documents` | File/document upload for continued pretraining | Document processors (markdown, code, PDF, JSONL) | Intermediate text sequences |
+| `/v1/data/sessions` | Session history upload for corrective SFT | Session processor | Intermediate conversation records |
+| `/v1/data/feedback` | Feedback/reward submission for weighted KTO | Feedback processor | Intermediate reward records |
+
+Each endpoint supports standard CRUD operations (list, get, create, update, delete) as appropriate for its data type.
+
+When you install a new data type plugin with complicated input, processing, or output requirements, it registers its own endpoint path, declares its processor function, and specifies which training strategies can consume its output. No changes to the gateway core are needed. For example, a future `evaluations` plugin might register `/v1/data/evaluations` with batch-only creation and a custom teacher-evaluation processor.
+
+### Training Strategy Plugins Declare Accepted Types
+
+Each **training strategy plugin** declares which intermediate output formats it can consume. When a learning job references a strategy, the registry routes matching processed data to it. Strategies produce Axolotl datasets in their required format.
+
+Neither plugin type knows about the other's internals — they communicate through the interface contract only. This means:
+- Adding a new data type = one new data type plugin with its own endpoint, zero changes to strategies
+- Adding a new training method = one new strategy plugin, zero changes to data processors
+- Multiple strategies can consume the same processed output simultaneously
+
+Both plugin types are Cordis plugins that register themselves at startup. The training gateway orchestrates the flow:
+
+```
+/v1/data/documents ──→ Document Processors ──→ Intermediate Text ──┐
+/v1/data/sessions  ──→ Session Processor   ──→ Intermediate Conv ─┼──→ Training Strategy Plugins
+/v1/data/feedback  ──→ Feedback Processor ──→ Intermediate Reward ┘    ├── knowledge-embedding
+/v1/data/<custom>  ──→ Custom Processor    ──→ Intermediate Custom     ├── corrective-sft
+                                                                        ├── weighted-kto
+                                                                        └── ...extensible
+```
+
+Neither plugin type splits or chunks data — they transform formats based on rules.
+
+---
+
+# Data API
+
+The Data API endpoints below are registered by the built-in data type plugins. Additional endpoints may be registered by installed plugins. Use `GET /v1/data` to discover all available data submission endpoints.
+
+## POST /v1/data/documents
+
+Submit a document for processing. The registered document processor plugins handle format-specific conversion.
 
 ### Request Headers
 
@@ -19,23 +82,24 @@ Submit a knowledge document for ingestion and embedding.
 
 ### Request Body
 
-| Field       | Type                              | Required | Description                                |
-|-------------|-----------------------------------|----------|--------------------------------------------|
-| `source`    | `string`                          | Yes      | Origin URI or description.                 |
+| Field         | Type                                | Required | Description                                |
+|---------------|-------------------------------------|----------|--------------------------------------------|
+| `source`      | `string`                            | Yes      | Origin URI or description.                 |
 | `source_type` | `'document' \| 'repository' \| 'dataset'` | Yes | Source classification.              |
-| `content`   | `string`                          | Yes      | Raw document content.                      |
-| `license`   | `string`                          | No       | SPDX license identifier.                   |
-| `tags`      | `string[]`                        | No       | Classification tags.                       |
+| `content`     | `string`                            | Yes      | Raw document content.                      |
+| `license`     | `string`                            | No       | SPDX license identifier.                   |
+| `tags`        | `string[]`                          | No       | Classification tags.                       |
 
 ### Response `201 Created`
 
 ```json
 {
-  "id": "kn-20250115-001",
-  "source": "https://example.com/doc.md",
+  "id": "doc-20250115-001",
+  "source": "internal-wiki/onboarding.md",
   "source_type": "document",
   "hash": "sha256:a1b2c3...",
   "size_bytes": 4096,
+  "processed_by": "markdown-processor",
   "created_at": "2025-01-15T10:30:00Z"
 }
 ```
@@ -43,7 +107,7 @@ Submit a knowledge document for ingestion and embedding.
 ### Example
 
 ```bash
-curl -X POST http://localhost:8001/v1/knowledge \
+curl -X POST http://localhost:8001/v1/data/documents \
   -H "Content-Type: application/json" \
   -d '{
     "source": "internal-wiki/onboarding.md",
@@ -53,9 +117,9 @@ curl -X POST http://localhost:8001/v1/knowledge \
   }'
 ```
 
-## GET /v1/knowledge
+## GET /v1/data/documents
 
-List all knowledge entries.
+List all ingested documents.
 
 ### Query Parameters
 
@@ -71,14 +135,14 @@ List all knowledge entries.
 {
   "entries": [
     {
-      "id": "kn-20250115-001",
+      "id": "doc-20250115-001",
       "source": "internal-wiki/onboarding.md",
       "source_type": "document",
       "hash": "sha256:a1b2c3...",
       "size_bytes": 4096,
+      "processed_by": "markdown-processor",
       "tags": ["onboarding", "hr"],
-      "created_at": "2025-01-15T10:30:00Z",
-      "updated_at": "2025-01-15T10:30:00Z"
+      "created_at": "2025-01-15T10:30:00Z"
     }
   ],
   "total": 1,
@@ -87,15 +151,144 @@ List all knowledge entries.
 }
 ```
 
+## DELETE /v1/data/documents/:id
+
+Remove a document and its processed outputs.
+
+### Response `204 No Content`
+
+---
+
+# Learning API
+
+## GET /v1/learning/strategies
+
+List registered training strategy plugins.
+
+### Response `200 OK`
+
+```json
+{
+  "strategies": [
+    {
+      "name": "knowledge_embedding",
+      "description": "Continued pretraining on completion-format datasets",
+      "accepted_source_types": ["document", "repository", "dataset"],
+      "configurable_params": ["epochs", "learning_rate", "sequence_len"]
+    },
+    {
+      "name": "corrective_sft",
+      "description": "Supervised fine-tuning with per-turn feedback weighting",
+      "accepted_source_types": ["session", "feedback"],
+      "configurable_params": ["epochs", "learning_rate", "turn_weighting"]
+    },
+    {
+      "name": "weighted_kto",
+      "description": "Preference learning with scalar reward magnitudes",
+      "accepted_source_types": ["feedback"],
+      "configurable_params": ["reward_range", "magnitude_weights"]
+    }
+  ]
+}
+```
+
+## POST /v1/learning/jobs
+
+Trigger a new training job using a registered training strategy.
+
+### Request Body
+
+| Field           | Type     | Required | Description                                          |
+|-----------------|----------|----------|------------------------------------------------------|
+| `strategy`      | `string` | Yes      | Name of a registered training strategy plugin.       |
+| `adapter_id`    | `string` | No       | Target adapter ID. Defaults to user's training adapter. |
+| `data_ids`      | `string[]` | No     | Document/feedback IDs to include as training input.  |
+| `params`        | `object` | No       | Strategy-specific parameter overrides.               |
+
+### Response `202 Accepted`
+
+```json
+{
+  "job_id": "train-20250115-001",
+  "strategy": "knowledge_embedding",
+  "status": "queued",
+  "created_at": "2025-01-15T12:00:00Z"
+}
+```
+
 ### Example
 
 ```bash
-curl "http://localhost:8001/v1/knowledge?tag=onboarding&limit=10"
+curl -X POST http://localhost:8001/v1/learning/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy": "knowledge_embedding",
+    "data_ids": ["doc-20250115-001"],
+    "params": {
+      "epochs": 3,
+      "learning_rate": 2e-5
+    }
+  }'
 ```
 
-## POST /v1/feedback
+## GET /v1/learning/jobs
 
-Submit a feedback record linked to a session. Used as reward signal for weighted KTO training.
+List training jobs.
+
+### Query Parameters
+
+| Parameter  | Type     | Description                                          |
+|------------|----------|------------------------------------------------------|
+| `status`   | `string` | Filter by status (`queued`, `running`, `completed`, `failed`). |
+| `strategy` | `string` | Filter by training strategy name.                    |
+| `limit`    | `number` | Maximum jobs to return. Default `20`.                |
+| `offset`   | `number` | Pagination offset. Default `0`.                      |
+
+### Response `200 OK`
+
+```json
+{
+  "jobs": [
+    {
+      "job_id": "train-20250115-001",
+      "strategy": "knowledge_embedding",
+      "status": "running",
+      "adapter_id": "general",
+      "progress": 0.45,
+      "created_at": "2025-01-15T12:00:00Z",
+      "started_at": "2025-01-15T12:01:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+## GET /v1/learning/status
+
+Check the current state of the training subsystem.
+
+### Response `200 OK`
+
+```json
+{
+  "gpu_available": true,
+  "active_job": null,
+  "queue_depth": 2,
+  "registered_strategies": ["knowledge_embedding", "corrective_sft", "weighted_kto"],
+  "last_completed": {
+    "job_id": "train-20250114-003",
+    "strategy": "weighted_kto",
+    "completed_at": "2025-01-14T23:45:00Z",
+    "duration_seconds": 1800
+  }
+}
+```
+
+## POST /v1/learning/feedback
+
+Submit a feedback record linked to a session. Used as reward signal for weighted KTO and corrective SFT training strategies.
 
 ### Request Body
 
@@ -123,7 +316,7 @@ Submit a feedback record linked to a session. Used as reward signal for weighted
 ### Example
 
 ```bash
-curl -X POST http://localhost:8001/v1/feedback \
+curl -X POST http://localhost:8001/v1/learning/feedback \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "sess-abc123",
@@ -133,7 +326,7 @@ curl -X POST http://localhost:8001/v1/feedback \
   }'
 ```
 
-## GET /v1/feedback
+## GET /v1/learning/feedback
 
 List feedback records.
 
@@ -147,137 +340,7 @@ List feedback records.
 | `limit`      | `number` | Maximum records to return. Default `50`.       |
 | `offset`     | `number` | Pagination offset. Default `0`.                |
 
-### Response `200 OK`
-
-```json
-{
-  "records": [
-    {
-      "id": "fb-20250115-001",
-      "session_id": "sess-abc123",
-      "reward": 2,
-      "confidence": 0.9,
-      "feedback_text": "Accurate and well-structured response.",
-      "created_at": "2025-01-15T11:00:00Z"
-    }
-  ],
-  "total": 1,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-### Example
-
-```bash
-curl "http://localhost:8001/v1/feedback?session_id=sess-abc123"
-```
-
-## POST /v1/training/jobs
-
-Trigger a new training job.
-
-### Request Body
-
-| Field           | Type                                                    | Required | Description                                          |
-|-----------------|---------------------------------------------------------|----------|------------------------------------------------------|
-| `method`        | `'knowledge_embedding' \| 'corrective_sft' \| 'weighted_kto'` | Yes | Training method to run.                      |
-| `adapter_id`    | `string`                                                | No       | Target adapter ID. Defaults to user's training adapter. |
-| `knowledge_ids` | `string[]`                                              | No       | Knowledge entries to include (for embedding/SFT).    |
-| `feedback_ids`  | `string[]`                                              | No       | Feedback records to include (for KTO).               |
-| `params`        | `object`                                                | No       | Method-specific parameter overrides.                 |
-
-### Response `202 Accepted`
-
-```json
-{
-  "job_id": "train-20250115-001",
-  "method": "corrective_sft",
-  "status": "queued",
-  "created_at": "2025-01-15T12:00:00Z"
-}
-```
-
-### Example
-
-```bash
-curl -X POST http://localhost:8001/v1/training/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "method": "corrective_sft",
-    "knowledge_ids": ["kn-20250115-001"],
-    "params": {
-      "epochs": 3,
-      "learning_rate": 2e-5
-    }
-  }'
-```
-
-## GET /v1/training/status
-
-Check the current state of the training subsystem.
-
-### Response `200 OK`
-
-```json
-{
-  "gpu_available": true,
-  "active_job": null,
-  "queue_depth": 2,
-  "last_completed": {
-    "job_id": "train-20250114-003",
-    "method": "weighted_kto",
-    "completed_at": "2025-01-14T23:45:00Z",
-    "duration_seconds": 1800
-  }
-}
-```
-
-### Example
-
-```bash
-curl http://localhost:8001/v1/training/status
-```
-
-## GET /v1/training/jobs
-
-List training jobs.
-
-### Query Parameters
-
-| Parameter | Type     | Description                                          |
-|-----------|----------|------------------------------------------------------|
-| `status`  | `string` | Filter by status (`queued`, `running`, `completed`, `failed`). |
-| `method`  | `string` | Filter by training method.                           |
-| `limit`   | `number` | Maximum jobs to return. Default `20`.                |
-| `offset`  | `number` | Pagination offset. Default `0`.                      |
-
-### Response `200 OK`
-
-```json
-{
-  "jobs": [
-    {
-      "job_id": "train-20250115-001",
-      "method": "corrective_sft",
-      "status": "running",
-      "adapter_id": "general",
-      "progress": 0.45,
-      "created_at": "2025-01-15T12:00:00Z",
-      "started_at": "2025-01-15T12:01:00Z"
-    }
-  ],
-  "total": 1,
-  "limit": 20,
-  "offset": 0
-}
-```
-
-### Example
-
-```bash
-curl "http://localhost:8001/v1/training/jobs?status=running"
-```
+---
 
 ## Error Responses
 
@@ -288,7 +351,7 @@ All endpoints return standard HTTP error codes with a JSON body:
   "error": {
     "message": "Description of the error",
     "type": "invalid_request_error",
-    "code": "knowledge_not_found"
+    "code": "document_not_found"
   }
 }
 ```
@@ -296,7 +359,7 @@ All endpoints return standard HTTP error codes with a JSON body:
 | Status | Meaning                                                  |
 |--------|----------------------------------------------------------|
 | `400`  | Malformed request, invalid reward range, missing fields. |
-| `404`  | Referenced session, knowledge, or job not found.         |
+| `404`  | Referenced session, document, or job not found.          |
 | `409`  | Training job conflict (GPU busy, duplicate submission).  |
 | `422`  | Reward outside configured `reward_range`.                |
 | `500`  | Internal error (Axolotl failure, R2 write failure).      |
