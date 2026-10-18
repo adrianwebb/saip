@@ -422,6 +422,7 @@ Run this every time, immediately before opening the PR (this is the artifact the
 - [ ] PR small (< ~10 files, < ~15 min CI) or split into stacked PRs
 - [ ] Self-reviewed own diff: no debug leftovers, no stray files
 - [ ] Changelog entry added under `[Unreleased]` in `CHANGELOG.md` (see Changelog Convention)
+- [ ] If docs changed: context packs regenerate cleanly (`pnpm --filter @saip/docs pack-context`) — packs are build artifacts deployed with the site, never committed
 
 ## Release Candidate Workflow (`staging` → `main`)
 

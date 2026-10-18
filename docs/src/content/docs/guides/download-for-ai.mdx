@@ -1,0 +1,67 @@
+---
+title: Download for AI
+description: Feed the entire SAIP documentation into an AI context window with one click
+---
+
+Every page of these docs is also published as a single **context pack** — one file containing all documentation, generated on every deploy and served at a stable URL. Use it to give an AI assistant complete platform knowledge in one shot, instead of pasting pages individually.
+
+## How to Get It
+
+Click **Download for AI** in the site header (top right) and choose a format. Or fetch directly:
+
+| Format | URL | Best for |
+|--------|-----|----------|
+| XML | `/saip/context-pack/saip-docs.xml` | Claude, ChatGPT, most agents — structure-aware, recommended default |
+| Markdown | `/saip/context-pack/saip-docs.md` | Human-readable, skills files, repo instructions |
+| JSON | `/saip/context-pack/saip-docs.json` | Programmatic consumption, tooling |
+
+The URLs never change — you get whatever version matches the currently deployed site. Each pack embeds its source commit hash and generation timestamp so an AI can tell which build it reflects.
+
+## What's Inside
+
+A pack contains:
+
+- All documentation pages (`docs/src/content/docs/**`)
+- The project `README.md` and `AGENTS.md`
+- A file summary and directory structure index
+- Per-file token estimates for the largest files
+
+It deliberately excludes source code, examples, chat exports, and anything gitignored.
+
+## Using a Pack Effectively
+
+:::tip[Recommended workflow]
+1. Download the **XML** pack (best model comprehension).
+2. Attach or paste it as the first content in your conversation, then ask your question.
+3. For recurring work, save it as a skill or system-prompt reference and refresh it whenever the docs change.
+:::
+
+Check the header line of the pack for the commit hash — if it predates a recent change you know about, re-download from the live site.
+
+## Regenerating Locally
+
+Packs are build artifacts (never committed). To generate them yourself:
+
+```bash
+cd docs
+pnpm install
+pnpm build          # astro build + pack generation
+# output: docs/dist/context-pack/saip-docs.{xml,md,json}
+```
+
+Or regenerate packs alone after editing docs:
+
+```bash
+pnpm --filter @saip/docs pack-context
+```
+
+Preview the site with working download links via `pnpm --filter @saip/docs preview`.
+
+## How It Works
+
+Packs are produced by [Repomix](https://repomix.com), which walks a scoped file set and serializes contents into one document. The SAIP build runs it three times (once per output style) via `docs/scripts/generate-context-packs.mjs`, injecting commit metadata into each file header. CI regenerates the packs on every deploy, so the live files always match the live docs.
+
+## Related
+
+- [CLI Reference](/saip/guides/cli-reference/) — everyday operations commands
+- [Cordis Plugins](/saip/reference/cordis-plugins/) — extend SAIP services with plugins

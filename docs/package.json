@@ -1,11 +1,12 @@
 {
   "name": "@saip/docs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "astro build && pnpm pack-context && bash scripts/check-links.sh dist",
+    "pack-context": "node scripts/generate-context-packs.mjs",
     "preview": "astro preview"
   },
   "dependencies": {
@@ -13,5 +14,8 @@
     "astro": "^5.7.0",
     "sharp": "^0.34.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "repomix": "^1.18.1"
+  }
 }
