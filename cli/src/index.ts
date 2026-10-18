@@ -1,31 +1,51 @@
 #!/usr/bin/env node
 
 /**
- * SAIP CLI — manage inference and training services
+ * SAIP CLI — manage inference and training services.
  *
- * Commands:
- *   awake   Stop training, start inference
- *   sleep   Stop inference, start training
- *   down    Shut down all services
- *   status  Show runtime state and vitals
+ * A Cordis application: command plugins register themselves with the shared
+ * CommandRegistryService, and this dispatcher drains that registry into the
+ * commander surface. Adding a command = adding a plugin, never editing here.
  */
 
 import { Command } from 'commander'
-import { awakeCommand } from './commands/awake.js'
-import { sleepCommand } from './commands/sleep.js'
-import { downCommand } from './commands/down.js'
-import { statusCommand } from './commands/status.js'
+import { Context } from 'cordis'
+import { AdapterRegistryService } from '@saip/shared/services'
+import { CommandRegistryService } from './lib/command-registry.js'
 
-const program = new Command()
+// Command plugins (each registers itself on load via ctx.commandRegistry).
+import awakePlugin from './commands/awake.js'
+import sleepPlugin from './commands/sleep.js'
+import downPlugin from './commands/down.js'
+import statusPlugin from './commands/status.js'
 
-program
-  .name('saip')
-  .description('Simple AI Platform — manage inference and training services')
-  .version('0.1.0')
+const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin]
 
-program.addCommand(awakeCommand)
-program.addCommand(sleepCommand)
-program.addCommand(downCommand)
-program.addCommand(statusCommand)
+export async function buildProgram(): Promise<Command> {
+  const ctx = new Context()
+  await ctx.plugin(AdapterRegistryService)
+  await ctx.plugin(CommandRegistryService)
 
-program.parse()
+  // Load every command plugin so they self-register.
+  for (const plugin of COMMAND_PLUGINS) {
+    await ctx.plugin(plugin)
+  }
+
+  const program = new Command()
+    .name('saip')
+    .description('Simple AI Platform — manage inference and training services')
+    .version('0.3.0')
+
+  for (const spec of ctx.commandRegistry!.list()) {
+    const cmd = new Command(spec.name).description(spec.description)
+    for (const opt of spec.options ?? []) cmd.option(opt.flag, opt.description)
+    cmd.action((options: Record<string, unknown>) => spec.action(ctx, options))
+    program.addCommand(cmd)
+  }
+
+  return program
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void buildProgram().then((program) => program.parse())
+}
