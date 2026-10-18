@@ -15,6 +15,7 @@ import { ApiCoreService } from './plugins/api-core.js'
 import { ApiChatService } from './plugins/api-chat.js'
 import { ApiSystemOneService } from './plugins/api-systemone.js'
 import { SessionCollectorService } from './plugins/session-collector.js'
+import { DataDocumentsService } from './plugins/data-documents.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
 
@@ -64,6 +65,7 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
   await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
   await ctx.plugin(SessionCollectorService, { storage })
+  await ctx.plugin(DataDocumentsService, { storage })
 
   // Validate the loaded registry once at boot — CLI/inference/training must
   // agree on validity, so an invalid registry fails loudly here.
@@ -73,8 +75,8 @@ export async function createApp(opts: CreateAppOptions = {}) {
     throw new Error(`invalid adapter registry: ${codes}`)
   }
 
-  // Remaining plugins (apiCore, apiChat, apiSystemOne, sessionCollector,
-  // dataApi) register here as they are implemented.
+  // Remaining plugins (apiSessions, apiFeedback, server composition) register
+  // here as they are implemented.
   return ctx
 }
 
