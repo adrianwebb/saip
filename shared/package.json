@@ -13,6 +13,7 @@
     "./adapter-manifest": "./dist/adapter-manifest.js",
     "./adapter-registry": "./dist/adapter-registry.js",
     "./hosting": "./dist/hosting.js",
+    "./auth": "./dist/auth.js",
     "./services": "./dist/services.js",
     "./user-manifest": "./dist/user-manifest.js",
     "./types": "./dist/types.js"
