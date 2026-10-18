@@ -35,11 +35,44 @@ storage:
   huggingface:
     token_env: "SAIP_HF_TOKEN"
 
+# Adapter registry — first-class adapter definitions, independent of users.
+# Leaf adapters declare training linkage (strategy + data scopes); composites
+# merge weighted components into a single compiled artifact for vLLM.
+adapters:
+  # General-purpose components with independent training cadences
+  - name: general
+    scope: global
+    description: "Baseline behaviors and general knowledge"
+    training:
+      strategy: knowledge_embedding
+      data_scopes: [documents]
+
+  - name: coding
+    scope: domain
+    description: "Software engineering behaviors"
+    training:
+      strategy: corrective_sft
+      data_scopes: [sessions, feedback]
+
+  # Composite user adapter: weights per component + overall gain.
+  # Compiled offline (ΔW = Σ wᵢ·ΔWᵢ, then ×gain) into one named artifact.
+  - name: default-agent
+    scope: user
+    trainable: false
+    composite:
+      gain: 1.25
+      merge: weighted_linear
+      components:
+        - adapter: general
+          weight: 1.0
+        - adapter: coding
+          weight: 0.7
+
 # User → adapter mapping (file-based for MVP)
 users:
   - id: "default"
     adapters:
-      inference: "general@latest"
+      inference: "default-agent@latest"
       training: "general"
 
 # Inference service

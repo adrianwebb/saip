@@ -61,7 +61,9 @@ categories:
 All subprojects share the same branch model, workflow gate, documentation-first cycle, and
 changelog convention defined in this file and the `release-workflow` skill. Per-subproject
 configuration (test commands, manifests, build steps) is recorded in the project config when
-the release-workflow skill is loaded.
+the release-workflow skill is loaded. All four Node packages (`cli`, `shared`, `inference`,
+`training`) compose via **Cordis** — commands, services, and gateway capabilities are plugins or
+injectable shared services; new capabilities are added by adding plugins, not by extending cores.
 
 ## Documentation Context Pack (MANDATORY)
 

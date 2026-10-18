@@ -47,6 +47,7 @@ export default defineConfig({
             { label: 'R2 Bucket Layout', slug: 'reference/r2-bucket-layout' },
             { label: 'Inference & Data API', slug: 'reference/api-inference' },
             { label: 'Learning API', slug: 'reference/api-training' },
+            { label: 'Adapter Definitions', slug: 'reference/adapter-definitions' },
             { label: 'Adapter Manifest', slug: 'reference/adapter-manifest' },
             { label: 'Cordis Plugins', slug: 'reference/cordis-plugins' },
             { label: 'Glossary', slug: 'reference/glossary' },

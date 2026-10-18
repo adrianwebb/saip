@@ -36,6 +36,10 @@ SAIP uses a single Cloudflare R2 bucket (configured via `storage.r2` in `saip.ya
 
 Stores trained LoRA adapter weights and metadata.
 
+:::note[Compiled Composites]
+Composite user adapters are stored here like any other adapter — a single compiled artifact per version (`adapter_config.json` + `adapter_model.safetensors`). The difference is in the manifest: composites carry a `composition` provenance record listing each component's resolved version, weight, and the overall gain. See [Adapter Definitions](/saip/reference/adapter-definitions/) for compile semantics.
+:::
+
 ### adapters/_index.json
 
 Global adapter registry. See [Adapter Manifest](/saip/reference/adapter-manifest/) for the full schema.
