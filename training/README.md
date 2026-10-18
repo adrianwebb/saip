@@ -37,12 +37,21 @@ transform formats based on rules.
 
 | API | Path Prefix | Responsibility |
 |-----|-------------|----------------|
-| **Data API** | `/v1/data/*` | Document upload, processing, storage, retrieval; feedback submission |
+| **Data API** | `/v1/data/*` | Data submission endpoints registered by data type plugins |
 | **Learning API** | `/v1/learning/*` | Training strategy registration, learning job management, optimization |
 
-The Data API handles all input data lifecycle. The Learning API manages which training strategies
-are available and orchestrates training jobs. These two surfaces are intentionally separated: data
-ingestion is decoupled from training execution.
+The Data API is not a fixed set of routes — **each data type plugin registers its own endpoint**
+under `/v1/data/<name>` with standard CRUD operations. SAIP ships with three built-in endpoints:
+
+- `/v1/data/documents` — file/document upload for continued pretraining
+- `/v1/data/sessions` — session history upload for corrective SFT
+- `/v1/data/feedback` — feedback/reward submission for weighted KTO
+
+A new data type plugin with complicated input, processing, or output simply registers its own
+endpoint path and processor function. No changes to the gateway core are needed.
+
+The Learning API manages which training strategies are available and orchestrates training jobs.
+These two surfaces are intentionally separated: data ingestion is decoupled from training execution.
 
 ### Two Plugin Registries
 

@@ -26,24 +26,40 @@ jsonl-processor           →    (future strategies...)
 (future types...)         →
 ```
 
-Each **data type plugin** implements a standard interface: accept a raw document, return processed output in the canonical intermediate format. Each **training strategy plugin** implements another standard interface: accept processed output of declared types, produce an Axolotl dataset in the strategy's required format. Neither knows about the other's internals — they communicate through the interface contract only.
+### Data Type Plugins Register Their Own Endpoints
 
-This means:
-- Adding a new document type (LaTeX, HTML, audio transcripts) = one new data type plugin, zero changes to strategies
-- Adding a new training method (GRPO replay, DPO) = one new strategy plugin, zero changes to data processors
-- A strategy declares which data types it accepts; the registry handles routing
+Data type plugins don't just process data — **they also register their own API endpoints** under `/v1/data/<name>`. The gateway's `data-api` Cordis plugin provides the HTTP framework and common middleware (auth, validation, R2 storage), but the routes come from registered data type plugins.
+
+SAIP ships with three built-in data submission endpoints:
+
+| Endpoint | Purpose | Processor | Output Format |
+|----------|---------|-----------|---------------|
+| `/v1/data/documents` | File/document upload for continued pretraining | Document processors (markdown, code, PDF, JSONL) | Intermediate text sequences |
+| `/v1/data/sessions` | Session history upload for corrective SFT | Session processor | Intermediate conversation records |
+| `/v1/data/feedback` | Feedback/reward submission for weighted KTO | Feedback processor | Intermediate reward records |
+
+Each endpoint supports standard CRUD operations (list, get, create, update, delete) as appropriate for its data type.
+
+When you install a new data type plugin with complicated input, processing, or output requirements, it registers its own endpoint path, declares its processor function, and specifies which training strategies can consume its output. No changes to the gateway core are needed. For example, a future `evaluations` plugin might register `/v1/data/evaluations` with batch-only creation and a custom teacher-evaluation processor.
+
+### Training Strategy Plugins Declare Accepted Types
+
+Each **training strategy plugin** declares which intermediate output formats it can consume. When a learning job references a strategy, the registry routes matching processed data to it. Strategies produce Axolotl datasets in their required format.
+
+Neither plugin type knows about the other's internals — they communicate through the interface contract only. This means:
+- Adding a new data type = one new data type plugin with its own endpoint, zero changes to strategies
+- Adding a new training method = one new strategy plugin, zero changes to data processors
 - Multiple strategies can consume the same processed output simultaneously
 
 Both plugin types are Cordis plugins that register themselves at startup. The training gateway orchestrates the flow:
 
 ```
-Upload → Validation → Dedup → Data Type Plugin → Intermediate Format
-                                                        ↓
-                                        Training Strategy Plugins (matching types)
-                                        ├── Knowledge Embedding → completion datasets
-                                        ├── Corrective SFT → feedback-weighted messages
-                                        ├── Weighted KTO → scalar reward records
-                                        └── ...extensible
+/v1/data/documents ──→ Document Processors ──→ Intermediate Text ──┐
+/v1/data/sessions  ──→ Session Processor   ──→ Intermediate Conv ─┼──→ Training Strategy Plugins
+/v1/data/feedback  ──→ Feedback Processor ──→ Intermediate Reward ┘    ├── knowledge-embedding
+/v1/data/<custom>  ──→ Custom Processor    ──→ Intermediate Custom     ├── corrective-sft
+                                                                        ├── weighted-kto
+                                                                        └── ...extensible
 ```
 
 Neither plugin type splits or chunks data — they transform formats based on rules.
@@ -52,9 +68,11 @@ Neither plugin type splits or chunks data — they transform formats based on ru
 
 # Data API
 
+The Data API endpoints below are registered by the built-in data type plugins. Additional endpoints may be registered by installed plugins. Use `GET /v1/data` to discover all available data submission endpoints.
+
 ## POST /v1/data/documents
 
-Submit a document for processing. The document type router inspects the content and routes it to the appropriate document processor plugin.
+Submit a document for processing. The registered document processor plugins handle format-specific conversion.
 
 ### Request Headers
 
