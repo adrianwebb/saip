@@ -1,12 +1,19 @@
-import { Command } from 'commander'
+import type { Context } from 'cordis'
+import type { CommandSpec } from '../lib/command-registry.js'
 
-export const downCommand = new Command('down')
-  .description('Shut down all SAIP services')
-  .action(async () => {
+const spec: CommandSpec = {
+  name: 'down',
+  description: 'Shut down all SAIP services',
+  action: (_ctx) => {
     console.log(`[saip] Shutting down all services...`)
     console.log(`[saip] TODO: docker compose down for both services`)
-    // Future implementation:
-    // 1. docker compose -f inference/docker-compose.yml down
-    // 2. docker compose -f training/docker-compose.yml down
-    // 3. Report confirmation
-  })
+    // Future: compose down inference + training, report confirmation
+  },
+}
+
+export default {
+  inject: ['commandRegistry'] as const,
+  apply(ctx: Context) {
+    ctx.commandRegistry!.register(spec)
+  },
+}

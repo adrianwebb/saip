@@ -51,3 +51,9 @@ jobs:
 
       - name: Test training
         run: pnpm --filter @saip/training test
+
+      - name: Typecheck & build cli
+        run: pnpm --filter @saip/cli build
+
+      - name: Test cli
+        run: pnpm --filter @saip/cli test
