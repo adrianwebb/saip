@@ -12,7 +12,8 @@ injectable service.
 | `r2-client` | Cloudflare R2 operations as a Cordis service (upload, download, list, index) |
 | `hf-client` | HuggingFace Hub model download and caching as a Cordis service |
 | `adapter-manifest` | Read/write/search adapter manifests, `_index.json`, and alias resolution |
-| `adapter-registry` | Load the `adapters:` registry; resolve leaf/composite definitions, validate scopes and cycles |
+| `adapter-registry` | Pure registry validation + resolution (`validateRegistry`, `parseRef`) — single source of truth for the rules |
+| `services` | Cordis `AdapterRegistryService` — injectable wrapper (`ctx.adapterRegistry`) exposing `validate`, `index`, `isComposite`, `resolveVersion` |
 | `user-manifest` | User → adapter mapping from file-based manifests |
 | `types` | Shared TypeScript contracts (`AdapterDefinition`, `CompositeSpec`, `TrainingLinkage`, manifests) |
 
