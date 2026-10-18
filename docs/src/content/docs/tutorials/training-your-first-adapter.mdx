@@ -3,7 +3,7 @@ title: Training Your First Adapter
 description: Submit knowledge, train an adapter, and serve it through the inference gateway
 ---
 
-This tutorial walks you through the full SAIP adaptation cycle: submitting knowledge and feedback, triggering a training job, and serving the resulting adapter through the inference gateway. It assumes you have completed [Getting Started](/tutorials/getting-started/) and have a working `saip awake` deployment.
+This tutorial walks you through the full SAIP adaptation cycle: submitting knowledge and feedback, triggering a training job, and serving the resulting adapter through the inference gateway. It assumes you have completed [Getting Started](./getting-started/) and have a working `saip awake` deployment.
 
 :::tip[The Experience→Evaluation→Adaptation Loop]
 SAIP is built around a continuous improvement cycle: **experience** (the model serves requests and collects interactions), **evaluation** (users submit feedback on response quality), and **adaptation** (training jobs use that signal to produce better adapters). Each pass through this loop yields a new adapter that replaces the previous one. This tutorial covers one complete turn of that cycle.
@@ -210,6 +210,6 @@ Run multiple experience→evaluation→adaptation cycles to continuously improve
 
 ## Next Steps
 
-- **[Architecture](/concepts/architecture/)** — Deep dive into the awake/sleep lifecycle, adapter storage format, and training pipeline internals.
-- **[Configuration Reference](/reference/configuration/)** — Full documentation of `saip.yaml` options for tuning training hyperparameters and adapter settings.
-- **[API Reference](/reference/api/)** — Complete endpoint specifications for the inference and training gateway APIs.
+- **[Architecture](../explanation/architecture/)** — Deep dive into the awake/sleep lifecycle, adapter storage format, and training pipeline internals.
+- **[Configuration Reference](../reference/configuration/)** — Full documentation of `saip.yaml` options for tuning training hyperparameters and adapter settings.
+- **[API Reference](../reference/api-inference/)** — Complete endpoint specifications for the inference and training gateway APIs.
