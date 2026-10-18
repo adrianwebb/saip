@@ -1,0 +1,172 @@
+---
+title: Submit Knowledge
+description: Add documents, code, and datasets to the training pipeline
+---
+
+Knowledge submissions feed SAIP's continued pretraining and fine-tuning pipelines. This guide covers supported formats, the submission API, metadata conventions, and how documents flow through the training pipeline.
+
+## Supported Formats
+
+| Format | Extension | Max Size | Notes |
+|--------|-----------|----------|-------|
+| Plain text | `.txt` | 10 MB | UTF-8 encoded |
+| Markdown | `.md`, `.mdx` | 10 MB | Frontmatter stripped during processing |
+| Source code | `.py`, `.ts`, `.js`, `.rs`, `.go`, etc. | 5 MB | Language auto-detected from extension |
+| JSONL | `.jsonl` | 50 MB | One JSON object per line |
+| PDF | `.pdf` | 20 MB | Text extracted; scanned PDFs unsupported |
+
+:::caution[Encoding]
+All text files must be UTF-8 encoded. Files with BOM markers or non-UTF-8 encoding are rejected. Convert with `iconv -f LATIN1 -t UTF-8 input.txt > output.txt` if needed.
+:::
+
+### JSONL Format
+
+JSONL files contain one document per line:
+
+```jsonl
+{"text": "The quick brown fox...", "source": "wikipedia", "license": "CC-BY-SA-4.0"}
+{"text": "def fibonacci(n): ...", "source": "github/myrepo", "language": "python"}
+{"text": "Meeting notes from 2024-03-15...", "source": "internal/notion", "tags": ["meetings", "q1"]}
+```
+
+Each line must be a valid JSON object with at least a `text` field. Additional fields are stored as metadata.
+
+## API Endpoint
+
+### Submit Documents
+
+```
+POST /v1/knowledge
+Content-Type: multipart/form-data
+Authorization: Bearer <token>
+```
+
+#### Single File Upload
+
+```bash
+curl -X POST http://localhost:8000/v1/knowledge \
+  -H "Authorization: Bearer $SAIP_API_TOKEN" \
+  -F "file=@./docs/architecture.md" \
+  -F "source=internal/wiki" \
+  -F "license=proprietary" \
+  -F "tags=architecture,design"
+```
+
+#### Batch Upload (JSONL)
+
+```bash
+curl -X POST http://localhost:8000/v1/knowledge \
+  -H "Authorization: Bearer $SAIP_API_TOKEN" \
+  -F "file=@./corpus/dataset.jsonl" \
+  -F "source=external/arxiv" \
+  -F "license=CC-BY-4.0" \
+  -F "tags=ml,research"
+```
+
+#### Response
+
+```json
+{
+  "id": "kn_20240315_a1b2c3d4",
+  "status": "accepted",
+  "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "size_bytes": 14523,
+  "format": "markdown",
+  "chunks": 12
+}
+```
+
+### List Submissions
+
+```
+GET /v1/knowledge?limit=20&offset=0
+```
+
+Returns paginated results with status and metadata for each submission.
+
+## Metadata Fields
+
+| Field | Required | Description | Example |
+|-------|----------|-------------|---------|
+| `source` | Yes | Origin identifier (org/repo/path) | `github/adrianwebb/saip` |
+| `license` | Yes | SPDX license identifier or `proprietary` | `MIT`, `CC-BY-4.0` |
+| `tags` | No | Comma-separated classification tags | `ml,tutorial,beginner` |
+| `language` | Auto | Programming language (for code files) | `python`, `typescript` |
+| `author` | No | Original author name | `Jane Smith` |
+| `date` | No | Publication date (ISO 8601) | `2024-03-15` |
+
+:::tip[Source Conventions]
+Use consistent source identifiers to enable filtering and deduplication downstream. Recommended patterns:
+- GitHub: `github/<owner>/<repo>`
+- Internal docs: `internal/<system>/<path>`
+- External datasets: `external/<provider>/<dataset-name>`
+:::
+
+## How Knowledge Flows Into Training
+
+```
+Upload → Validation → Dedup → Chunking → R2 Storage → Training Queue
+```
+
+### Step-by-Step Pipeline
+
+1. **Validation** — File format, encoding, and size are checked. Invalid files are rejected immediately with a descriptive error.
+
+2. **Deduplication by hash** — Each document is SHA-256 hashed. If an identical hash already exists in the bucket, the submission is marked as `duplicate` and skipped. This prevents reprocessing the same content across multiple uploads.
+
+3. **Chunking** — Documents are split into training chunks using format-aware strategies:
+   - **Code:** Split at function/class boundaries when possible; fall back to line-based chunking with overlap.
+   - **Markdown:** Split at heading boundaries; preserve heading hierarchy in chunk metadata.
+   - **Plain text:** Sliding window with 10% overlap.
+   - **JSONL:** Each line is treated as an independent chunk.
+
+4. **R2 Storage** — Chunks are written to the shared R2 bucket:
+
+```
+<bucket>/knowledge/
+├── raw/
+│   └── kn_20240315_a1b2c3d4.md       # Original uploaded file
+├── chunks/
+│   └── kn_20240315_a1b2c3d4/
+│       ├── chunk_000.json              # {"text": "...", "metadata": {...}}
+│       ├── chunk_001.json
+│       └── ...
+└── manifest.jsonl                      # Global index of all chunks
+```
+
+5. **Training Queue** — New chunks are added to the training queue. The next training run picks them up automatically based on the batch selector (`--knowledge-batch latest` includes everything since the last trained checkpoint).
+
+:::note[Deduplication Scope]
+Deduplication operates at the **document level** (full-file hash), not the chunk level. Two different documents containing overlapping paragraphs will both be processed. Chunk-level deduplication is planned for a future release.
+:::
+
+## Managing Knowledge
+
+### Delete a Submission
+
+```bash
+curl -X DELETE http://localhost:8000/v1/knowledge/kn_20240315_a1b2c3d4 \
+  -H "Authorization: Bearer $SAIP_API_TOKEN"
+```
+
+This removes the raw file and all associated chunks from R2. Already-trained chunks remain in completed training runs but won't appear in future batches.
+
+### Resubmit Updated Content
+
+If a document has been revised:
+
+1. Delete the old submission.
+2. Upload the new version with the same `source` identifier.
+3. The new hash ensures it passes deduplication.
+
+:::caution[License Compliance]
+You are responsible for ensuring submitted knowledge complies with its stated license. SAIP does not validate license compatibility. Submissions marked `proprietary` are included in training without restriction — only submit proprietary content you own or have explicit permission to train on.
+:::
+
+## Best Practices
+
+- **Batch related documents** in JSONL format rather than uploading hundreds of individual files.
+- **Tag consistently** — use a controlled vocabulary for tags to make filtering effective.
+- **Set licenses accurately** — incorrect license metadata creates legal risk.
+- **Monitor chunk counts** — unusually high or low chunk counts for a given file size may indicate formatting issues.
+- **Review before training** — use `GET /v1/knowledge` to audit recent submissions before kicking off a training run.

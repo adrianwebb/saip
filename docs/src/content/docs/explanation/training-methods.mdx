@@ -1,0 +1,187 @@
+---
+title: Training Methods
+description: Understanding knowledge embedding, corrective SFT, and weighted KTO
+---
+
+SAIP uses three distinct training methods, each teaching the model something different. They are not interchangeable alternatives — they are complementary tools that address different aspects of the learning loop. This page explains what each method teaches, how it works mechanically, and when to reach for it.
+
+## Knowledge Embedding (Continued Pretraining)
+
+### What It Teaches
+
+Knowledge embedding teaches the model **domain familiarity**: vocabulary, factual relationships, structural patterns, and world-model refinements specific to a domain. It does not teach behavior, tone, or task strategy. It teaches *what exists* in a domain so that downstream behavioral training has something to work with.
+
+Think of it as reading textbooks before attending lab. The model will not learn how to conduct experiments from textbooks alone, but without textbook knowledge, lab instruction is incomprehensible.
+
+### Input Format
+
+Knowledge embedding uses **raw text completion datasets**. The model sees contiguous text and learns to predict the next token:
+
+```
+The Kubernetes API server exposes a RESTful interface on port 6443.
+Authentication is handled through X.509 client certificates, bearer tokens,
+or authenticating proxy headers. Authorization decisions are made by the
+RBAC authorizer, which evaluates Role and ClusterRole bindings against...
+```
+
+There are no instructions, no questions, no response boundaries. The model simply continues the text. This format preserves the natural distributional statistics of the source material: sentence structure, paragraph organization, terminology density, and conceptual co-occurrence patterns.
+
+### When to Use
+
+- **New domains**: your agent needs to understand a codebase, scientific literature, legal corpus, or internal documentation that the base model was not pretrained on.
+- **Vocabulary gaps**: the base model knows Python but not your internal DSL; knows general medicine but not your hospital's protocol abbreviations.
+- **World model refinement**: the base model's understanding of a domain is outdated or superficial, and you need deeper structural knowledge.
+
+### Limitations
+
+LoRA adapters have finite capacity. A rank-16 adapter has roughly 4 million trainable parameters for a 4B model — enough to encode behavioral adjustments and moderate domain knowledge, but not enough to memorize a 500-page technical manual verbatim. Knowledge embedding through LoRA works best for:
+
+- Terminology and concept relationships (high compression)
+- Structural patterns and conventions (moderate compression)
+- Specific facts and procedures (low compression — may require higher rank or full fine-tuning)
+
+If your knowledge corpus exceeds what a LoRA adapter can absorb, consider retrieval-augmented generation (RAG) as a complement: let the adapter encode the *structure* of the domain while retrieval provides specific facts on demand.
+
+## Corrective SFT (Feedback-Weighted)
+
+### What It Teaches
+
+Corrective SFT teaches the model **how to correct mistakes and avoid repeating them**. Unlike standard supervised fine-tuning, which treats all training examples equally, corrective SFT uses per-turn feedback to weight the training signal: good responses are reinforced, bad responses are suppressed or replaced.
+
+This is the primary mechanism for turning session feedback into behavioral improvement. When a user marks a response as unhelpful and provides a correction, corrective SFT ensures the model learns from that correction rather than averaging it with the original mistake.
+
+### Per-Turn Feedback Weighting
+
+Standard SFT computes loss uniformly across all tokens in a response. Corrective SFT modifies this by incorporating per-turn feedback scores:
+
+```
+Turn 1 (feedback: +2): normal loss computation
+Turn 2 (feedback: -1): labels masked to -100 OR replaced with correction
+Turn 3 (feedback: +3): normal loss computation, optionally upweighted
+Turn 4 (feedback: 0): neutral — included but not emphasized
+```
+
+The feedback score determines the treatment:
+
+- **Positive feedback (+1 to +3)**: the response is treated as a gold-standard example. Loss is computed normally, and the example may be upweighted in the batch sampling distribution.
+- **Negative feedback (-1 to -3)**: two strategies are available:
+  - **Masking**: set all label tokens to -100, which causes PyTorch's cross-entropy loss to ignore them. The model sees the context but does not learn to reproduce the bad response.
+  - **Replacement**: substitute the corrected response (from user feedback or human review) as the target. The model learns the right answer in the same context where it previously gave the wrong one.
+- **Neutral feedback (0)**: the example is included for context continuity but receives no special weighting.
+
+### Internalized Correction vs Correction-Context Training
+
+There is a subtle but important distinction between two ways to handle corrections:
+
+**Internalized correction** replaces the bad response with the good one and trains on the corrected version as if it were the original output. The model learns to produce the correct response directly. This is preferred when the correction represents a stable, generalizable improvement.
+
+**Correction-context training** keeps both the bad response and the correction in the training data, formatted as a multi-turn exchange: "Here is my initial answer... Actually, that was wrong because... Here is the correct approach..." The model learns to self-correct. This is preferred when the mistake reveals a reasoning pattern worth preserving (e.g., common misconceptions that should be addressed proactively).
+
+SAIP supports both modes. The choice depends on the nature of the feedback: systematic errors benefit from internalized correction; context-dependent errors benefit from correction-context training.
+
+### Span-Level Feedback Weighting
+
+Per-turn feedback is coarse: a single score for an entire response. Sometimes the feedback targets a specific span within a response ("the explanation is good but the code example is wrong"). SAIP's feedback records support optional `message_id` targeting, enabling span-level weighting:
+
+- The flagged span receives the feedback score directly.
+- Unflagged spans within the same response retain neutral weight.
+- This prevents good portions of a mixed-quality response from being suppressed along with the bad portion.
+
+Span-level feedback is more expensive to collect (requires UI support for inline annotation) but produces significantly cleaner training signal for complex responses.
+
+## Weighted KTO (Scalar Reward)
+
+### What It Teaches
+
+Weighted KTO teaches **behavioral policy shaping**: not specific responses to specific inputs, but general tendencies about what kinds of responses are preferable. It operates on scalar rewards rather than paired preferences, making it suitable for continual learning where pairwise comparisons are rarely available.
+
+Where corrective SFT says "this specific response was bad, do this instead," weighted KTO says "responses with these characteristics tend to receive positive feedback across many contexts." The model internalizes a reward landscape rather than memorizing corrections.
+
+### Scalar Reward Magnitudes
+
+SAIP feedback records carry rewards in the range **-3 to +3**, with optional confidence weighting. These are not arbitrary scores — they map to qualitatively distinct signal levels:
+
+| Score | Meaning | Training Signal |
+|-------|---------|----------------|
+| +3 | Exceptional, exemplary response | Strong positive reinforcement |
+| +2 | Clearly good, meets expectations well | Moderate positive reinforcement |
+| +1 | Acceptable, minor issues | Weak positive reinforcement |
+| 0 | Neutral, no signal | Baseline reference |
+| -1 | Below expectations, fixable issues | Weak negative signal |
+| -2 | Significantly flawed, misleading | Moderate negative signal |
+| -3 | Harmful, dangerous, completely wrong | Strong negative signal |
+
+### The Magnitude Function
+
+A naive approach would treat reward magnitude linearly: a +3 is three times as influential as a +1. This is wrong for two reasons:
+
+1. **Reward calibration is nonlinear in practice**: the difference between +2 and +3 is often larger than the difference between +1 and +2, because extreme scores require stronger justification.
+2. **Outlier dominance**: linear scaling lets rare extreme scores dominate the gradient, destabilizing training.
+
+Weighted KTO uses a **bounded nonlinear magnitude function**:
+
+```
+magnitude(r) = sign(r) × min(|r|^α, M)
+```
+
+where α (typically 0.7–0.8) provides sublinear scaling and M caps the maximum influence of any single example. This ensures that:
+
+- Small rewards still contribute meaningful signal (not drowned out by noise)
+- Large rewards have outsized but bounded influence (not destabilizing)
+- The function is symmetric around zero (positive and negative signals scale identically)
+
+The confidence field further modulates magnitude: a +3 with confidence 0.5 contributes less than a +3 with confidence 1.0. This accounts for uncertain or noisy feedback without discarding it entirely.
+
+### Neutral Example Handling
+
+Standard KTO requires binary desirable/undesirable labels and discards neutral examples. Weighted KTO retains neutral examples (reward = 0) as **baseline references**. They anchor the reward distribution and prevent the model from drifting toward universally positive or negative policies.
+
+Neutral examples serve as the "control group" in the training signal: they represent the current policy's default behavior. Deviations from neutral (positive or negative) are measured relative to this baseline, making the learned reward landscape more stable across training runs.
+
+### Comparison to Related Methods
+
+| Method | Signal Type | Requires Pairs? | Best For |
+|--------|-----------|-----------------|----------|
+| Standard KTO | Binary (good/bad) | No | Simple preference alignment |
+| DPO | Paired preferences | Yes | Offline RLHF with comparison data |
+| GRPO | Group-relative rewards | No (group-based) | Online RL with reward models |
+| Weighted KTO | Scalar + confidence | No | Continual learning with heterogeneous feedback |
+
+Weighted KTO's advantage for SAIP is that it works with the feedback that naturally accumulates during inference: scalar scores from users, optionally with confidence and dimension breakdowns. It does not require constructing preference pairs (expensive), maintaining a reward model (complex), or running online RL loops (unstable). It converts the existing feedback stream directly into policy gradients.
+
+## When to Use Each Method
+
+The three methods are complementary. A healthy continual learning cycle uses all three, but not simultaneously or with equal frequency:
+
+### Knowledge Embedding First
+
+When introducing a new domain, start with knowledge embedding. Build the foundation before adding behavioral layers. A model that doesn't understand the domain cannot learn domain-appropriate behavior, no matter how much feedback it receives.
+
+**Frequency**: Infrequent. Run when onboarding new knowledge sources or when the base model's domain coverage is demonstrably insufficient.
+
+### Corrective SFT for Targeted Fixes
+
+When feedback reveals specific, recurring mistakes, use corrective SFT. This is the surgical tool: precise corrections for identified problems. It works best when you have clear before/after examples from real sessions.
+
+**Frequency**: Regular. Run whenever sufficient corrective feedback has accumulated (typically after a few dozen annotated sessions with negative feedback).
+
+### Weighted KTO for Policy Shaping
+
+When you want to adjust the model's general tendencies — tone, verbosity, risk tolerance, formatting preferences — use weighted KTO. This is the broad-shaping tool: gradual policy adjustments based on aggregate reward patterns.
+
+**Frequency**: Periodic. Run on accumulated feedback batches when reward distributions show consistent trends (e.g., users consistently rate verbose responses lower).
+
+### Combined Workflow
+
+A typical learning cycle looks like:
+
+1. Deploy adapter v1 (awake mode)
+2. Accumulate sessions and feedback over days/weeks
+3. Switch to sleep mode
+4. Build datasets: CPT from new knowledge uploads, corrective SFT from flagged sessions, KTO from reward distributions
+5. Train adapter v2 using one or more methods
+6. Evaluate adapter v2 on held-out sessions
+7. Promote adapter v2 if metrics improve
+8. Return to awake mode with adapter v2
+
+The methods compose: an adapter trained with corrective SFT can be further refined with weighted KTO. A knowledge-embedded adapter can receive behavioral corrections without losing its domain knowledge. The adapter versioning system tracks which methods contributed to each version, enabling rollback and ablation analysis.

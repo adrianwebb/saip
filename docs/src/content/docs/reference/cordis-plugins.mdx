@@ -1,0 +1,295 @@
+---
+title: Cordis Plugin Interface
+description: Reference for writing SAIP plugins using the Cordis framework
+---
+
+SAIP services are built as [Cordis](https://github.com/cordiverse/cordis) plugins. This page documents the plugin contract, lifecycle, event system, and dependency injection as implemented in the vendored Cordis core at `examples/cordis/packages/core/`.
+
+## Plugin Signature
+
+A plugin is a function, class constructor, or object with an `apply` method:
+
+```typescript
+// Function plugin
+function myPlugin(ctx: Context, config: MyConfig): Disposable | void
+
+// Class plugin
+class MyService extends Service {
+  constructor(ctx: Context, config: MyConfig) { super(ctx, 'myService') }
+}
+
+// Object plugin
+const myPlugin = {
+  apply(ctx: Context, config: MyConfig): Disposable | void { ... }
+}
+```
+
+All three forms receive `(ctx: Context, config: T)` where `T` is the validated configuration type.
+
+### Return Values
+
+| Return type          | Behavior                                                        |
+|----------------------|-----------------------------------------------------------------|
+| `void` / `undefined` | Plugin loads successfully with no cleanup.                      |
+| `Disposable`         | A cleanup function called when the plugin unloads.              |
+| `Iterable<Disposable>` | Multiple cleanup functions (sync generator).                  |
+| `Promise<Disposable>` | Async initialization; cleanup on unload.                      |
+| `AsyncIterable<Disposable>` | Async generator yielding disposables over time.          |
+
+A `Disposable` is `() => T` — a zero-argument function that tears down resources.
+
+## Plugin Metadata
+
+Static properties on the plugin function/class/object:
+
+| Property   | Type                    | Description                                                     |
+|------------|-------------------------|-----------------------------------------------------------------|
+| `name`     | `string`                | Display name for logging and debugging.                         |
+| `Config`   | `StandardSchemaV1`      | Config validation schema (Standard Schema v1 compatible).       |
+| `inject`   | `Inject`                | Service dependencies required before loading.                   |
+| `provide`  | `string \| string[]`    | Service name(s) this plugin provides.                           |
+| `intercept`| `Dict<boolean>`         | Services this plugin intercepts.                                |
+
+### Config Validation
+
+Attach a Standard Schema v1 validator to `Config`:
+
+```typescript
+import { z } from 'zod'
+
+const MyPlugin = (ctx: Context, config: { port: number }) => {
+  // config is validated and typed
+}
+
+MyPlugin.Config = z.object({
+  port: z.number().default(8080),
+})
+```
+
+If validation fails, the fiber enters `FAILED` state and a `ValidationError` is logged.
+
+## Dependency Injection
+
+Declare dependencies via the `inject` property. The fiber will not enter `ACTIVE` state until all injected services are available.
+
+```typescript
+// Array form — requires these services
+MyPlugin.inject = ['events', 'logger']
+
+// Object form — with per-service config
+MyPlugin.inject = {
+  events: null,
+  database: { readonly: true },
+}
+```
+
+Using the `@Inject` decorator on classes:
+
+```typescript
+class MyService extends Service {
+  @Inject('database')
+  initDatabase() {
+    // runs when database becomes available
+  }
+}
+```
+
+## Service Class Pattern
+
+Extend `Service` to create injectable services:
+
+```typescript
+import { Service, Context } from 'cordis'
+
+class CacheService extends Service {
+  static provide = 'cache'
+
+  private store = new Map<string, any>()
+
+  constructor(ctx: Context) {
+    super(ctx, 'cache')
+  }
+
+  get(key: string) { return this.store.get(key) }
+  set(key: string, value: any) { this.store.set(key, value) }
+}
+```
+
+Services auto-register under their `provide` name. Other plugins declare them via `inject`.
+
+## Fiber Lifecycle
+
+Each plugin instance runs inside a `Fiber` with the following states:
+
+```
+PENDING → LOADING → ACTIVE → UNLOADING → DISPOSED
+                ↘ FAILED
+```
+
+| State       | Description                                                                |
+|-------------|----------------------------------------------------------------------------|
+| `PENDING`   | Fiber created, waiting for injected dependencies.                          |
+| `LOADING`   | Dependencies satisfied, plugin callback executing.                         |
+| `ACTIVE`    | Plugin callback completed successfully, disposables registered.            |
+| `FAILED`    | Plugin callback threw an error. Requires `update()` to retry.             |
+| `UNLOADING` | Disposals running (config change, dependency lost, or explicit dispose).   |
+| `DISPOSED`  | Fully torn down, `uid` is `null`. Cannot be revived.                       |
+
+State transitions emit `internal/status(fiber, oldState)`.
+
+### Reload Behavior
+
+When a dependency updates or config changes, the fiber:
+1. Enters `UNLOADING` — all disposables run.
+2. Waits for dependent fibers to release.
+3. Enters `LOADING` — re-executes the plugin callback with new config/deps.
+4. Returns to `ACTIVE` on success, `FAILED` on error.
+
+## Event System
+
+The context exposes five dispatch modes via the `EventsService`:
+
+### ctx.on(name, listener, options?)
+
+Register an event listener. Returns a dispose function.
+
+```typescript
+const dispose = ctx.on('adapter/promoted', (manifest) => {
+  console.log(`Adapter ${manifest.id} promoted`)
+})
+// Later: dispose() to unregister
+```
+
+| Option     | Type      | Description                                             |
+|------------|-----------|---------------------------------------------------------|
+| `prepend`  | `boolean` | Insert at the front of the listener queue.              |
+| `global`   | `boolean` | Receive events from all isolated contexts.              |
+
+### ctx.once(name, listener, options?)
+
+Like `ctx.on` but automatically unregisters after first invocation.
+
+### ctx.emit(name, ...args)
+
+Fire-and-forget. Calls all listeners synchronously. No return value.
+
+```typescript
+ctx.emit('session/complete', sessionManifest)
+```
+
+### ctx.parallel(name, ...args)
+
+Calls all listeners concurrently via `Promise.allSettled`. Throws `AggregateError` if any listener rejects.
+
+```typescript
+await ctx.parallel('knowledge/ingested', knowledgeId)
+```
+
+### ctx.serial(name, ...args)
+
+Calls listeners sequentially. Short-circuits on first truthy return value (bail semantics). Returns the bailing value or `undefined`.
+
+```typescript
+const result = await ctx.serial('validate/input', data)
+if (result) return result // a listener vetoed
+```
+
+### ctx.waterfall(name, ...args)
+
+Middleware-style chain. Each listener receives a `next()` function to call the next handler. The last argument to `waterfall` is the innermost handler.
+
+```typescript
+ctx.on('internal/config', (fiber, next) => {
+  const config = next()
+  return { ...config, extra: true }
+})
+
+// Dispatch:
+const config = ctx.waterfall('internal/config', fiber, () => rawConfig)
+```
+
+## SAIP Events
+
+Events emitted by SAIP services that plugins can subscribe to:
+
+| Event                  | Payload                          | Mode       | Description                                    |
+|------------------------|----------------------------------|------------|------------------------------------------------|
+| `adapter/promoted`     | `AdapterManifest`                | `emit`     | A new adapter version was promoted to latest.  |
+| `adapter/loaded`       | `{ id: string, path: string }`   | `emit`     | An adapter was loaded into GPU memory.         |
+| `adapter/unloaded`     | `{ id: string }`                 | `emit`     | An adapter was evicted from GPU memory.        |
+| `session/start`        | `SessionManifest`                | `emit`     | A new inference session began.                 |
+| `session/complete`     | `SessionManifest`                | `emit`     | An inference session ended.                    |
+| `knowledge/ingested`   | `KnowledgeManifest`              | `parallel` | A knowledge document was stored and indexed.   |
+| `feedback/received`    | `FeedbackRecord`                 | `parallel` | A new feedback record was submitted.           |
+| `training/job-started` | `{ job_id: string, method: string }` | `emit` | A training job began execution.            |
+| `training/job-complete`| `{ job_id: string, adapter_id: string }` | `emit` | A training job finished successfully.     |
+| `training/job-failed`  | `{ job_id: string, error: string }` | `emit`  | A training job failed.                         |
+
+Internal Cordis events (prefixed `internal/`) are documented in the [Cordis source](https://github.com/cordiverse/cordis) and are generally not subscribed to by application plugins.
+
+## Loading Plugins
+
+Register plugins on the context:
+
+```typescript
+const ctx = new Context()
+
+// Simple registration
+ctx.plugin(myPlugin, { port: 8080 })
+
+// With dependency injection shorthand
+ctx.inject(['database'], (ctx) => {
+  ctx.plugin(cachePlugin, {})
+})
+```
+
+`ctx.plugin()` returns a `Fiber & PromiseLike<Fiber>`. Await it to wait for the plugin to reach `ACTIVE`:
+
+```typescript
+await ctx.plugin(myPlugin, config)
+// Plugin is now active
+```
+
+## Writing a SAIP Plugin
+
+Minimal plugin template:
+
+```typescript
+import { Context, Disposable } from 'cordis'
+import { z } from 'zod'
+
+interface MyPluginConfig {
+  webhookUrl: string
+}
+
+function saipWebhook(ctx: Context, config: MyPluginConfig) {
+  const dispose = ctx.on('session/complete', async (manifest) => {
+    await fetch(config.webhookUrl, {
+      method: 'POST',
+      body: JSON.stringify(manifest),
+    })
+  })
+
+  // Return cleanup function
+  return () => {
+    dispose()
+  }
+}
+
+saipWebhook.name = 'saip-webhook'
+saipWebhook.Config = z.object({
+  webhookUrl: z.string().url(),
+})
+saipWebhook.inject = ['events']
+
+export default saipWebhook
+```
+
+Register in `saip.yaml`:
+
+```yaml
+plugins:
+  - name: saip-webhook
+    config:
+      webhookUrl: "https://hooks.example.com/saip"
+```

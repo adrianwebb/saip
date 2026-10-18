@@ -1,0 +1,63 @@
+---
+title: SAIP Documentation
+description: Simple AI Platform — continual learning with QLoRA adapters
+template: splash
+hero:
+  title: Simple AI Platform
+  tagline: Train and serve QLoRA adapters in a continual learning loop. Two services, one GPU, infinite adaptation.
+  actions:
+    - text: Get Started →
+      link: /tutorials/getting-started/
+      variant: primary
+    - text: Understand the Architecture
+      link: /explanation/architecture/
+      variant: secondary
+---
+
+import { CardGrid, Card, LinkCard, Icon } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <LinkCard title="Tutorials" href="/tutorials/getting-started/" icon="open-book">
+    Step-by-step lessons to deploy SAIP and train your first adapter.
+  </LinkCard>
+  <LinkCard title="Guides" href="/guides/deploy-local/" icon="pencil">
+    Practical recipes for deployment, configuration, and daily operations.
+  </LinkCard>
+  <LinkCard title="Reference" href="/reference/configuration/" icon="information">
+    Technical specifications for configuration, APIs, and data formats.
+  </LinkCard>
+  <LinkCard title="Understanding SAIP" href="/explanation/architecture/" icon="bulb">
+    Concepts and design decisions behind the platform architecture.
+  </LinkCard>
+</CardGrid>
+
+## What is SAIP?
+
+SAIP is a two-service continual-learning platform that closes the loop between AI inference and training:
+
+- **Inference Gateway** serves OpenAI-compatible chat completions via vLLM with dynamic per-request LoRA adapter selection
+- **Training Gateway** runs Axolotl fine-tuning jobs using three methods: knowledge embedding, corrective SFT, and weighted KTO
+
+Both services share a Cloudflare R2 object store for adapters, knowledge, sessions, and feedback. They can run on a single 7 GB VRAM GPU or scale to remote GPU nodes.
+
+## Key Features
+
+- **Per-request adapter selection** — callers are mapped to adapters automatically; no client-side LoRA management
+- **Three training methods** — knowledge embedding (continued pretraining), corrective SFT (feedback-weighted), weighted KTO (scalar reward magnitudes)
+- **Cordis plugin architecture** — both services are composed of focused, hot-reloadable plugins
+- **File-based user manifests** — simple YAML mapping of callers to adapter groups
+- **CLI-first operations** — `saip awake`, `saip sleep`, `saip down`, `saip status`
+- **Remote-ready** — deploy locally or to Hyperstack GPU nodes with the same configuration
+
+## Technology Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Plugin framework | Cordis v4 |
+| Inference engine | vLLM (multi-LoRA, AWQ) |
+| Training framework | Axolotl (QLoRA, SFT, KTO) |
+| API framework | Hono |
+| Base model | Qwen3.5-4B (AWQ) |
+| Object storage | Cloudflare R2 |
+| Containerization | Docker Compose v2 |
+| Language | TypeScript (Node.js ≥ 22) |

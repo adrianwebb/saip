@@ -1,0 +1,233 @@
+---
+title: Deploy to Hyperstack
+description: Run SAIP on remote GPU nodes
+---
+
+Hyperstack provides on-demand GPU cloud instances well-suited for SAIP's training and inference workloads. This guide covers deploying SAIP across separate inference and training nodes connected via a shared R2 bucket.
+
+## Account Setup
+
+1. **Create a Hyperstack account** at [cloud.hyprstack.com](https://cloud.hyprstack.com).
+2. **Add billing** — Hyperstack requires a payment method before provisioning GPU instances.
+3. **Generate an API key** under **Settings → API Keys**. Store it securely; you'll need it for SAIP automation.
+4. **Set up SSH keys** under **Settings → SSH Keys** for direct node access.
+
+:::tip[API Key Security]
+Store your Hyperstack API key in a secrets manager or `.env` file — never hardcode it in scripts or commit it to version control. See [Manage Secrets](/guides/manage-secrets/) for best practices.
+:::
+
+## Architecture Overview
+
+SAIP on Hyperstack uses a two-node architecture:
+
+```
+┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
+│  Inference Node  │◄───►│  Shared R2   │◄───►│ Training Node   │
+│  (GPU, always-on)│     │  Bucket      │     │ (GPU, on-demand)│
+│  vLLM + Gateway  │     │  Models/Data │     │  SFT/KTO/DPO   │
+└─────────────────┘     └──────────────┘     └─────────────────┘
+```
+
+- **Inference node** runs continuously, serving the latest adapter from R2.
+- **Training node** spins up on demand, trains on new knowledge/feedback, uploads updated adapters to R2, then shuts down.
+- **R2 bucket** acts as the shared state layer — no direct network link between nodes is required.
+
+## Creating GPU Instances
+
+### Inference Node
+
+Choose a GPU that meets your model's VRAM requirements:
+
+| Model Size | Recommended GPU | VRAM | Hourly Cost (approx.) |
+|------------|----------------|------|-----------------------|
+| 7B AWQ | RTX A4000 | 16 GB | $0.35 |
+| 13B AWQ | RTX A5000 | 24 GB | $0.55 |
+| 70B GPTQ | A100 80GB | 80 GB | $2.10 |
+
+Create via the Hyperstack dashboard or CLI:
+
+```bash
+hyperstack vm create \
+  --name saip-inference \
+  --image ubuntu-22.04-cuda-12.4 \
+  --gpu rtx-a4000 \
+  --disk 100 \
+  --ssh-key my-key
+```
+
+### Training Node
+
+Training benefits from higher VRAM and faster interconnects. Create on demand and destroy after training completes:
+
+```bash
+hyperstack vm create \
+  --name saip-training \
+  --image ubuntu-22.04-cuda-12.4 \
+  --gpu a100-80gb \
+  --disk 200 \
+  --ssh-key my-key
+```
+
+:::note[Cost Control]
+Training nodes should be ephemeral. Always shut them down after training finishes. An idle A100 costs ~$2/hr; leaving one running overnight adds ~$20 to your bill.
+:::
+
+## Configuring SAIP for Hyperstack
+
+### Environment Variables
+
+Add these to your `.env` file on **both** nodes:
+
+```ini
+# Hyperstack API access
+SAIP_HYPERSTACK_API_KEY=hsk_live_xxxxxxxxxxxx
+
+# Shared R2 storage (same bucket on both nodes)
+R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your-access-key
+R2_SECRET_ACCESS_KEY=your-secret-key
+R2_BUCKET_NAME=saip-production
+
+# Node role (set differently on each node)
+SAIP_NODE_ROLE=inference    # or "training"
+```
+
+### Inference Node Setup
+
+On the inference node, install SAIP and start services:
+
+```bash
+# Clone and configure
+git clone https://github.com/adrianwebb/saip.git
+cd saip
+cp .env.example .env
+# Edit .env with the variables above
+
+# Start inference
+saip awake --bucket saip-production
+```
+
+The inference gateway polls R2 for new adapter checkpoints and hot-swaps them without downtime.
+
+### Training Node Setup
+
+On the training node:
+
+```bash
+git clone https://github.com/adrianwebb/saip.git
+cd saip
+cp .env.example .env
+# Edit .env with SAIP_NODE_ROLE=training
+
+# Run a training job
+saip train --task sft --knowledge-batch latest
+# Uploads adapter to R2 automatically on completion
+
+# Shut down when done
+saip sleep
+hyperstack vm delete saip-training
+```
+
+## Connecting Nodes via Shared R2
+
+Both nodes must point to the **same R2 bucket**. The bucket stores:
+
+```
+saip-production/
+├── models/
+│   └── base/Qwen2.5-7B-Instruct/
+├── adapters/
+│   ├── general@000042/
+│   └── coding@000018/
+├── knowledge/
+│   └── raw/
+└── feedback/
+    └── pending/
+```
+
+:::caution[Bucket Consistency]
+Never mix production and local development in the same R2 bucket. Adapter version collisions can cause the inference node to load an incompatible checkpoint. Use separate buckets per environment.
+:::
+
+## SSH Tunneling for API Access
+
+The inference node's API port (8000) should not be exposed publicly. Use an SSH tunnel to access it from your local machine:
+
+```bash
+# Create tunnel to inference node
+ssh -N -L 8000:localhost:8000 user@<inference-node-ip>
+```
+
+Now `http://localhost:8000/v1` on your machine proxies to the remote inference API.
+
+:::tip[Persistent Tunnels]
+For long-running access, use `autossh` to auto-reconnect:
+
+```bash
+autossh -M 0 -N -L 8000:localhost:8000 user@<inference-node-ip> \
+  -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3"
+```
+:::
+
+### Firewall Rules
+
+Restrict SSH access to your IP only via Hyperstack's firewall settings:
+
+1. Go to **Networking → Firewalls** in the Hyperstack dashboard.
+2. Create a rule allowing TCP port 22 from your public IP.
+3. **Do not** open port 8000 to the internet — always use SSH tunnels.
+
+## Cost Optimization
+
+### Spot Instances for Training
+
+Hyperstack offers spot/preemptible instances at 40–60% discount. Training jobs are interruptible and can resume from checkpoints:
+
+```bash
+hyperstack vm create \
+  --name saip-training-spot \
+  --gpu a100-80gb \
+  --spot \
+  --image ubuntu-22.04-cuda-12.4
+```
+
+:::note[Spot Caveat]
+Spot instances can be reclaimed with 2-minute notice. SAIP checkpoints every 100 steps by default, so at most 100 steps of compute are lost on preemption.
+:::
+
+### Right-Sizing
+
+- **Inference:** Match GPU VRAM to model size + KV cache. A 7B AWQ model needs ~5 GB for weights; allocate 12–16 GB total for comfortable KV cache headroom.
+- **Training:** LoRA/QLoRA fine-tuning of 7B models fits in 24 GB. Full fine-tuning requires 80 GB. Don't over-provision.
+
+### Idle Shutdown
+
+Configure automatic shutdown for training nodes:
+
+```bash
+# On the training node, schedule shutdown after training completes
+saip train --task sft --auto-shutdown
+```
+
+Or set a cron-based safety net:
+
+```bash
+# Shut down if no training process is running for 30 minutes
+echo '*/5 * * * * pgrep -f "saip train" || (sleep 1800 && ! pgrep -f "saip train" && shutdown -h now)' \
+  | sudo crontab -
+```
+
+## Monitoring Remote Nodes
+
+Check node status from your local machine:
+
+```bash
+# SAIP service status
+ssh user@<inference-node-ip> "saip status"
+
+# GPU utilization
+ssh user@<inference-node-ip> "nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv"
+
+# Hyperstack instance status
+hyperstack vm list
+```

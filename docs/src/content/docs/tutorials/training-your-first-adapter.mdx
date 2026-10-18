@@ -1,0 +1,210 @@
+---
+title: Training Your First Adapter
+description: Submit knowledge, train an adapter, and serve it through the inference gateway
+---
+
+This tutorial walks you through the full SAIP adaptation cycle: submitting knowledge and feedback, triggering a training job, and serving the resulting adapter through the inference gateway. It assumes you have completed [Getting Started](/tutorials/getting-started/) and have a working `saip awake` deployment.
+
+:::tip[The Experience→Evaluation→Adaptation Loop]
+SAIP is built around a continuous improvement cycle: **experience** (the model serves requests and collects interactions), **evaluation** (users submit feedback on response quality), and **adaptation** (training jobs use that signal to produce better adapters). Each pass through this loop yields a new adapter that replaces the previous one. This tutorial covers one complete turn of that cycle.
+:::
+
+## Switch to Sleep Mode
+
+1. Stop the inference stack and start the training gateway:
+
+```bash
+saip sleep
+```
+
+This command stops all inference services (freeing GPU memory) and starts the training gateway on port `8001`. The gateway exposes endpoints for knowledge ingestion, feedback collection, and training job management.
+
+:::note
+The inference API at port `8000` will be unavailable while in sleep mode. Plan your training sessions during low-traffic windows.
+:::
+
+## Submit Knowledge
+
+1. Add a document to the knowledge corpus:
+
+```bash
+curl http://localhost:8001/v1/knowledge \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "SAIP Deployment Guide",
+    "body": "SAIP runs in two modes: awake for inference and sleep for training. The awake mode starts a vLLM server with the base model and any active LoRA adapter. The sleep mode stops inference and starts the training gateway, which accepts knowledge documents, user feedback, and training job requests.",
+    "tags": ["deployment", "operations"]
+  }'
+```
+
+2. The response includes a `knowledge_id` and processing status:
+
+```json
+{
+  "knowledge_id": "kn_abc123",
+  "status": "indexed",
+  "chunks": 4
+}
+```
+
+The document is chunked, embedded, and stored in the vector index. These embeddings are used by the `knowledge_embedding` training method to ground the adapter in your domain content.
+
+:::tip
+You can submit multiple documents before triggering training. The knowledge corpus accumulates across submissions — each training job uses everything indexed so far.
+:::
+
+## Submit Feedback
+
+1. Record user feedback linked to an inference session:
+
+```bash
+curl http://localhost:8001/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess_xyz789",
+    "reward": 0.8,
+    "dimensions": {
+      "accuracy": 0.9,
+      "helpfulness": 0.7,
+      "tone": 0.85
+    },
+    "comment": "Response was accurate but could have been more concise."
+  }'
+```
+
+2. Key fields explained:
+
+- **`session_id`** — Links the feedback to a specific inference interaction. Captured from inference response headers or logs.
+- **`reward`** — Overall quality score from `-1.0` (terrible) to `1.0` (excellent). Used directly by KTO training.
+- **`dimensions`** — Optional fine-grained scores across named quality axes. Enables targeted corrective SFT on specific weaknesses.
+- **`comment`** — Free-text annotation for human review and dataset curation.
+
+:::note
+Feedback submitted during sleep mode is queued and applied to the next training job. You do not need to collect feedback in real time — batch submission works equally well.
+:::
+
+## Trigger Training
+
+1. Start a training job with your chosen method:
+
+```bash
+curl http://localhost:8001/v1/training/jobs \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "method": "corrective_sft",
+    "config": {
+      "epochs": 3,
+      "learning_rate": 2e-5,
+      "batch_size": 4
+    }
+  }'
+```
+
+2. Available training methods:
+
+| Method | Use Case | Signal Source |
+|---|---|---|
+| `knowledge_embedding` | Ground the model in domain documents | Knowledge corpus embeddings |
+| `corrective_sft` | Fix specific quality issues identified in feedback | Dimension-level feedback scores |
+| `weighted_kto` | Align overall response quality to user preferences | Aggregate reward scores |
+
+3. The response returns a `job_id` and initial status:
+
+```json
+{
+  "job_id": "train_def456",
+  "method": "corrective_sft",
+  "status": "queued"
+}
+```
+
+:::tip
+Start with `knowledge_embedding` for your first adapter to establish domain grounding. Use `corrective_sft` and `weighted_kto` in subsequent cycles as you accumulate feedback data.
+:::
+
+## Monitor Progress
+
+1. Check training status at any time:
+
+```bash
+curl http://localhost:8001/v1/training/status
+```
+
+2. The response includes:
+
+```json
+{
+  "job_id": "train_def456",
+  "method": "corrective_sft",
+  "status": "running",
+  "progress": {
+    "epoch": 2,
+    "total_epochs": 3,
+    "loss": 0.342,
+    "eta_seconds": 180
+  }
+}
+```
+
+Status transitions through `queued` → `running` → `completed` (or `failed`). When complete, the adapter artifacts are automatically finalized.
+
+## Adapter Promotion
+
+When a training job completes successfully, SAIP performs the following automatically:
+
+1. **Upload** — The trained LoRA adapter weights are uploaded to your configured R2 bucket under the `adapters/` prefix.
+2. **Index** — A metadata record is written with the adapter ID, parent model version, training method, completion timestamp, and evaluation metrics.
+3. **Tag** — The adapter is tagged as `latest` for its training method, making it eligible for automatic loading on the next awake cycle.
+
+No manual intervention is required. The adapter is ready to serve as soon as you switch back to awake mode.
+
+:::note
+Previous adapters are retained in R2 with versioned keys. You can roll back to any prior adapter by specifying its ID in `saip.yaml`.
+:::
+
+## Switch Back to Awake
+
+1. Stop the training gateway and restart inference:
+
+```bash
+saip awake
+```
+
+This stops all training services, starts the inference Docker Compose stack, and loads the newly trained adapter alongside the base model. The command waits for vLLM to report healthy before returning.
+
+## Verify
+
+1. Confirm the new adapter is active:
+
+```bash
+saip status
+```
+
+Look for the **Active adapter** field — it should show the adapter ID from your completed training job.
+
+2. Send a test request to verify the adapter influences output:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-token>" \
+  -d '{
+    "model": "qwen3.5-4b",
+    "messages": [
+      {"role": "user", "content": "Explain how SAIP deployment modes work."}
+    ]
+  }'
+```
+
+Compare the response quality against your pre-training baseline. The adapter should reflect the knowledge and feedback you submitted during the sleep cycle.
+
+:::tip
+Run multiple experience→evaluation→adaptation cycles to continuously improve adapter quality. Each cycle builds on the previous adapter, compounding gains over time.
+:::
+
+## Next Steps
+
+- **[Architecture](/concepts/architecture/)** — Deep dive into the awake/sleep lifecycle, adapter storage format, and training pipeline internals.
+- **[Configuration Reference](/reference/configuration/)** — Full documentation of `saip.yaml` options for tuning training hyperparameters and adapter settings.
+- **[API Reference](/reference/api/)** — Complete endpoint specifications for the inference and training gateway APIs.

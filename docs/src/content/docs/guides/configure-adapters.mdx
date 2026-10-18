@@ -1,0 +1,201 @@
+---
+title: Configure Adapters
+description: Set up user-to-adapter mappings and adapter groups
+---
+
+SAIP uses adapters (LoRA/QLoRA weight deltas) to specialize a base model for different tasks and users. This guide explains how to configure adapter mappings, versioning, and resolution in `saip.yaml`.
+
+## User Manifest Format
+
+Adapter-to-user mappings live in the `adapters` section of `saip.yaml`:
+
+```yaml
+adapters:
+  # Default adapter for unauthenticated requests
+  default: general@latest
+
+  # Per-user adapter assignments
+  users:
+    alice: coding@latest
+    bob: general@latest
+    carol: research@latest
+
+  # Named groups for shared adapter access
+  groups:
+    engineering:
+      adapter: coding@latest
+      members: [alice, dave, eve]
+    research-team:
+      adapter: research@latest
+      members: [carol, frank]
+```
+
+### Resolution Order
+
+When a request arrives, the inference gateway resolves the adapter in this order:
+
+1. **Explicit header** — `X-SAIP-Adapter: coding@000042` overrides everything.
+2. **User mapping** — looked up from the authenticated user ID.
+3. **Group mapping** — if the user belongs to a group, the group's adapter applies.
+4. **Default** — falls back to `adapters.default`.
+
+:::note[Precedence]
+User-level mappings always override group mappings. If Alice is in the `engineering` group but also has a personal `users.alice` entry, her personal adapter wins.
+:::
+
+## Adapter Versioning Convention
+
+Adapters follow a `<name>@<version>` naming scheme:
+
+| Pattern | Meaning | Example |
+|---------|---------|---------|
+| `name@latest` | Resolves to the highest numbered version | `general@latest` → `general@000042` |
+| `name@NNNNNN` | Pins to a specific 6-digit version | `coding@000018` |
+| `name@base` | Uses the base model with no adapter | `general@base` |
+
+### How `@latest` Resolves
+
+The inference gateway scans the R2 adapter directory at startup and on each polling cycle:
+
+```
+adapters/
+├── general@000040/
+├── general@000041/
+├── general@000042/    ← general@latest resolves here
+├── coding@000017/
+└── coding@000018/     ← coding@latest resolves here
+```
+
+Versions are zero-padded 6-digit integers, sorted lexicographically. This ensures `000042 > 000041` without numeric parsing.
+
+:::caution[Version Gaps]
+Version numbers don't need to be contiguous, but they must be monotonically increasing. Never reuse a version number — if `general@000042` was defective, publish `general@000043` instead of overwriting.
+:::
+
+## Adapter Aliasing
+
+You can define aliases to decouple user-facing names from internal versions:
+
+```yaml
+adapters:
+  aliases:
+    stable-general: general@000040
+    experimental-coding: coding@000018
+
+  users:
+    alice: experimental-coding   # Resolves to coding@000018
+    bob: stable-general          # Resolves to general@000040
+```
+
+Aliases are resolved recursively — an alias can point to another alias, but circular references are detected and rejected at startup.
+
+:::tip[Canary Deployments]
+Use aliases for gradual rollouts. Point `stable-general` at a known-good version while `general@latest` tracks the newest. Assign test users to `latest` and production users to `stable`. When satisfied, update the alias.
+:::
+
+## Adding New Users
+
+To add a user to the system:
+
+1. **Add to `saip.yaml`:**
+
+```yaml
+adapters:
+  users:
+    newuser: general@latest
+```
+
+2. **Reload configuration** (no restart needed):
+
+```bash
+saip reload
+```
+
+3. **Verify resolution:**
+
+```bash
+saip status --adapter-resolution newuser
+# Output: newuser → general@latest → general@000042
+```
+
+### Adding Users to Groups
+
+```yaml
+adapters:
+  groups:
+    engineering:
+      adapter: coding@latest
+      members: [alice, dave, eve, newuser]  # Add here
+```
+
+Users can belong to multiple groups, but only the first matching group (in YAML order) determines the adapter unless overridden by a user-level mapping.
+
+## How the Inference Gateway Resolves Adapters
+
+The gateway performs adapter resolution on every incoming request:
+
+```
+Request arrives
+    │
+    ▼
+Has X-SAIP-Adapter header? ──Yes──► Load specified adapter
+    │No
+    ▼
+Authenticated user ID? ──No──► Load adapters.default
+    │Yes
+    ▼
+User in adapters.users? ──Yes──► Resolve user's adapter
+    │No
+    ▼
+User in any group? ──Yes──► Resolve group's adapter
+    │No
+    ▼
+Load adapters.default
+```
+
+### Hot Reloading
+
+The gateway polls R2 every 60 seconds for new adapter versions. When a new version matching a `@latest` reference appears:
+
+1. The new adapter weights are downloaded to local cache.
+2. The vLLM engine loads the adapter in a background thread.
+3. New requests route to the updated adapter; in-flight requests complete on the old version.
+4. The old adapter is unloaded after a grace period.
+
+:::note[Zero-Downtime Swaps]
+Adapter hot-reloading is seamless — no requests are dropped during the transition. The swap typically takes 5–15 seconds depending on adapter size and network speed.
+:::
+
+## Complete Example
+
+A production-ready `saip.yaml` adapter configuration:
+
+```yaml
+adapters:
+  default: general@latest
+
+  aliases:
+    prod-general: general@000040
+    canary-general: general@latest
+
+  users:
+    alice: coding@latest
+    bob: prod-general
+    carol: research@latest
+    dave: canary-general
+
+  groups:
+    engineering:
+      adapter: coding@latest
+      members: [alice, eve]
+    qa:
+      adapter: canary-general
+      members: [grace, heidi]
+```
+
+In this setup:
+- **Alice** gets `coding@latest` (user mapping overrides her `engineering` group membership).
+- **Bob** is pinned to `general@000040` via the `prod-general` alias.
+- **Dave** gets whatever the newest `general` version is, acting as a canary tester.
+- **Unauthenticated requests** fall back to `general@latest`.
+- **Eve** inherits `coding@latest` from the `engineering` group.
