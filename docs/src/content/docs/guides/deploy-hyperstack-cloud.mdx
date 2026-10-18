@@ -1,0 +1,78 @@
+---
+title: Deploy to Hyperstack (Cloud)
+description: Provision the two-GPU Hyperstack environment with OpenTofu and drive it from the SAIP CLI
+---
+
+This guide wires up the cloud deployment path end-to-end: provision two GPU VMs with OpenTofu, register them in `hosts.yaml`, then run/observe them through the same `saip` commands you use locally. For the general hosting model see [Hosting Model](/saip/explanation/hosting/); for basic single-node cloud setup see [Deploy to Hyperstack](/saip/guides/deploy-hyperstack/).
+
+:::caution[Provisioning is gated and billable]
+The `NexGenCloud/hyperstack` Terraform provider is **alpha**, and `tofu apply` creates billable GPU resources. The hyperstack deployment provider refuses to run infrastructure commands unless you set `SAIP_ALLOW_INFRA=true`. Treat provisioning as a deliberate action.
+:::
+
+## Prerequisites
+
+- An active Hyperstack account with GPU quota
+- [OpenTofu](https://opentofu.org) installed (`tofu`)
+- Docker + NVIDIA Container Toolkit on the target VMs (use a CUDA+Docker image)
+- A Hyperstack environment + keypair (create via console or the provider)
+
+## 1. Set secrets (shell env, not files)
+
+```bash
+export API_KEY=your-hyperstack-api-key          # read by the provider
+export SAIP_HYPERSTACK_API_KEY=$API_KEY         # referenced by hosts.yaml by NAME
+export SAIP_SSH_PRIVATE_KEY=/path/to/key.pem    # private key path/name
+```
+
+## 2. Provision with OpenTofu
+
+```bash
+cd infra/tofu/hyperstack
+cp terraform.tfvars.example terraform.tfvars     # edit region/flavors/env/keypair
+tofu init
+tofu plan                                        # review; no cost
+# only when ready to spend:
+SAIP_ALLOW_INFRA=true tofu apply
+```
+
+Note the outputs `inference_floating_ip` and `training_floating_ip`.
+
+## 3. Register hosts
+
+Add the two hosts to `hosts.yaml` using those IPs (see [Hosts Configuration](/saip/reference/hosts-config/)):
+
+```yaml
+  - name: cloud-inference
+    kind: hyperstack
+    role: inference
+    ssh: { host: "<inference_floating_ip>", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
+  - name: cloud-training
+    kind: hyperstack
+    role: training
+    ssh: { host: "<training_floating_ip>", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
+```
+
+## 4. Run / observe from the CLI
+
+```bash
+saip deploy --target cloud-inference --dry-run      # preview what would run
+saip awake --host cloud-inference                   # start inference stack remotely
+saip status --host cloud-inference                  # reachability + mode
+saip sleep --host cloud-training                    # start training stack remotely
+saip down --host cloud-inference                    # stop it
+```
+
+`awake`/`sleep`/`down`/`status` drive Docker Compose over SSH through the hyperstack provider; unknown hosts fail closed listing known ones.
+
+## Notes
+
+- Inference and training share state via Cloudflare R2, so the two VMs need no direct peering beyond SSH.
+- Configure bearer tokens under `security:` before exposing ports publicly — routes are fail-closed, but tighten security-group source ranges too.
+- Tear down with `tofu destroy` when done.
+
+## Related
+
+- [Hosting Model](/saip/explanation/hosting/) · [Hosts Configuration](/saip/reference/hosts-config/) · [Security Model](/saip/reference/security-model/)
+- [Manage Secrets](/saip/guides/manage-secrets/) · [CLI Reference](/saip/guides/cli-reference/)

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added
+- infra/cli/docs: gated Hyperstack deployment provider (SSH+compose; OpenTofu provisioning behind `SAIP_ALLOW_INFRA`), the `infra/tofu/hyperstack` 2-GPU OpenTofu module (scaffolded, not applied), and full hosting documentation — Hosting Model explanation, Hosts Configuration reference, cloud-deploy guide (#51)
 - cli: `saip deploy --target <host>` — parameterized copy-to-host reusing the DeploymentProvider abstraction; renders a safe plan (`--dry-run` default), applies only via providers that implement `deploy()`, refuses unknown/unregistered targets (#49)
 - monitoring: pluggable `MonitoringProvider` seam + `MetricsService` (noop default, Prometheus later) wired into both gateways via an event bridge; emission is observe-only and never blocks serving/training (#47)
 - security: pluggable `AuthProvider` seam (bearer for API/MCP, password for UI, explicit dev-mode) with **fail-closed** enforcement on inference chat/systemone and training job routes; `security:` block in saip.yaml + schema; new Security Model reference (#45)
