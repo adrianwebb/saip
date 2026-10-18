@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Fixed
+- XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
+- Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added

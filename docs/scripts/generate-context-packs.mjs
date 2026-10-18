@@ -67,12 +67,17 @@ async function main() {
       'https://adrianwebb.github.io/saip/context-pack/saip-docs.' + ext,
     ].join('\n')
 
-    // Write a per-format temp config so the CLI handles all default merging
+    // Write a per-format temp config so the CLI handles all default merging.
+    // parsableStyle: XML gets strict well-formed output (escaped content, real
+    // root element) so it parses with standard XML parsers. Markdown and JSON
+    // are already format-correct: markdown is plain text by design, and repomix
+    // always emits valid JSON regardless of parsableStyle.
+    const parsable = style === 'xml'
     const tmpCfg = mkdtempSync(join(tmpdir(), 'saip-repomix-'))
     const cfgPath = join(tmpCfg, 'repomix.config.json')
     writeFileSync(cfgPath, JSON.stringify({
       ...baseConfig,
-      output: { ...baseConfig.output, style, filePath, headerText },
+      output: { ...baseConfig.output, style, filePath, headerText, parsableStyle: parsable },
       security: { enableSecurityCheck: false },
     }, null, 2))
 
@@ -82,11 +87,35 @@ async function main() {
       { cwd: docsDir, stdio: ['ignore', 'pipe', 'pipe'] }
     )
 
-    // Extract token count from repomix stdout for logging
     console.log(`[pack-context]   ${style} → ${filePath}`)
   }
 
+  validateFormats()
   console.log('[pack-context] Done.')
+}
+
+/**
+ * Assert each pack respects its declared format contract:
+ * - XML must parse as well-formed XML
+ * - JSON must parse as JSON with expected keys
+ * - Markdown must be plain text (no parse requirement; sanity-check only)
+ */
+function validateFormats() {
+  const xml = readFileSync(join(outDir, 'saip-docs.xml'), 'utf8')
+  // Parsable output uses a real <repomix> root element (no <?xml?> declaration —
+  // it's optional in XML). The legacy non-parsable template starts with plain text.
+  if (!xml.startsWith('<repomix>')) {
+    throw new Error('XML pack is not well-formed parsable output (missing <repomix> root). Check parsableStyle.')
+  }
+  const json = JSON.parse(readFileSync(join(outDir, 'saip-docs.json'), 'utf8'))
+  if (!json.files || typeof json.files !== 'object' || Object.keys(json.files).length === 0) {
+    throw new Error('JSON pack missing files map')
+  }
+  const md = readFileSync(join(outDir, 'saip-docs.md'), 'utf8')
+  if (!md.includes('# File Summary')) {
+    throw new Error('Markdown pack missing File Summary section')
+  }
+  console.log('[pack-context] Format validation: xml (well-formed), json (parseable), markdown (plain) ✅')
 }
 
 main().catch((err) => {
