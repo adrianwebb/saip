@@ -7,21 +7,24 @@ LoRA adapter selection. It is one of two core SAIP services (see [root README](.
 
 ### Cordis Plugin Architecture
 
-The inference gateway is a Cordis application composed of focused plugins:
+The inference gateway is a Cordis application composed of focused plugins. Status: ✅ implemented, 🔌 backend-pending (interface exists, real client not yet wired).
 
-| Plugin | Responsibility |
-|--------|---------------|
-| `vllm-manager` | Start/stop vLLM process, load/unload adapters, health checks |
-| `adapter-registry` | Sync adapter index from R2, maintain local cache, resolve versions |
-| `adapter-compiler` | Compile composite adapters (weighted merge of component deltas × gain) into single vLLM artifacts; recompile when a component promotes or the composition spec changes |
-| `user-resolver` | Map caller identity → adapter group using file-based manifests |
-| `session-collector` | Capture conversation histories, tool calls, artifacts for training |
-| `data-api` | Hono HTTP server for Data API endpoints (`/v1/data/*`) — document upload, session history, feedback |
-| `markdown-processor` | Process `.md`/`.mdx` files into structured text with heading hierarchy |
-| `code-processor` | Process source code files into language-tagged code with metadata |
-| `pdf-processor` | Process PDF documents via Marker OCR into extracted text with sections |
-| `jsonl-processor` | Process JSONL datasets into validated record sequences |
-| `api` | Hono HTTP server exposing OpenAI-compatible `/v1/chat/completions` |
+| Plugin | Status | Responsibility |
+|--------|--------|---------------|
+| `gateway-state` | ✅ | Holds resolved config + injected storage/vLLM backends for other plugins |
+| `vllm-manager` | 🔌 | Start/stop vLLM process, load/unload adapters, health checks (behind `VllmBackend`; fake in tests, HTTP adapter pending) |
+| `adapter-registry` | ✅ | Sync adapter index from R2, resolve versions (behind `StorageProvider`; MemoryStorage now, R2 later) |
+| `adapter-compiler` | ✅ | Compile composite adapters (weighted merge × gain) into single vLLM artifacts; recompile on component promote / spec change (Python merge behind swappable backend) |
+| `user-resolver` | ✅ | Map caller identity → adapter using file-based manifests (unknown/no-auth → default) |
+| `api-core` | ✅ | `GET /health`, `GET /v1/models` |
+| `api-chat` | ✅ | OpenAI-compatible `POST /v1/chat/completions` (JSON + SSE) |
+| `api-systemone` | ✅ | `POST /v1/systemone/completions` (mounted only when enabled) |
+| `session-collector` | ✅ | Persist gateway-generated chats to storage on `chat/request` events |
+| `data-documents` | ✅ | Data API `/v1/data/documents` — validate, dedup by hash, process, store |
+| `data-sessions` | ✅ | Data API `/v1/data/sessions` — uploaded conversation history |
+| `data-feedback` | ✅ | Data API `/v1/data/feedback` — reward validation within configured range |
+| doc processors | ✅ | `markdown`/`code`/`jsonl` transform format; `pdf` requires a Marker OCR backend (typed stub until then) |
+| `server` | ✅ | Composes all sub-apps into one Hono app; `startServer(port)` on direct run |
 
 Plugins communicate through Cordis events:
 
@@ -112,6 +115,19 @@ services:
   vllm:                 # vLLM inference engine
   # Future: monitoring, session DB, etc.
 ```
+
+## Backend Seams (implementation status)
+
+External systems are reached only through injectable interfaces so every plugin is testable
+without a GPU or network:
+
+- **`StorageProvider`** — MVP default is `MemoryStorage` (process-lifetime). The real Cloudflare
+  R2 client (`@saip/shared` `r2-client`) is not yet implemented; it will drop in behind this same
+  interface without touching any plugin. Adapter/knowledge/session/feedback indices live under
+  the documented R2 key layout regardless of backend.
+- **`VllmBackend`** — tests use a fake; the HTTP adapter to a running vLLM container is pending.
+- **Marker OCR** — the `pdf-processor` returns a typed "backend required" error until a Marker
+  service is wired; other processors are functional now.
 
 ## Configuration
 
