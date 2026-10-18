@@ -37,6 +37,7 @@ export default defineConfig({
             { label: 'Submit Feedback', slug: 'guides/submit-feedback' },
             { label: 'Manage Secrets', slug: 'guides/manage-secrets' },
             { label: 'CLI Reference', slug: 'guides/cli-reference' },
+            { label: 'Download for AI', slug: 'guides/download-for-ai' },
           ],
         },
         {

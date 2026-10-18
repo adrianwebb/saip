@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Added
+- Download for AI: Repomix context packs (XML/Markdown/JSON) at stable URLs with header selector (#10)
 - Project architecture documentation and README (#1)
 - Shared configuration schema (saip.yaml, saip.schema.yaml) (#1)
 - CLI skeleton with awake/sleep/down/status commands (#1)
