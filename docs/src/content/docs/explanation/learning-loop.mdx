@@ -15,15 +15,32 @@ Experience → Evaluation → Adaptation → (repeat)
 
 Each phase is necessary. Experience without evaluation is just data hoarding. Evaluation without adaptation is just auditing. Adaptation without experience is just drift. The loop only produces improvement when all three phases are present and connected.
 
+In practice, each of these three phases decomposes into finer-grained stages. The full loop includes interpretation (making sense of raw experience), lesson extraction (distilling generalizable principles from evaluation), and validation (confirming that adaptations actually improve behavior):
+
+```mermaid
+flowchart LR
+    E[Experience] --> I[Interpretation]
+    I --> EV[Evaluation]
+    EV --> LE[Lesson Extraction]
+    LE --> V[Validation]
+    V --> AD[Adaptation]
+    AD --> E
+```
+
+This expanded view makes explicit what the simple three-phase loop leaves implicit: experience must be *interpreted* before it can be evaluated (raw session logs are not self-explanatory), evaluation must be *distilled* into lessons before it can drive adaptation (individual feedback scores are not training data), and adaptations must be *validated* before they re-enter the experience phase (unvalidated updates are just drift).
+
 SAIP maps these phases to concrete system components:
 
 | Phase | SAIP Component | What It Captures |
 |-------|---------------|------------------|
 | Experience | Sessions | Conversations, tool use, artifacts |
+| Interpretation | Dataset Builder | Filtering, formatting, provenance tagging |
 | Evaluation | Feedback | Rewards, critiques, corrections |
-| Adaptation | Training | Adapter updates via SFT/KTO/CPT |
+| Lesson Extraction | Training Pipeline | SFT/KTO/GRPO dataset construction |
+| Validation | Promotion Workflow | Held-out evaluation, metric comparison |
+| Adaptation | Training | Adapter updates via SFT/KTO/CPT/GRPO |
 
-But the mapping is not one-to-one. Understanding *why* requires unpacking what each phase actually means.
+The mapping is not one-to-one. Understanding *why* requires unpacking what each phase actually means.
 
 ## Three Types of Experience
 
@@ -69,6 +86,29 @@ Meta-evaluation that extracts generalizable principles from specific episodes. "
 
 Reflection produces **strategy knowledge** rather than factual knowledge. It is the difference between memorizing that `Array.prototype.at()` exists and learning to prefer it over bracket indexing when bounds checking matters. SAIP's weighted KTO method captures this through scalar reward magnitudes: consistent small rewards for a behavioral pattern shape policy more reliably than occasional large rewards for specific outputs.
 
+### The 3×3 Learning Matrix
+
+Crossing the three experience types with the three evaluation types produces a 3×3 matrix of learning opportunities. Not every cell is equally populated in practice — situated experience rarely lacks outcome evaluation, and observed experience rarely receives reflection — but the matrix reveals gaps where learning signal could be cultivated:
+
+```mermaid
+graph LR
+    subgraph Experiences
+        O[Observe]
+        P[Practice]  
+        R[Operate]
+    end
+    subgraph Evaluations
+        OC[Outcome]
+        CR[Critique]
+        RF[Reflection]
+    end
+    O --> OC & CR & RF
+    P --> OC & CR & RF
+    R --> OC & CR & RF
+```
+
+The strongest learning signal comes from **operated experience evaluated by reflection**: real-world consequences analyzed for generalizable lessons. The weakest comes from **observed experience evaluated only by outcome**: knowing that a document exists without understanding why it matters. SAIP's dataset builder prioritizes cells with strong signal and flags underrepresented cells as opportunities for targeted data collection.
+
 ## Raw Experience ≠ Training Data
 
 This distinction is critical and often overlooked. A session log is not a training dataset. The transformation between them is where learning actually happens.
@@ -86,7 +126,11 @@ Skipping this transformation — feeding raw sessions directly into training —
 
 ## Knowledge, Strategy, and Preference Learning
 
-The three training methods in SAIP correspond to three distinct things a model can learn:
+:::caution[Architectural Invariant]
+**Knowledge ≠ Strategy ≠ Preference.** These are three fundamentally distinct learning dimensions. They use different training methods, different signal types, and different evaluation criteria. Conflating them — treating knowledge gaps as preference problems, or encoding preferences as knowledge — produces models that are knowledgeable but incompetent, competent but misaligned, or aligned but ignorant. Every dataset construction decision and every training run should be explicit about which dimension it targets.
+:::
+
+The training methods in SAIP correspond to these three distinct things a model can learn:
 
 ### Knowledge Learning (What Is True)
 

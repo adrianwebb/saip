@@ -68,6 +68,24 @@ Think of agent definition as operating a mixing console:
 
 Each fader (λ) controls one adapter's contribution. The base model provides the foundation. The decoding profile shapes output generation independently of adapter weights. All three dimensions — adapter selection, adapter gains, decoding parameters — are orthogonal controls.
 
+### End-to-End Composition Pipeline
+
+The full lifecycle from training through deployment follows a linear pipeline where specialization adapters are trained independently, compiled into a single agent adapter, and served through vLLM:
+
+```mermaid
+flowchart TD
+    EXP[Experience] --> TR[Trainer]
+    TR --> SA1[Coding Adapter]
+    TR --> SA2[Research Adapter]
+    TR --> SA3[Project Adapter]
+    SA1 & SA2 & SA3 --> COMP[Adapter Compiler]
+    COMP --> |weighted merge| AGENT[Agent Adapter v42]
+    AGENT --> |gain λ| VLLM[vLLM Server]
+    VLLM --> INF[Inference Responses]
+```
+
+Each specialization adapter is trained on its own dataset using the appropriate training method (SFT for coding corrections, KTO for research preferences, CPT for project knowledge). The compiler merges them into a single deployable artifact. At inference time, vLLM loads the compiled adapter and applies it with the configured gain. Feedback from inference responses flows back as new experience, closing the loop.
+
 ## Adapter Gain (λ) as an Evaluated Hyperparameter
 
 Adapter gain is not a fixed constant. It is a hyperparameter that should be **evaluated empirically** for each adapter and each composition context.
@@ -172,3 +190,18 @@ Adapters are versioned artifacts, not ephemeral training outputs. Each adapter v
 Aliases enable atomic promotion: updating `coding-general@latest` in `_index.json` is a single write operation. All agents referencing that alias immediately use the new version on their next request. Rollback is equally atomic: revert the alias to the previous version.
 
 This versioning system is what makes adapter composition safe for production use. You can experiment with new adapter versions without affecting live agents, evaluate them rigorously, and promote them atomically when ready. The composition is declarative (which adapters at which gains), the versions are immutable, and the promotion is reversible.
+
+## Adapter Competition and Breeding
+
+When multiple composition recipes exist for the same agent identity — different adapter combinations, different gain configurations, or different training methods applied to the same specialization — SAIP supports **automated competition** to select the winner.
+
+The process works as follows:
+
+1. **Generate candidates**: produce multiple compiled agent adapters from different recipes (e.g., one with coding@v12 + research@v7 at λ=0.8/0.6, another with coding@v13-candidate + research@v7 at λ=0.7/0.65)
+2. **Evaluate on shared benchmarks**: run each candidate against the same held-out evaluation suite, measuring task completion rate, reward scores, safety metrics, and latency
+3. **Select the winner**: the candidate that maximizes the composite evaluation metric earns promotion; losers are archived for future reference
+4. **Breed improvements**: winning compositions inform the next generation of candidates — if higher coding gain consistently wins, future recipes start from that baseline
+
+This approach treats adapter composition as an **optimization problem** rather than a manual tuning exercise. Over successive generations, the competition process converges toward compositions that reflect actual usage patterns and organizational priorities rather than initial guesses. The versioning system ensures every candidate is reproducible and every competition result is auditable.
+
+Competition is particularly valuable when combined with GRPO replay: GRPO-generated adapters can compete against KTO-trained adapters for the same specialization slot, letting empirical performance rather than methodological preference determine which training pathway contributes to the production agent.

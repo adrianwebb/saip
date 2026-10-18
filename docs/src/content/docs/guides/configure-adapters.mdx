@@ -7,41 +7,39 @@ SAIP uses adapters (LoRA/QLoRA weight deltas) to specialize a base model for dif
 
 ## User Manifest Format
 
-Adapter-to-user mappings live in the `adapters` section of `saip.yaml`:
+User-to-adapter mappings live in the top-level `users` array of `saip.yaml`. Each entry specifies separate adapters for inference and training:
 
 ```yaml
-adapters:
-  # Default adapter for unauthenticated requests
-  default: general@latest
+# User → adapter mapping (file-based for MVP)
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
 
-  # Per-user adapter assignments
-  users:
-    alice: coding@latest
-    bob: general@latest
-    carol: research@latest
+  - id: "alice"
+    adapters:
+      inference: "coding@latest"
+      training: "coding"
 
-  # Named groups for shared adapter access
-  groups:
-    engineering:
-      adapter: coding@latest
-      members: [alice, dave, eve]
-    research-team:
-      adapter: research@latest
-      members: [carol, frank]
+  - id: "bob"
+    adapters:
+      inference: "general@latest"
+      training: "general"
 ```
+
+Each user entry has:
+- **`id`** — the user identifier (use `"default"` for unauthenticated requests).
+- **`adapters.inference`** — the adapter used for inference requests.
+- **`adapters.training`** — the adapter used as the base for training runs.
 
 ### Resolution Order
 
 When a request arrives, the inference gateway resolves the adapter in this order:
 
 1. **Explicit header** — `X-SAIP-Adapter: coding@000042` overrides everything.
-2. **User mapping** — looked up from the authenticated user ID.
-3. **Group mapping** — if the user belongs to a group, the group's adapter applies.
-4. **Default** — falls back to `adapters.default`.
-
-:::note[Precedence]
-User-level mappings always override group mappings. If Alice is in the `engineering` group but also has a personal `users.alice` entry, her personal adapter wins.
-:::
+2. **User mapping** — looked up from the authenticated user ID in the `users` array.
+3. **Default** — falls back to the entry with `id: "default"`.
 
 ## Adapter Versioning Convention
 
@@ -72,25 +70,28 @@ Versions are zero-padded 6-digit integers, sorted lexicographically. This ensure
 Version numbers don't need to be contiguous, but they must be monotonically increasing. Never reuse a version number — if `general@000042` was defective, publish `general@000043` instead of overwriting.
 :::
 
-## Adapter Aliasing
+## Adapter Aliasing (Runtime Resolution)
 
-You can define aliases to decouple user-facing names from internal versions:
+Adapter aliasing is a **runtime concept**, not a configuration field in `saip.yaml`. The inference gateway maintains an adapter index (`adapters/_index.json` in R2) that maps aliases to concrete versions:
 
-```yaml
-adapters:
-  aliases:
-    stable-general: general@000040
-    experimental-coding: coding@000018
-
-  users:
-    alice: experimental-coding   # Resolves to coding@000018
-    bob: stable-general          # Resolves to general@000040
+```json
+{
+  "adapters": {
+    "general@000042": { "id": "general@000042", "base_model": "Qwen/Qwen3.5-4B", ... },
+    "coding@000018": { "id": "coding@000018", "base_model": "Qwen/Qwen3.5-4B", ... }
+  },
+  "aliases": {
+    "general@latest": "general@000042",
+    "coding@latest": "coding@000018"
+  },
+  "updated_at": "2025-01-15T10:00:00Z"
+}
 ```
 
-Aliases are resolved recursively — an alias can point to another alias, but circular references are detected and rejected at startup.
+When `saip.yaml` references `general@latest`, the gateway resolves it through this index to the concrete version `general@000042`. This allows you to use stable names like `@latest` in your user mappings while the underlying version advances with each training run.
 
 :::tip[Canary Deployments]
-Use aliases for gradual rollouts. Point `stable-general` at a known-good version while `general@latest` tracks the newest. Assign test users to `latest` and production users to `stable`. When satisfied, update the alias.
+For gradual rollouts, pin specific users to a concrete version (e.g., `general@000040`) while others track `general@latest`. Update the alias in the R2 index when satisfied with the new version.
 :::
 
 ## Adding New Users
@@ -100,9 +101,16 @@ To add a user to the system:
 1. **Add to `saip.yaml`:**
 
 ```yaml
-adapters:
-  users:
-    newuser: general@latest
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+
+  - id: "newuser"
+    adapters:
+      inference: "general@latest"
+      training: "general"
 ```
 
 2. **Reload configuration** (no restart needed):
@@ -118,18 +126,6 @@ saip status --adapter-resolution newuser
 # Output: newuser → general@latest → general@000042
 ```
 
-### Adding Users to Groups
-
-```yaml
-adapters:
-  groups:
-    engineering:
-      adapter: coding@latest
-      members: [alice, dave, eve, newuser]  # Add here
-```
-
-Users can belong to multiple groups, but only the first matching group (in YAML order) determines the adapter unless overridden by a user-level mapping.
-
 ## How the Inference Gateway Resolves Adapters
 
 The gateway performs adapter resolution on every incoming request:
@@ -141,16 +137,13 @@ Request arrives
 Has X-SAIP-Adapter header? ──Yes──► Load specified adapter
     │No
     ▼
-Authenticated user ID? ──No──► Load adapters.default
+Authenticated user ID? ──No──► Load default user's adapter
     │Yes
     ▼
-User in adapters.users? ──Yes──► Resolve user's adapter
+User in users array? ──Yes──► Resolve user's adapters.inference
     │No
     ▼
-User in any group? ──Yes──► Resolve group's adapter
-    │No
-    ▼
-Load adapters.default
+Load default user's adapters.inference
 ```
 
 ### Hot Reloading
@@ -168,34 +161,44 @@ Adapter hot-reloading is seamless — no requests are dropped during the transit
 
 ## Complete Example
 
-A production-ready `saip.yaml` adapter configuration:
+A production-ready `saip.yaml` user configuration:
 
 ```yaml
-adapters:
-  default: general@latest
+# User → adapter mapping
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
 
-  aliases:
-    prod-general: general@000040
-    canary-general: general@latest
+  - id: "alice"
+    adapters:
+      inference: "coding@latest"
+      training: "coding"
 
-  users:
-    alice: coding@latest
-    bob: prod-general
-    carol: research@latest
-    dave: canary-general
+  - id: "bob"
+    adapters:
+      inference: "general@000040"
+      training: "general"
 
-  groups:
-    engineering:
-      adapter: coding@latest
-      members: [alice, eve]
-    qa:
-      adapter: canary-general
-      members: [grace, heidi]
+  - id: "carol"
+    adapters:
+      inference: "research@latest"
+      training: "research"
+
+  - id: "dave"
+    adapters:
+      inference: "general@latest"
+      training: "general"
 ```
 
 In this setup:
-- **Alice** gets `coding@latest` (user mapping overrides her `engineering` group membership).
-- **Bob** is pinned to `general@000040` via the `prod-general` alias.
-- **Dave** gets whatever the newest `general` version is, acting as a canary tester.
-- **Unauthenticated requests** fall back to `general@latest`.
-- **Eve** inherits `coding@latest` from the `engineering` group.
+- **Alice** uses `coding@latest` for both inference and training.
+- **Bob** is pinned to `general@000040` for inference (a known-good version).
+- **Carol** uses the latest research adapter.
+- **Dave** tracks `general@latest`, acting as a canary tester.
+- **Unauthenticated requests** fall back to the `default` user's `general@latest`.
+
+:::note[Adapter Aliasing]
+The `@latest` suffix is resolved at runtime through the adapter index in R2 (`adapters/_index.json`). See [Adapter Aliasing](#adapter-aliasing-runtime-resolution) above for details.
+:::

@@ -74,16 +74,14 @@ cp .env.example .env
 Required variables for local deployment:
 
 ```ini
-# R2 storage for models and knowledge
-R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=your-access-key
-R2_SECRET_ACCESS_KEY=your-secret-key
-R2_BUCKET_NAME=saip-local
+# Cloudflare R2 storage for adapters, knowledge, sessions, feedback
+SAIP_R2_BUCKET=saip-local
+SAIP_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+SAIP_R2_ACCESS_KEY_ID=your-access-key
+SAIP_R2_SECRET_ACCESS_KEY=your-secret-key
 
-# Inference settings
-SAIP_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
-SAIP_GPU_DEVICE=0
-SAIP_MAX_MODEL_LEN=4096
+# HuggingFace Hub token for downloading base models
+SAIP_HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 :::note[Bucket Naming]
@@ -95,10 +93,10 @@ For local deployments, use a dedicated R2 bucket (e.g., `saip-local`) to avoid c
 Before starting services, confirm your R2 credentials work:
 
 ```bash
-aws s3 ls s3://${R2_BUCKET_NAME}/ \
-  --endpoint-url ${R2_ENDPOINT} \
-  --access-key ${R2_ACCESS_KEY_ID} \
-  --secret-key ${R2_SECRET_ACCESS_KEY}
+aws s3 ls s3://${SAIP_R2_BUCKET}/ \
+  --endpoint-url ${SAIP_R2_ENDPOINT} \
+  --access-key ${SAIP_R2_ACCESS_KEY_ID} \
+  --secret-key ${SAIP_R2_SECRET_ACCESS_KEY}
 ```
 
 If this returns an error, double-check your credentials and endpoint URL. See [Troubleshooting](#r2-connection-failures) below.
@@ -117,7 +115,7 @@ Expected output:
 
 ```
 [awake] Pulling inference image... done
-[awake] Syncing model from R2 (Qwen/Qwen2.5-7B-Instruct-AWQ)... done (4.2 GB)
+[awake] Syncing model from R2 (Qwen/Qwen3.5-4B)... done (4.2 GB)
 [awake] Starting inference container on GPU 0... running
 [awake] Health check passed — API available at http://localhost:8000/v1
 ```
@@ -195,7 +193,7 @@ SAIP exposes Prometheus metrics at `http://localhost:8000/metrics`. Key metrics 
 **Solutions:**
 1. Verify credentials are correct and not expired.
 2. Confirm the bucket exists and your key has read/write permissions.
-3. Check that `R2_ENDPOINT` uses the correct regional endpoint (not the global S3 endpoint).
+3. Check that `SAIP_R2_ENDPOINT` uses the correct regional endpoint (not the global S3 endpoint).
 4. Test connectivity outside Docker first (see [Verify R2 Connectivity](#verify-r2-connectivity)).
 5. If behind a proxy, set `HTTPS_PROXY` in your `.env`.
 

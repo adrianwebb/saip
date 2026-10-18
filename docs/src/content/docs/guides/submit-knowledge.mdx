@@ -37,42 +37,49 @@ Each line must be a valid JSON object with at least a `text` field. Additional f
 
 ```
 POST /v1/knowledge
-Content-Type: multipart/form-data
-Authorization: Bearer <token>
+Content-Type: application/json
 ```
 
-#### Single File Upload
+The training gateway listens on port **8001** (not the inference port 8000).
+
+#### Single Document
 
 ```bash
-curl -X POST http://localhost:8000/v1/knowledge \
-  -H "Authorization: Bearer $SAIP_API_TOKEN" \
-  -F "file=@./docs/architecture.md" \
-  -F "source=internal/wiki" \
-  -F "license=proprietary" \
-  -F "tags=architecture,design"
+curl -X POST http://localhost:8001/v1/knowledge \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "internal/wiki/architecture.md",
+    "source_type": "document",
+    "content": "# Architecture\n\nSAIP uses a modular...",
+    "license": "proprietary",
+    "tags": ["architecture", "design"]
+  }'
 ```
 
-#### Batch Upload (JSONL)
+#### Dataset Submission
 
 ```bash
-curl -X POST http://localhost:8000/v1/knowledge \
-  -H "Authorization: Bearer $SAIP_API_TOKEN" \
-  -F "file=@./corpus/dataset.jsonl" \
-  -F "source=external/arxiv" \
-  -F "license=CC-BY-4.0" \
-  -F "tags=ml,research"
+curl -X POST http://localhost:8001/v1/knowledge \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "external/arxiv/papers.jsonl",
+    "source_type": "dataset",
+    "content": "{\"text\": \"...\"}\n{\"text\": \"...\"}",
+    "license": "CC-BY-4.0",
+    "tags": ["ml", "research"]
+  }'
 ```
 
 #### Response
 
 ```json
 {
-  "id": "kn_20240315_a1b2c3d4",
-  "status": "accepted",
-  "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "size_bytes": 14523,
-  "format": "markdown",
-  "chunks": 12
+  "id": "kn-20250115-001",
+  "source": "internal/wiki/architecture.md",
+  "source_type": "document",
+  "hash": "sha256:a1b2c3...",
+  "size_bytes": 4096,
+  "created_at": "2025-01-15T10:30:00Z"
 }
 ```
 
@@ -82,18 +89,21 @@ curl -X POST http://localhost:8000/v1/knowledge \
 GET /v1/knowledge?limit=20&offset=0
 ```
 
-Returns paginated results with status and metadata for each submission.
+Returns paginated results with metadata for each submission. Query the training gateway on port **8001**:
 
-## Metadata Fields
+```bash
+curl "http://localhost:8001/v1/knowledge?tag=onboarding&limit=10"
+```
 
-| Field | Required | Description | Example |
-|-------|----------|-------------|---------|
-| `source` | Yes | Origin identifier (org/repo/path) | `github/adrianwebb/saip` |
-| `license` | Yes | SPDX license identifier or `proprietary` | `MIT`, `CC-BY-4.0` |
-| `tags` | No | Comma-separated classification tags | `ml,tutorial,beginner` |
-| `language` | Auto | Programming language (for code files) | `python`, `typescript` |
-| `author` | No | Original author name | `Jane Smith` |
-| `date` | No | Publication date (ISO 8601) | `2024-03-15` |
+## Request Fields
+
+| Field | Type | Required | Description | Example |
+|-------|------|----------|-------------|---------|
+| `source` | string | Yes | Origin URI or description | `internal/wiki/onboarding.md` |
+| `source_type` | string | Yes | Source classification: `document`, `repository`, or `dataset` | `document` |
+| `content` | string | Yes | Raw document content (inline) | `# Onboarding Guide\n...` |
+| `license` | string | No | SPDX license identifier | `MIT`, `CC-BY-4.0` |
+| `tags` | string[] | No | Classification tags (array) | `["ml", "tutorial"]` |
 
 :::tip[Source Conventions]
 Use consistent source identifiers to enable filtering and deduplication downstream. Recommended patterns:
@@ -145,8 +155,7 @@ Deduplication operates at the **document level** (full-file hash), not the chunk
 ### Delete a Submission
 
 ```bash
-curl -X DELETE http://localhost:8000/v1/knowledge/kn_20240315_a1b2c3d4 \
-  -H "Authorization: Bearer $SAIP_API_TOKEN"
+curl -X DELETE http://localhost:8001/v1/knowledge/kn-20250115-001
 ```
 
 This removes the raw file and all associated chunks from R2. Already-trained chunks remain in completed training runs but won't appear in future batches.

@@ -46,6 +46,7 @@ export default defineConfig({
             { label: 'Training API', slug: 'reference/api-training' },
             { label: 'Adapter Manifest', slug: 'reference/adapter-manifest' },
             { label: 'Cordis Plugins', slug: 'reference/cordis-plugins' },
+            { label: 'Glossary', slug: 'reference/glossary' },
           ],
         },
         {

@@ -11,8 +11,8 @@ Each feedback record captures a human evaluation of a specific agent interaction
 
 ```json
 {
-  "session_id": "sess_20240315_x7k9m2",
-  "turn_index": 3,
+  "session_id": "sess-abc123",
+  "message_id": "msg-xyz789",
   "reward": 2,
   "confidence": 0.85,
   "dimensions": {
@@ -21,8 +21,7 @@ Each feedback record captures a human evaluation of a specific agent interaction
     "efficiency": 3,
     "risk": 0
   },
-  "comment": "Correct answer but took too many steps to get there.",
-  "evaluator": "alice"
+  "feedback_text": "Correct answer but took too many steps to get there."
 }
 ```
 
@@ -31,17 +30,16 @@ Each feedback record captures a human evaluation of a specific agent interaction
 | Field | Type | Description |
 |-------|------|-------------|
 | `session_id` | string | The conversation session this feedback refers to |
-| `reward` | integer | Overall reward score (-3 to +3) |
-| `confidence` | float | Evaluator confidence (0.0 to 1.0) |
+| `reward` | number | Overall reward score (-3 to +3) |
 
 ### Optional Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `turn_index` | integer | Specific turn within the session (omit for whole-session feedback) |
+| `message_id` | string | Specific message within the session (omit for whole-session feedback) |
+| `confidence` | number | Evaluator confidence weight (0.0 to 1.0) |
 | `dimensions` | object | Per-dimension scores (see below) |
-| `comment` | string | Free-text explanation |
-| `evaluator` | string | Who provided the feedback |
+| `feedback_text` | string | Free-text explanation |
 
 ## Reward Scale
 
@@ -113,15 +111,15 @@ Feedback must reference a valid `session_id`. Sessions are created by the infere
 To find session IDs:
 
 ```bash
-# List recent sessions
+# List recent sessions (inference gateway, port 8000)
 curl http://localhost:8000/v1/sessions?limit=10
 
-# Get a specific session transcript
-curl http://localhost:8000/v1/sessions/sess_20240315_x7k9m2
+# Get a specific session transcript (inference gateway, port 8000)
+curl http://localhost:8000/v1/sessions/sess-abc123
 ```
 
-:::tip[Turn-Level Feedback]
-When providing feedback on a specific turn, include `turn_index` (0-based). This enables the training pipeline to construct precise preference pairs for KTO — comparing the actual response against what would have been better at that exact point in the conversation.
+:::tip[Message-Level Feedback]
+When providing feedback on a specific message, include `message_id`. This enables the training pipeline to construct precise preference pairs for KTO — comparing the actual response against what would have been better at that exact point in the conversation.
 :::
 
 ## How Feedback Feeds Training
@@ -157,19 +155,19 @@ Unlike RLHF/DPO, KTO doesn't need paired (chosen, rejected) examples. It works w
 
 ### Submit Feedback
 
+The training gateway listens on port **8001** (not the inference port 8000).
+
 ```
 POST /v1/feedback
 Content-Type: application/json
-Authorization: Bearer <token>
 ```
 
 ```bash
-curl -X POST http://localhost:8000/v1/feedback \
-  -H "Authorization: Bearer $SAIP_API_TOKEN" \
+curl -X POST http://localhost:8001/v1/feedback \
   -H "Content-Type: application/json" \
   -d '{
-    "session_id": "sess_20240315_x7k9m2",
-    "turn_index": 3,
+    "session_id": "sess-abc123",
+    "message_id": "msg-xyz789",
     "reward": 2,
     "confidence": 0.85,
     "dimensions": {
@@ -178,8 +176,7 @@ curl -X POST http://localhost:8000/v1/feedback \
       "efficiency": 3,
       "risk": 0
     },
-    "comment": "Correct answer but took too many steps.",
-    "evaluator": "alice"
+    "feedback_text": "Correct answer but took too many steps."
   }'
 ```
 
@@ -193,7 +190,9 @@ Response:
 }
 ```
 
-### Batch Submit
+### Batch Submit (Optional)
+
+The batch endpoint is optional — you can also submit feedback records individually.
 
 ```
 POST /v1/feedback/batch
@@ -203,25 +202,24 @@ Content-Type: application/json
 Accepts an array of feedback records (max 100 per request):
 
 ```bash
-curl -X POST http://localhost:8000/v1/feedback/batch \
-  -H "Authorization: Bearer $SAIP_API_TOKEN" \
+curl -X POST http://localhost:8001/v1/feedback/batch \
   -H "Content-Type: application/json" \
   -d '[
-    {"session_id": "sess_a", "reward": 2, "confidence": 0.9},
-    {"session_id": "sess_b", "reward": -1, "confidence": 0.7, "comment": "Hallucinated API endpoint"}
+    {"session_id": "sess-a", "reward": 2, "confidence": 0.9},
+    {"session_id": "sess-b", "reward": -1, "confidence": 0.7, "feedback_text": "Hallucinated API endpoint"}
   ]'
 ```
 
 ### Query Feedback
 
-```
-GET /v1/feedback?session_id=sess_20240315_x7k9m2
-GET /v1/feedback?evaluator=alice&since=2024-03-01
+```bash
+curl "http://localhost:8001/v1/feedback?session_id=sess-abc123"
+curl "http://localhost:8001/v1/feedback?min_reward=-1&max_reward=3&limit=20"
 ```
 
 ## Best Practices
 
-- **Provide comments on negative feedback** — the comment guides corrective SFT generation. "Wrong" is less useful than "Used deprecated `os.popen()` instead of `subprocess.run()`."
+- **Provide feedback_text on negative feedback** — the text guides corrective SFT generation. "Wrong" is less useful than "Used deprecated `os.popen()` instead of `subprocess.run()`."
 - **Score dimensions even when giving overall feedback** — dimension scores dramatically improve KTO signal quality.
 - **Submit feedback promptly** — fresh context produces more accurate evaluations.
 - **Don't skip neutral interactions** — if a response was fine but unremarkable, a quick +1/0.6 still contributes useful signal.

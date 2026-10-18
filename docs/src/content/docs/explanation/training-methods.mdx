@@ -1,9 +1,9 @@
 ---
 title: Training Methods
-description: Understanding knowledge embedding, corrective SFT, and weighted KTO
+description: Understanding knowledge embedding, corrective SFT, weighted KTO, and GRPO replay
 ---
 
-SAIP uses three distinct training methods, each teaching the model something different. They are not interchangeable alternatives — they are complementary tools that address different aspects of the learning loop. This page explains what each method teaches, how it works mechanically, and when to reach for it.
+SAIP uses four distinct training methods, each teaching the model something different. They are not interchangeable alternatives — they are complementary tools that address different aspects of the learning loop. This page explains what each method teaches, how it works mechanically, and when to reach for it.
 
 ## Knowledge Embedding (Continued Pretraining)
 
@@ -118,17 +118,15 @@ A naive approach would treat reward magnitude linearly: a +3 is three times as i
 1. **Reward calibration is nonlinear in practice**: the difference between +2 and +3 is often larger than the difference between +1 and +2, because extreme scores require stronger justification.
 2. **Outlier dominance**: linear scaling lets rare extreme scores dominate the gradient, destabilizing training.
 
-Weighted KTO uses a **bounded nonlinear magnitude function**:
+Weighted KTO uses a **configurable magnitude mapping** — this is a design choice, not a fixed algorithm. The recommended starting point is a discrete lookup table:
 
-```
-magnitude(r) = sign(r) × min(|r|^α, M)
-```
+| Score | Magnitude |
+|-------|-----------|
+| ±1    | 0.5       |
+| ±2    | 1.0       |
+| ±3    | 1.5       |
 
-where α (typically 0.7–0.8) provides sublinear scaling and M caps the maximum influence of any single example. This ensures that:
-
-- Small rewards still contribute meaningful signal (not drowned out by noise)
-- Large rewards have outsized but bounded influence (not destabilizing)
-- The function is symmetric around zero (positive and negative signals scale identically)
+This sublinear mapping ensures that small rewards still contribute meaningful signal (not drowned out by noise), large rewards have outsized but bounded influence (not destabilizing), and the function is symmetric around zero (positive and negative signals scale identically). Teams can adjust these values or replace the table with a continuous function (e.g., `sign(r) × min(|r|^α, M)` with α ≈ 0.7–0.8) depending on their feedback distribution characteristics.
 
 The confidence field further modulates magnitude: a +3 with confidence 0.5 contributes less than a +3 with confidence 1.0. This accounts for uncertain or noisy feedback without discarding it entirely.
 
@@ -137,6 +135,15 @@ The confidence field further modulates magnitude: a +3 with confidence 0.5 contr
 Standard KTO requires binary desirable/undesirable labels and discards neutral examples. Weighted KTO retains neutral examples (reward = 0) as **baseline references**. They anchor the reward distribution and prevent the model from drifting toward universally positive or negative policies.
 
 Neutral examples serve as the "control group" in the training signal: they represent the current policy's default behavior. Deviations from neutral (positive or negative) are measured relative to this baseline, making the learned reward landscape more stable across training runs.
+
+:::note[Two Meanings of Zero]
+A reward of 0 carries an important ambiguity that dataset builders must resolve explicitly:
+
+- **"No opinion"** — the evaluator had no basis for judgment (e.g., the task was outside scope, or the feedback was skipped). These examples should typically be **excluded** from training, as they carry no learnable signal.
+- **"Acceptable behavior"** — the response was neither good nor bad; it met baseline expectations without excelling. These examples should be **retained** as baseline anchors, providing the reference point against which positive and negative rewards are measured.
+
+SAIP distinguishes these cases through optional metadata on feedback records. When the distinction is unavailable, the conservative default is to retain zero-reward examples as baselines rather than discard potentially useful anchoring signal.
+:::
 
 ### Comparison to Related Methods
 
@@ -149,9 +156,98 @@ Neutral examples serve as the "control group" in the training signal: they repre
 
 Weighted KTO's advantage for SAIP is that it works with the feedback that naturally accumulates during inference: scalar scores from users, optionally with confidence and dimension breakdowns. It does not require constructing preference pairs (expensive), maintaining a reward model (complex), or running online RL loops (unstable). It converts the existing feedback stream directly into policy gradients.
 
+## GRPO Replay (Group Relative Policy Optimization)
+
+### What It Teaches
+
+GRPO teaches **policy improvement through exploration**: rather than learning only from what the model actually did (observed experience), GRPO generates multiple candidate responses to the same prompt, evaluates them against a reward function, and learns from the *relative advantages* within each group. The model discovers better strategies by comparing alternatives it generated itself.
+
+Where corrective SFT says "here is the right answer" and weighted KTO says "responses like this tend to be good," GRPO says "out of eight attempts at this problem, these two were best — learn what made them better."
+
+### Simulated Replay of Historical Situations
+
+SAIP uses GRPO for **simulated replay**: taking historical situations from past sessions and running them through the current policy to generate fresh candidate responses. This is analogous to a chess player reviewing past games with their current understanding — the situations are real, but the responses are newly generated.
+
+The replay process works as follows:
+
+1. Select historical prompts from the session archive (filtered for relevance and diversity)
+2. Generate G candidate responses per prompt using the current adapter (typically G = 4–8)
+3. Score each candidate against one or more reward functions
+4. Compute relative advantages within each group (normalize scores so the group mean is zero)
+5. Update the policy to increase the probability of above-average responses and decrease below-average ones
+
+This approach extracts new learning signal from old situations. A prompt that received mediocre feedback in production may yield excellent candidates when replayed through an improved policy — and the contrast between candidates teaches the model what distinguishes better from worse.
+
+### Complementarity with Weighted KTO
+
+GRPO and weighted KTO are **co-equal training pathways** that address fundamentally different learning modes:
+
+- **Weighted KTO learns from observed experience**: it shapes policy based on actual feedback from real interactions. The signal is grounded but limited to what happened to occur.
+- **GRPO explores alternatives**: it generates counterfactual responses and learns from their relative quality. The signal is broader but synthetic.
+
+Together they form a complete learning picture: KTO grounds the model in what users actually valued, while GRPO explores the space of what the model *could* do. KTO prevents GRPO from drifting into plausible-but-unhelpful behaviors; GRPO prevents KTO from overfitting to the specific responses that happened to be produced.
+
+### Multi-Objective Rewards (GDPO)
+
+GRPO naturally extends to **multi-objective optimization** through composite reward functions. SAIP's GDPO (Generalized Direct Preference Optimization) support allows combining multiple reward dimensions:
+
+- **Correctness**: does the response solve the stated problem accurately?
+- **Efficiency**: is the response appropriately concise without sacrificing clarity?
+- **Safety**: does the response avoid harmful, misleading, or inappropriate content?
+
+Each dimension produces a scalar score; the composite reward is a weighted combination. This lets GRPO optimize for balanced behavior rather than maximizing a single metric at the expense of others. The weights themselves become tunable hyperparameters that encode organizational priorities.
+
+### Compute Considerations
+
+GRPO requires significantly more compute than the other training methods because it generates rollouts during training. Each training step involves G forward passes per prompt (to generate candidates) plus the standard backward pass. For G = 8, this means roughly 8× the inference cost of SFT or KTO training.
+
+Practical mitigations include:
+
+- Using a smaller model or quantized weights for rollout generation
+- Caching prompts and reusing rollouts across multiple gradient steps
+- Running GRPO less frequently than KTO (e.g., one GRPO round per three KTO rounds)
+- Limiting replay to high-value historical situations rather than the full session archive
+
+Despite the cost, GRPO's ability to explore beyond observed data makes it essential for agents that need to improve proactively rather than only reactively.
+
+## Axolotl Plugin Architecture
+
+All four training methods described above — Knowledge Embedding, Corrective SFT, Weighted KTO, and GRPO Replay — are implemented as **Axolotl BasePlugin extensions**. Each method is a custom trainer class that plugs into Axolotl's training framework through its plugin API.
+
+This is architecturally significant. Weighted KTO, for example, is *not* native Axolotl functionality — it is a SAIP-specific plugin that extends Axolotl's training loop with scalar reward weighting, magnitude mapping, and neutral example handling. Similarly, the GRPO replay trainer is a custom plugin that integrates rollout generation and group-relative advantage computation into Axolotl's training orchestration.
+
+This design mirrors Cordis's **"everything is a plugin" philosophy** on the training side. Rather than forking Axolotl or maintaining patches against upstream, SAIP treats every training method as a composable, replaceable extension. This means:
+
+- New training methods can be added without modifying Axolotl core
+- Existing methods can be swapped or upgraded independently
+- The training configuration remains declarative (YAML-driven) even for custom methods
+- Upstream Axolotl updates can be adopted without resolving merge conflicts in custom training code
+
+The plugin boundary enforces clean separation between training infrastructure (Axolotl) and training methodology (SAIP plugins), making both easier to maintain and evolve.
+
+## Training Path Fan-Out
+
+A single canonical experience record can contribute to multiple training pathways simultaneously. The diagram below shows how one experience fans out into four distinct training inputs, all converging on a unified Axolotl training run:
+
+```mermaid
+graph TD
+    E[Canonical Experience Record] --> K[Knowledge Embedding]
+    E --> C[Corrective SFT]
+    E --> R[Weighted KTO]
+    E --> G[GRPO Replay]
+    K --> |completion dataset| T[Axolotl Training]
+    C --> |feedback-weighted SFT| T
+    R --> |scalar reward dataset| T
+    G --> |rollout + reward| T
+    T --> A[New QLoRA Adapter]
+    A --> P[Promote to R2]
+```
+
+Not every experience feeds all four paths. Knowledge embedding draws from uploaded documents and corpora; corrective SFT and weighted KTO draw from session feedback; GRPO replay draws from archived prompts. But the canonical record format ensures provenance is preserved regardless of which path(s) an experience enters, enabling ablation analysis and auditability.
+
 ## When to Use Each Method
 
-The three methods are complementary. A healthy continual learning cycle uses all three, but not simultaneously or with equal frequency:
+The four methods are complementary. A healthy continual learning cycle uses all of them, but not simultaneously or with equal frequency:
 
 ### Knowledge Embedding First
 
@@ -171,6 +267,12 @@ When you want to adjust the model's general tendencies — tone, verbosity, risk
 
 **Frequency**: Periodic. Run on accumulated feedback batches when reward distributions show consistent trends (e.g., users consistently rate verbose responses lower).
 
+### GRPO Replay for Exploration
+
+When the model has plateaued under KTO and corrective SFT, or when you want to proactively discover better strategies rather than waiting for user feedback to reveal them, use GRPO replay. This is the exploration tool: generating alternatives to historical situations and learning from relative quality differences.
+
+**Frequency**: Occasional. More compute-intensive than other methods; run when sufficient high-value historical prompts have accumulated and the model's current policy is stable enough to serve as a meaningful baseline for comparison.
+
 ### Combined Workflow
 
 A typical learning cycle looks like:
@@ -178,10 +280,10 @@ A typical learning cycle looks like:
 1. Deploy adapter v1 (awake mode)
 2. Accumulate sessions and feedback over days/weeks
 3. Switch to sleep mode
-4. Build datasets: CPT from new knowledge uploads, corrective SFT from flagged sessions, KTO from reward distributions
-5. Train adapter v2 using one or more methods
+4. Build datasets: CPT from new knowledge uploads, corrective SFT from flagged sessions, KTO from reward distributions, GRPO replay candidates from archived prompts
+5. Train adapter v2 using one or more methods (KTO and GRPO can run sequentially on the same adapter)
 6. Evaluate adapter v2 on held-out sessions
 7. Promote adapter v2 if metrics improve
 8. Return to awake mode with adapter v2
 
-The methods compose: an adapter trained with corrective SFT can be further refined with weighted KTO. A knowledge-embedded adapter can receive behavioral corrections without losing its domain knowledge. The adapter versioning system tracks which methods contributed to each version, enabling rollback and ablation analysis.
+The methods compose: an adapter trained with corrective SFT can be further refined with weighted KTO, then explored further with GRPO replay. A knowledge-embedded adapter can receive behavioral corrections without losing its domain knowledge. The adapter versioning system tracks which methods contributed to each version, enabling rollback and ablation analysis.
