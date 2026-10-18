@@ -16,6 +16,9 @@ import { ApiChatService } from './plugins/api-chat.js'
 import { ApiSystemOneService } from './plugins/api-systemone.js'
 import { SessionCollectorService } from './plugins/session-collector.js'
 import { DataDocumentsService } from './plugins/data-documents.js'
+import { DataSessionsService } from './plugins/data-sessions.js'
+import { DataFeedbackService } from './plugins/data-feedback.js'
+import { ServerService } from './plugins/server.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
 
@@ -66,6 +69,8 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
   await ctx.plugin(SessionCollectorService, { storage })
   await ctx.plugin(DataDocumentsService, { storage })
+  await ctx.plugin(DataSessionsService, { storage })
+  await ctx.plugin(DataFeedbackService, { storage, rewardRange: config.training?.methods?.weighted_kto?.reward_range })
 
   // Validate the loaded registry once at boot — CLI/inference/training must
   // agree on validity, so an invalid registry fails loudly here.
@@ -75,12 +80,17 @@ export async function createApp(opts: CreateAppOptions = {}) {
     throw new Error(`invalid adapter registry: ${codes}`)
   }
 
-  // Remaining plugins (apiSessions, apiFeedback, server composition) register
-  // here as they are implemented.
+  // Compose all API sub-apps into one server (registered last so every route
+  // plugin already exists on ctx).
+  await ctx.plugin(ServerService)
   return ctx
 }
 
 // Only boot when run directly (not when imported by tests).
 if (import.meta.url === `file://${process.argv[1]}`) {
-  void createApp().then(() => console.log('[saip-inference] Gateway starting...'))
+  void createApp().then((ctx) => {
+    const port = Number(process.env.SAIP_INFERENCE_PORT ?? (ctx as any).gatewayState.config.inference.port ?? 8000)
+    ;(ctx as any).server.start(port)
+    console.log(`[saip-inference] Gateway listening on :${port}`)
+  })
 }
