@@ -15,6 +15,10 @@ Click **Download for AI** in the site header (top right) and choose a format. Or
 | Markdown | `/saip/context-pack/saip-docs.md` | Human-readable, skills files, repo instructions |
 | JSON | `/saip/context-pack/saip-docs.json` | Programmatic consumption, tooling |
 
+:::note[Format guarantees]
+Each pack respects its declared format: **XML** is strict well-formed output (real `<repomix>` root, escaped file contents — parseable by any standard XML parser), **JSON** parses as valid JSON with a `files` path→content map, and **Markdown** is plain text by design. The build validates all three contracts before publishing; a broken format fails CI.
+:::
+
 The URLs never change — you get whatever version matches the currently deployed site. Each pack embeds its source commit hash and generation timestamp so an AI can tell which build it reflects.
 
 ## What's Inside
