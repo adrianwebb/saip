@@ -62,3 +62,42 @@ All subprojects share the same branch model, workflow gate, documentation-first 
 changelog convention defined in this file and the `release-workflow` skill. Per-subproject
 configuration (test commands, manifests, build steps) is recorded in the project config when
 the release-workflow skill is loaded.
+
+## Git Remote Protocol (MANDATORY)
+
+This repository uses **HTTPS** for all git operations. The remote must be configured as:
+
+```
+https://github.com/adrianwebb/saip.git
+```
+
+Do not use SSH (`git@github.com:...`). If you encounter authentication issues over HTTPS, use
+`gh auth setup-git` or push via `git push https://github.com/adrianwebb/saip.git <branch>` as a
+fallback. Never switch the remote to SSH to work around an HTTPS problem.
+
+## Agent Loop Guard (MANDATORY)
+
+Agents must not repeat the same action without progress. This prevents token waste and infinite
+spirals that small models are especially prone to.
+
+**The rule:** If the same tool call, command, or message has been attempted **3 times** with the
+same (or functionally equivalent) result, the agent MUST stop retrying and instead:
+
+1. **Diagnose** why the repetition is not producing progress.
+2. **Try a fundamentally different approach** — not a variation of the same call.
+3. **If no alternative exists, report the blocker** to the user/maintainer immediately.
+
+**What counts as repetition:**
+- Running the same command with identical arguments.
+- Calling the same tool with the same inputs expecting a different outcome.
+- Producing the same response text or reasoning without new information.
+- Re-reading the same file without acting on its contents.
+
+**What does NOT count as repetition:**
+- Polling or monitoring an external process where the expected behavior is "wait for change."
+- Iterating through a known finite list (e.g., checking each file in a directory).
+- Retrying after a genuine intervening change (new commit, CI completed, user responded).
+
+**Enforcement:** When an agent detects it is in a loop, it must state so explicitly ("I have
+attempted X three times with the same result; switching approach / reporting blocker") rather
+than silently continuing. Silence during a loop is the failure mode this rule prevents.

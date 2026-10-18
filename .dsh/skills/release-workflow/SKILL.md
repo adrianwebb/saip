@@ -101,6 +101,7 @@ Read these once per project — from its manifest, CI workflows, and existing ta
 | Merge style for feature PRs | branch protection settings, maintainer | squash (changelog from PR titles) |
 | Required labels / issue templates | `.github/ISSUE_TEMPLATE`, `gh label list` | `bug`, `enhancement` |
 | Integration + production branch names | `git branch -r` | `staging` + `main` |
+| Git remote protocol | `git remote -v` | HTTPS (preferred) or SSH |
 
 **No GitHub / no `gh`?** The flow is identical; only the tool layer changes. Substitute per forge:
 
@@ -597,6 +598,33 @@ This workflow's gates are claims until verified. Apply `verification-before-comp
 
 Checking a PR's testing box before reading the CI result is a false claim, not a shortcut.
 
+## Agent Loop Guard (MANDATORY)
+
+Agents must not repeat the same action without progress. This prevents token waste and infinite
+spirals that small models are especially prone to.
+
+**The rule:** If the same tool call, command, or message has been attempted **3 times** with the
+same (or functionally equivalent) result, the agent MUST stop retrying and instead:
+
+1. **Diagnose** why the repetition is not producing progress.
+2. **Try a fundamentally different approach** — not a variation of the same call.
+3. **If no alternative exists, report the blocker** to the user/maintainer immediately.
+
+**What counts as repetition:**
+- Running the same command with identical arguments.
+- Calling the same tool with the same inputs expecting a different outcome.
+- Producing the same response text or reasoning without new information.
+- Re-reading the same file without acting on its contents.
+
+**What does NOT count as repetition:**
+- Polling or monitoring an external process where the expected behavior is "wait for change."
+- Iterating through a known finite list (e.g., checking each file in a directory).
+- Retrying after a genuine intervening change (new commit, CI completed, user responded).
+
+**Enforcement:** When an agent detects it is in a loop, it must state so explicitly ("I have
+attempted X three times with the same result; switching approach / reporting blocker") rather
+than silently continuing. Silence during a loop is the failure mode this rule prevents.
+
 ## Red Flags — STOP
 
 These mean you have left the workflow; fix it before continuing:
@@ -610,6 +638,7 @@ These mean you have left the workflow; fix it before continuing:
 - Tagging anything other than `main`, or reusing an existing tag
 - Long-lived branch that has not synced `staging` recently
 - Hotfix that skipped the `main` → `staging` sync
+- Same tool call or command repeated 3+ times without progress (see Agent Loop Guard)
 
 ## Quick Reference
 
