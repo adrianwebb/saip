@@ -90,10 +90,10 @@ saip/
 ├── saip.yaml              # Shared platform configuration
 ├── saip.schema.yaml       # JSON Schema for config validation
 ├── .env.example           # Secret variable template
-├── cli/                   # saip CLI tool (awake/sleep/down/status)
+├── cli/                   # saip CLI tool (Cordis app: commands as plugins)
 ├── inference/             # Inference Gateway (vLLM + Hono + Cordis)
 ├── training/              # Training Gateway (Axolotl + Hono + Cordis)
-├── shared/                # Shared code (config, R2 client, types)
+├── shared/                # Shared Cordis services (config, R2 client, adapter registry, types)
 └── examples/cordis/       # Cordis framework reference
 ```
 
@@ -103,7 +103,7 @@ Each subproject has its own `package.json`, `tsconfig.json`, `CHANGELOG.md`, and
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Plugin framework | [Cordis](https://github.com/cordiverse/cordis) v4 | Service composition, plugin lifecycle, events |
+| Plugin framework | [Cordis](https://github.com/cordiverse/cordis) v4 | Service composition, plugin lifecycle, events — used by **all four Node packages** (both gateways, the CLI, and shared services) |
 | Inference engine | [vLLM](https://github.com/vllm-project/vllm) | Multi-LoRA serving, AWQ quantization |
 | Training framework | [Axolotl](https://github.com/axolotl-ai-cloud/axolotl) | QLoRA, SFT, KTO, continued pretraining |
 | API framework | [Hono](https://hono.dev/) | Lightweight OpenAI-compatible HTTP API |

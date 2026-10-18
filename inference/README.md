@@ -13,6 +13,7 @@ The inference gateway is a Cordis application composed of focused plugins:
 |--------|---------------|
 | `vllm-manager` | Start/stop vLLM process, load/unload adapters, health checks |
 | `adapter-registry` | Sync adapter index from R2, maintain local cache, resolve versions |
+| `adapter-compiler` | Compile composite adapters (weighted merge of component deltas × gain) into single vLLM artifacts; recompile when a component promotes or the composition spec changes |
 | `user-resolver` | Map caller identity → adapter group using file-based manifests |
 | `session-collector` | Capture conversation histories, tool calls, artifacts for training |
 | `data-api` | Hono HTTP server for Data API endpoints (`/v1/data/*`) — document upload, session history, feedback |

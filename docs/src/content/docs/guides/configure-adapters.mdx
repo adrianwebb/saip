@@ -1,37 +1,96 @@
 ---
 title: Configure Adapters
-description: Set up user-to-adapter mappings and adapter groups
+description: Define the adapter registry, compose user adapters, and map users to their integrated adapters
 ---
 
-SAIP uses adapters (LoRA/QLoRA weight deltas) to specialize a base model for different tasks and users. This guide explains how to configure adapter mappings, versioning, and resolution in `saip.yaml`.
+SAIP uses adapters (LoRA/QLoRA weight deltas) to specialize a base model for different tasks and users. This guide explains how to define adapters in the registry, compose weighted user adapters from components that train at different speeds, and configure user mappings, versioning, and resolution in `saip.yaml`. For the full field contract see [Adapter Definitions](/saip/reference/adapter-definitions/).
+
+## The Adapter Registry
+
+Adapters are defined once in the top-level `adapters:` array and referenced everywhere else — by users, by composites, by training jobs. Separating *adapter definitions* from *user mappings* is what lets one adapter be general-purpose (`global`), project-scoped (`project`), or personal (`user`).
+
+```yaml
+adapters:
+  # Leaf adapters declare how they learn
+  - name: coding
+    scope: global
+    description: "General software engineering behaviors"
+    training:
+      strategy: knowledge_embedding     # registered training strategy plugin
+      data_scopes: [documents]          # Data API types that feed its training
+
+  - name: treeseed-project
+    scope: project
+    project: treeseed
+    training:
+      strategy: corrective_sft
+      data_scopes: [sessions, feedback]
+```
+
+Every leaf adapter names **one training strategy** and **the data scopes it consumes**. That linkage is the formal path from accumulated experience to updated weights: when you trigger a job against `treeseed-project`, the registry says which strategy plugin converts its linked sessions/feedback data into an Axolotl dataset — no guessing, no per-job re-specification (though jobs may override).
+
+### Scopes
+
+| Scope | Use for | Reuse rule |
+|-------|---------|-----------|
+| `global` | Shared capabilities everyone benefits from (coding, research) | Any user/composite can reference |
+| `domain` | Knowledge domains without project ties | Any user/composite can reference |
+| `project` | One project's conventions (`project:` required) | Only that project's users/composites |
+| `user` | Personal preference/behavior adapters | Referenced by that user's mapping |
+
+## Composing a User Adapter
+
+A **composite adapter** merges several leaf adapters into one compiled artifact with two levels of control:
+
+```yaml
+adapters:
+  - name: northstar-architect
+    scope: user
+    user: adrian
+    trainable: false                    # derived, not trained directly
+    composite:
+      gain: 1.25                        # overall λ on the merged delta
+      merge: weighted_linear            # PEFT merge algorithm
+      components:
+        - { adapter: coding, weight: 0.7 }
+        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: research, weight: 0.45, version: "@000012" }
+```
+
+The math: `ΔW = gain × Σ(wᵢ · ΔWᵢ)` — each component contributes its own weight `wᵢ`, then the whole merged delta is scaled by `gain`. Both are independent knobs; treat `gain` as an evaluated hyperparameter (see [Adapter Composition](/saip/explanation/adapter-composition/)).
+
+Why composites matter:
+
+- **Independent cadences.** `coding` might promote daily from global documents; `treeseed-project` weekly from project sessions. The composite re-references current versions at compile time. Pin a component (`version: "@000012"`) when you need stability inside a fast-moving composition.
+- **vLLM compatibility.** vLLM serves exactly one adapter per request, so the composition happens offline: the inference gateway compiles the weighted merge into a single named artifact published to R2. Inference sees `northstar-architect@000037` like any other adapter, and every compiled manifest records its component provenance.
+- **Transparent user experience.** Adrian's requests resolve to his integrated adapter automatically; he never manages LoRA files. Meanwhile his sessions still flow to the right leaf (`treeseed-project`) because the training linkage lives on the leaves, not the composite.
+
+:::caution[Composites Are Not Trainable]
+Training jobs target leaf adapters only. Requesting a job against a composite returns `422`. Components are trained; composites are *derived*. Recompilation triggers automatically when a component promotes or the composition spec changes.
+:::
 
 ## User Manifest Format
 
-User-to-adapter mappings live in the top-level `users` array of `saip.yaml`. Each entry specifies separate adapters for inference and training:
+User-to-adapter mappings live in the top-level `users` array of `saip.yaml`. Each entry specifies separate adapters for inference and training — both reference names from the adapter registry:
 
 ```yaml
 # User → adapter mapping (file-based for MVP)
 users:
   - id: "default"
     adapters:
-      inference: "general@latest"
-      training: "general"
+      inference: "default-agent@latest"   # a composite adapter
+      training: "general"                  # a leaf adapter
 
   - id: "alice"
     adapters:
       inference: "coding@latest"
       training: "coding"
-
-  - id: "bob"
-    adapters:
-      inference: "general@latest"
-      training: "general"
 ```
 
 Each user entry has:
 - **`id`** — the user identifier (use `"default"` for unauthenticated requests).
-- **`adapters.inference`** — the adapter used for inference requests.
-- **`adapters.training`** — the adapter used as the base for training runs.
+- **`adapters.inference`** — the adapter used for inference requests. May be any registry name, including composites.
+- **`adapters.training`** — the leaf adapter that receives this user's training jobs (their experience data routes here via the adapter's declared linkage).
 
 ### Resolution Order
 
@@ -161,10 +220,46 @@ Adapter hot-reloading is seamless — no requests are dropped during the transit
 
 ## Complete Example
 
-A production-ready `saip.yaml` user configuration:
+A production-ready registry + user configuration:
 
 ```yaml
-# User → adapter mapping
+adapters:
+  - name: general
+    scope: global
+    training:
+      strategy: knowledge_embedding
+      data_scopes: [documents]
+
+  - name: coding
+    scope: domain
+    training:
+      strategy: corrective_sft
+      data_scopes: [sessions, feedback]
+
+  - name: research
+    scope: domain
+    training:
+      strategy: weighted_kto
+      data_scopes: [feedback]
+
+  - name: treeseed-project
+    scope: project
+    project: treeseed
+    training:
+      strategy: corrective_sft
+      data_scopes: [sessions, feedback]
+
+  - name: northstar-architect
+    scope: user
+    user: adrian
+    trainable: false
+    composite:
+      gain: 1.25
+      components:
+        - { adapter: coding, weight: 0.7 }
+        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: research, weight: 0.45 }
+
 users:
   - id: "default"
     adapters:
@@ -178,25 +273,19 @@ users:
 
   - id: "bob"
     adapters:
-      inference: "general@000040"
+      inference: "general@000040"     # pinned known-good version
       training: "general"
 
-  - id: "carol"
+  - id: "adrian"
     adapters:
-      inference: "research@latest"
-      training: "research"
-
-  - id: "dave"
-    adapters:
-      inference: "general@latest"
-      training: "general"
+      inference: "northstar-architect@latest"
+      training: "treeseed-project"
 ```
 
 In this setup:
-- **Alice** uses `coding@latest` for both inference and training.
+- **Adrian** gets his compiled composite (coding × 0.7, project × 1.0, research × 0.45, gain 1.25) for transparent inference, while his project sessions train the `treeseed-project` leaf directly.
+- **Alice** uses `coding@latest` for both paths; her feedback trains the same leaf everyone shares.
 - **Bob** is pinned to `general@000040` for inference (a known-good version).
-- **Carol** uses the latest research adapter.
-- **Dave** tracks `general@latest`, acting as a canary tester.
 - **Unauthenticated requests** fall back to the `default` user's `general@latest`.
 
 :::note[Adapter Aliasing]
