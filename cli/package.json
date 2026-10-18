@@ -1,6 +1,6 @@
 {
   "name": "@saip/cli",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "SAIP CLI — manage inference and training services",
   "type": "module",
   "bin": {
