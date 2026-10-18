@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added
+- shared: hosting foundations — host registry types + `validateHostRegistry`, injectable `SecretsProvider`/`DeploymentProvider` seams, `EnvSecrets`, and `SecretsService`/`HostRegistryService` Cordis services; committed `hosts.example.yaml` (#41)
 - inference: Data API sessions + feedback endpoints (reward validated against configured range) and a composed `server` plugin mounting all sub-apps with `startServer()`; gateway now serves its full documented surface (#34)
 - inference: Data API documents — pluggable document processors (markdown/code/jsonl, PDF via Marker pending), sha256 dedup, `knowledge/` storage + index, CRUD endpoints (#33)
 - inference: OpenAI-compatible `/v1/chat/completions` (stream + non-stream), config-gated `/v1/systemone/completions`, and session collection to storage (#32)
