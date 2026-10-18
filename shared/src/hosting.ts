@@ -147,6 +147,8 @@ export interface HostStatus {
 export interface UpDownOpts {
   bucket?: string
   dryRun?: boolean
+  /** Force a specific stack for a both-role host (awake=inference, sleep=training). */
+  stack?: 'inference' | 'training'
 }
 
 export interface DeployResult {

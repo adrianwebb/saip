@@ -1,21 +1,22 @@
 import type { Context } from 'cordis'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { runVerb } from '../lib/host-command.js'
 
 const spec: CommandSpec = {
   name: 'awake',
-  description: 'Stop training gateway and start inference gateway',
-  options: [{ flag: '-b, --bucket <name>', description: 'Override R2 bucket name' }],
-  action: (_ctx, options) => {
+  description: 'Stop training gateway and start inference gateway on a host',
+  options: [
+    { flag: '-b, --bucket <name>', description: 'Override R2 bucket name' },
+    { flag: '--host <name>', description: 'Target host from hosts.yaml (default: SAIP_HOST or "default")' },
+  ],
+  action: async (ctx: Context, options) => {
     console.log(`[saip] Switching to AWAKE mode...`)
-    console.log(`[saip] TODO: Stop training compose, start inference compose`)
     if (options.bucket) console.log(`[saip] Using bucket override: ${options.bucket}`)
-    // Future: validate saip.yaml + load env → compose down training → up inference → vLLM health → status
+    await runVerb(ctx, 'up', options.host as string | undefined, { bucket: options.bucket as string | undefined })
   },
 }
 
 export default {
   inject: ['commandRegistry'] as const,
-  apply(ctx: Context) {
-    ctx.commandRegistry!.register(spec)
-  },
+  apply(ctx: Context) { ctx.commandRegistry!.register(spec) },
 }
