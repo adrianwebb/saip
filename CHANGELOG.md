@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added
+- inference: Data API documents — pluggable document processors (markdown/code/jsonl, PDF via Marker pending), sha256 dedup, `knowledge/` storage + index, CRUD endpoints (#33)
 - inference: OpenAI-compatible `/v1/chat/completions` (stream + non-stream), config-gated `/v1/systemone/completions`, and session collection to storage (#32)
 - inference: user-resolver (caller→adapter, default fallback), serve-version resolution (composites → compiled artifact), and `GET /health` + `GET /v1/models` (#31)
 - inference: config loader + injectable `StorageProvider`/`VllmBackend` seams (in-memory defaults) and `GatewayStateService`; registry validated on boot (#30)
