@@ -15,7 +15,8 @@ class FakeVllm implements VllmBackend {
 describe('full inference server (composed)', () => {
   it('serves health, models, chat (collecting a session), document upload, and feedback in one boot', async () => {
     const storage = new MemoryStorage()
-    const ctx = (await createApp({ configPath: repoConfig, storage, vllm: new FakeVllm(), latestVersion: (n) => ({ general: 42, coding: 18, 'default-agent': 3 }[n]) })) as any
+    const base = (await import('../src/lib/config.js')).loadConfig(repoConfig)
+    const ctx = (await createApp({ config: { ...base, security: { dev_mode: true, api_tokens: [] } }, storage, vllm: new FakeVllm(), latestVersion: (n) => ({ general: 42, coding: 18, 'default-agent': 3 }[n]) })) as any
     const app = ctx.server.app
 
     // /health

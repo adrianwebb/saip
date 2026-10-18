@@ -14,6 +14,8 @@ class FakeVllm implements VllmBackend {
 async function boot(enabled: boolean) {
   const cfg = (await import('../src/lib/config.js')).loadConfig(repoConfig)
   cfg.inference.systemone.enabled = enabled
+  // systemone behavior tests run under explicit dev mode (auth covered separately).
+  cfg.security = { dev_mode: true, api_tokens: [] }
   const ctx = (await createApp({ config: cfg, vllm: new FakeVllm(), latestVersion: (n) => ({ general: 42, coding: 18, 'default-agent': 3 }[n]) })) as any
   return ctx
 }

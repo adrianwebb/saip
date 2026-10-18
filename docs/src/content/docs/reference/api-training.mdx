@@ -13,6 +13,11 @@ The training gateway exposes a single API surface:
 
 Data ingestion is handled by the inference gateway (see [Inference API](/saip/reference/api-inference/)). Processed data flows between the two services via R2 object storage.
 
+## Authentication
+
+Job-mutating routes (`POST /v1/learning/jobs`) are protected by the same pluggable
+[AuthProvider](/saip/reference/security-model/) as the inference gateway: send `Authorization: Bearer <token>`, and the authenticated caller's default training adapter is used unless the request names one explicitly. **Fail-closed** — without a valid bearer token (and with `security.dev_mode` false), requests receive `401`. Read-only routes such as `GET /v1/learning/strategies` may remain open depending on deployment policy.
+
 ## Architecture Overview
 
 The SAIP platform separates concerns across two gateways with **R2 as the handoff boundary**:
