@@ -1,11 +1,20 @@
-name: Deploy Documentation Site
+name: Documentation Site
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging, 'feature/*', 'fix/*']
     paths:
       - 'docs/**'
       - '.github/workflows/deploy-docs.yml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/deploy-docs.yml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
   workflow_dispatch:
 
 permissions:
@@ -14,11 +23,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build Documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,11 +51,14 @@ jobs:
         run: cd docs && pnpm build
 
       - name: Upload artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/dist
 
   deploy:
+    name: Deploy to GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
