@@ -19,8 +19,9 @@ import awakePlugin from './commands/awake.js'
 import sleepPlugin from './commands/sleep.js'
 import downPlugin from './commands/down.js'
 import statusPlugin from './commands/status.js'
+import deployPlugin from './commands/deploy.js'
 
-const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin]
+const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin, deployPlugin]
 
 export async function buildProgram(): Promise<Command> {
   const ctx = new Context()
