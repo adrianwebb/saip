@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added
+- cli: `saip deploy --target <host>` — parameterized copy-to-host reusing the DeploymentProvider abstraction; renders a safe plan (`--dry-run` default), applies only via providers that implement `deploy()`, refuses unknown/unregistered targets (#49)
 - monitoring: pluggable `MonitoringProvider` seam + `MetricsService` (noop default, Prometheus later) wired into both gateways via an event bridge; emission is observe-only and never blocks serving/training (#47)
 - security: pluggable `AuthProvider` seam (bearer for API/MCP, password for UI, explicit dev-mode) with **fail-closed** enforcement on inference chat/systemone and training job routes; `security:` block in saip.yaml + schema; new Security Model reference (#45)
 - cli: local deployment provider + `--host` targeting on awake/sleep/down/status — hosts resolve through the shared registry (fail-closed on unknown), dispatch to a DeploymentProvider by kind; `SAIP_DRY_RUN` supported (#43)
