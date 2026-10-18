@@ -50,6 +50,9 @@ jobs:
       - name: Build documentation site
         run: cd docs && pnpm build
 
+      - name: Check internal links
+        run: cd docs && bash scripts/check-links.sh dist
+
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
