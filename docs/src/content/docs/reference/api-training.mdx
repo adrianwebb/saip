@@ -14,17 +14,39 @@ The API is organized into two surfaces:
 
 ## Architecture Overview
 
+The training gateway uses **two plugin registries** connected by a clean interface contract:
+
 ```
-Document Upload → Document Type Router → Document Processor Plugin → Processed Output
-                                                              ↓
-                                              Training Strategy Plugins (registered providers)
-                                              ├── Knowledge Embedding → completion datasets
-                                              ├── Corrective SFT → feedback-weighted messages
-                                              ├── Weighted KTO → scalar reward records
-                                              └── ...extensible via plugins
+Data Type Plugins              Training Strategy Plugins
+─────────────────              ─────────────────────────
+markdown-processor        →    knowledge-embedding
+code-processor            →    corrective-sft
+pdf-processor             →    weighted-kto
+jsonl-processor           →    (future strategies...)
+(future types...)         →
 ```
 
-Document processors convert uploaded documents into an intermediate format. Training strategy plugins then convert that format into their specific Axolotl dataset format. Neither splits data — they transform formats based on rules. Each training strategy is a Cordis plugin that registers itself as a provider.
+Each **data type plugin** implements a standard interface: accept a raw document, return processed output in the canonical intermediate format. Each **training strategy plugin** implements another standard interface: accept processed output of declared types, produce an Axolotl dataset in the strategy's required format. Neither knows about the other's internals — they communicate through the interface contract only.
+
+This means:
+- Adding a new document type (LaTeX, HTML, audio transcripts) = one new data type plugin, zero changes to strategies
+- Adding a new training method (GRPO replay, DPO) = one new strategy plugin, zero changes to data processors
+- A strategy declares which data types it accepts; the registry handles routing
+- Multiple strategies can consume the same processed output simultaneously
+
+Both plugin types are Cordis plugins that register themselves at startup. The training gateway orchestrates the flow:
+
+```
+Upload → Validation → Dedup → Data Type Plugin → Intermediate Format
+                                                        ↓
+                                        Training Strategy Plugins (matching types)
+                                        ├── Knowledge Embedding → completion datasets
+                                        ├── Corrective SFT → feedback-weighted messages
+                                        ├── Weighted KTO → scalar reward records
+                                        └── ...extensible
+```
+
+Neither plugin type splits or chunks data — they transform formats based on rules.
 
 ---
 

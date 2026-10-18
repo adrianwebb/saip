@@ -17,7 +17,7 @@ Think of it as reading textbooks before attending lab. The model will not learn 
 
 Knowledge embedding — like all SAIP training strategies — consumes documents through the **document processing pipeline**. When a document is uploaded via the Data API (`/v1/data/documents`), the document type router identifies its format and dispatches it to the appropriate document processor plugin. The processor converts the document into an intermediate format that preserves its full structure. The knowledge embedding training strategy plugin then converts that intermediate format into a **completion-format dataset** (raw text sequences) suitable for Axolotl's continued pretraining mode.
 
-This same pipeline feeds all training strategies. Each strategy plugin registers itself as a Cordis provider and converts the processed document into its own required Axolotl dataset format. No chunking, embeddings, or vector databases are involved at any stage — documents are transformed, not split or indexed.
+This same pipeline feeds all training strategies. The system maintains **two independent plugin registries**: data type plugins (one per document format) and training strategy plugins (one per learning method). Both are Cordis plugins that register themselves at startup and communicate through an interface contract — neither knows about the other's internals. Adding a new document format or a new training method requires only one new plugin with zero changes to existing code. No chunking, embeddings, or vector databases are involved at any stage — documents are transformed, not split or indexed.
 
 ### Input Format
 

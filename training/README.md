@@ -44,20 +44,44 @@ The Data API handles all input data lifecycle. The Learning API manages which tr
 are available and orchestrates training jobs. These two surfaces are intentionally separated: data
 ingestion is decoupled from training execution.
 
-### Cordis Plugin Architecture
+### Two Plugin Registries
+
+The training gateway maintains two independent plugin registries connected by an interface contract:
+
+**Data Type Plugins** — each handles one document format:
+
+| Plugin | Accepts | Produces |
+|--------|---------|----------|
+| `markdown-processor` | `.md`, `.mdx` files | Structured text with heading hierarchy |
+| `code-processor` | Source code files | Language-tagged code with file structure metadata |
+| `pdf-processor` | PDF documents | Extracted text with section boundaries |
+| `jsonl-processor` | JSONL datasets | Validated record sequences |
+| *(extensible)* | *(new formats)* | *(canonical intermediate format)* |
+
+**Training Strategy Plugins** — each implements one learning method:
+
+| Plugin | Consumes | Produces |
+|--------|----------|----------|
+| `knowledge-embedding` | Processed documents | Completion-format text sequences |
+| `corrective-sft` | Feedback-weighted messages | SFT dataset with per-turn weights |
+| `weighted-kto` | Scalar reward records | KTO dataset with magnitude weights |
+| *(extensible)* | *(declared types)* | *(strategy-specific Axolotl format)* |
+
+Both are **Cordis plugins that register themselves at startup**. A data type plugin implements
+the interface: "accept raw document → return intermediate format." A training strategy plugin
+implements: "accept intermediate format of declared types → produce Axolotl dataset." Neither
+knows about the other's internals. Adding a new document type or a new training method requires
+only one new plugin — zero changes to existing code.
+
+**Gateway plugins** orchestrate the flow between the two registries:
 
 | Plugin | Responsibility |
 |--------|---------------|
-| `document-type-router` | Identify document format and dispatch to appropriate processor |
-| `document-processor` | Convert uploaded documents into intermediate format (pluggable per type) |
-| `training-strategy-registry` | Manage registered training strategy providers |
+| `document-type-router` | Inspect document format, dispatch to matching data type plugin |
+| `training-strategy-registry` | Track registered strategies, route processed output to matching consumers |
 | `data-api` | Hono HTTP server for document upload, processing, and feedback endpoints |
-| `learning-api` | Hono HTTP server for training strategy registration and job management |
+| `learning-api` | Hono HTTP server for strategy listing and job management |
 | `axolotl-runner` | Queue and execute Axolotl training jobs, manage GPU allocation |
-
-Training strategies are **Cordis plugins that register themselves as providers**. Each strategy
-plugin declares which intermediate formats it can consume and produces the corresponding Axolotl
-dataset format. New strategies can be added without modifying core SAIP code.
 
 Plugins communicate through Cordis events:
 
