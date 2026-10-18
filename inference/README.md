@@ -67,6 +67,25 @@ vLLM response
     └──► Session Collector (background: store history)
 ```
 
+### Adapter Compilation
+
+Composite user adapters (`ΔW = gain × Σ(wᵢ·ΔWᵢ)`) must become a single file before vLLM can serve
+them. The `adapter-compiler` plugin owns this in the inference gateway and splits responsibility
+cleanly:
+
+- **Planning (TypeScript, here):** resolve each component reference to a concrete version
+  (honoring pins vs `@latest`), compute the weighted composition plan, detect staleness (a promoted
+  component or edited spec invalidates the last compile), and emit a `CompositionRecord` capturing
+  exactly which component versions + weights + gain produced the artifact. This logic is pure and
+  unit-tested; it uses the shared `AdapterRegistryService`.
+- **Execution (Python backend):** the actual tensor merge runs PEFT's `add_weighted_adapter` via a
+  swappable backend invoked with the plan. The compiler treats it as an external step so the
+  planning/resolution/provenance layer has no Python dependency and stays testable on its own.
+
+A compiled composite is stored in R2 like any adapter version, tagged for its lineage, and served
+by name — the same transparent resolution as leaf adapters. Composites are never trained directly;
+training always targets their components (see [Adapter Definitions](https://adrianwebb.github.io/saip/reference/adapter-definitions/)).
+
 ### Adapter Selection
 
 vLLM supports exactly one LoRA adapter per request. The inference gateway resolves which
