@@ -13,6 +13,8 @@ import { GatewayStateService } from './plugins/gateway-state.js'
 import { UserResolverService } from './plugins/user-resolver.js'
 import { ApiCoreService } from './plugins/api-core.js'
 import { ApiChatService } from './plugins/api-chat.js'
+import { ApiSystemOneService } from './plugins/api-systemone.js'
+import { SessionCollectorService } from './plugins/session-collector.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
 
@@ -60,6 +62,8 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(UserResolverService, { users: config.users })
   await ctx.plugin(ApiCoreService, { modelBase: config.model.base, adapters: config.adapters })
   await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
+  await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
+  await ctx.plugin(SessionCollectorService, { storage })
 
   // Validate the loaded registry once at boot — CLI/inference/training must
   // agree on validity, so an invalid registry fails loudly here.
