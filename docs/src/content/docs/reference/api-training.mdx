@@ -1,161 +1,68 @@
 ---
-title: Training Gateway API
-description: HTTP endpoints for data ingestion and learning management, organized as Data API and Learning API
+title: Learning API
+description: HTTP endpoints for training strategy registration, job management, and feedback on the training gateway
 ---
 
 The training gateway listens on the port configured in `training.port` (default `8001`). All endpoints accept and return JSON.
 
 Base URL: `http://<host>:<training.port>`
 
-The API is organized into two surfaces:
+The training gateway exposes a single API surface:
 
-- **Data API** (`/v1/data/*`) — document upload, processing, storage, and retrieval
 - **Learning API** (`/v1/learning/*`) — training strategy registration, job management, feedback, and optimization
+
+Data ingestion is handled by the inference gateway (see [Inference API](/reference/api-inference)). Processed data flows between the two services via R2 object storage.
 
 ## Architecture Overview
 
-The training gateway uses **two plugin registries** connected by a clean interface contract:
+The SAIP platform separates concerns across two gateways with **R2 as the handoff boundary**:
 
 ```
-Data Type Plugins              Training Strategy Plugins
-─────────────────              ─────────────────────────
-markdown-processor        →    knowledge-embedding
-code-processor            →    corrective-sft
-pdf-processor             →    weighted-kto
-jsonl-processor           →    (future strategies...)
-(future types...)         →
+┌─────────────────────────────┐          ┌─────────────────────────────┐
+│    Inference Gateway        │          │     Training Gateway        │
+│                             │          │                             │
+│  Data API (/v1/data/*)      │          │  Learning API (/v1/learning)│
+│  Document Processors        │          │  Training Strategy Plugins  │
+│  ├─ markdown-processor      │          │  ├─ knowledge-embedding     │
+│  ├─ code-processor          │          │  ├─ corrective-sft          │
+│  ├─ pdf-processor (Marker)  │          │  ├─ weighted-kto            │
+│  └─ jsonl-processor         │          │  └─ (future strategies...) │
+│                             │          │                             │
+│  Writes processed data ──────────► R2 ◄──── Reads processed data    │
+│                             │          │                             │
+│  Serves model inference     │          │  Runs Axolotl training jobs │
+└─────────────────────────────┘          └─────────────────────────────┘
 ```
 
-### Data Type Plugins Register Their Own Endpoints
+### Why This Separation
 
-Data type plugins don't just process data — **they also register their own API endpoints** under `/v1/data/<name>`. The gateway's `data-api` Cordis plugin provides the HTTP framework and common middleware (auth, validation, R2 storage), but the routes come from registered data type plugins.
+Document processing often requires model inference — OCR via Marker for PDFs, code analysis, structured extraction. Running these processors on the training GPU would compete with training workloads. By placing the Data API and document processors in the inference gateway:
 
-SAIP ships with three built-in data submission endpoints:
+- The **inference GPU** handles both model serving and document processing during awake mode
+- The **training GPU** is 100% dedicated to Axolotl fine-tuning jobs
+- R2 serves as a clean handoff boundary: inference writes processed data, training reads it
 
-| Endpoint | Purpose | Processor | Output Format |
-|----------|---------|-----------|---------------|
-| `/v1/data/documents` | File/document upload for continued pretraining | Document processors (markdown, code, PDF, JSONL) | Intermediate text sequences |
-| `/v1/data/sessions` | Session history upload for corrective SFT | Session processor | Intermediate conversation records |
-| `/v1/data/feedback` | Feedback/reward submission for weighted KTO | Feedback processor | Intermediate reward records |
+### Training Strategy Plugins
 
-Each endpoint supports standard CRUD operations (list, get, create, update, delete) as appropriate for its data type.
+Each **training strategy plugin** declares which intermediate output formats it can consume from R2. When a learning job references a strategy, the registry loads matching processed data and produces Axolotl datasets in the required format.
 
-When you install a new data type plugin with complicated input, processing, or output requirements, it registers its own endpoint path, declares its processor function, and specifies which training strategies can consume its output. No changes to the gateway core are needed. For example, a future `evaluations` plugin might register `/v1/data/evaluations` with batch-only creation and a custom teacher-evaluation processor.
+Adding a new training method requires only one new strategy plugin — zero changes to data processors or the inference gateway. Multiple strategies can consume the same processed output simultaneously.
 
-### Training Strategy Plugins Declare Accepted Types
-
-Each **training strategy plugin** declares which intermediate output formats it can consume. When a learning job references a strategy, the registry routes matching processed data to it. Strategies produce Axolotl datasets in their required format.
-
-Neither plugin type knows about the other's internals — they communicate through the interface contract only. This means:
-- Adding a new data type = one new data type plugin with its own endpoint, zero changes to strategies
-- Adding a new training method = one new strategy plugin, zero changes to data processors
-- Multiple strategies can consume the same processed output simultaneously
-
-Both plugin types are Cordis plugins that register themselves at startup. The training gateway orchestrates the flow:
+The training gateway orchestrates the flow:
 
 ```
-/v1/data/documents ──→ Document Processors ──→ Intermediate Text ──┐
-/v1/data/sessions  ──→ Session Processor   ──→ Intermediate Conv ─┼──→ Training Strategy Plugins
-/v1/data/feedback  ──→ Feedback Processor ──→ Intermediate Reward ┘    ├── knowledge-embedding
-/v1/data/<custom>  ──→ Custom Processor    ──→ Intermediate Custom     ├── corrective-sft
-                                                                        ├── weighted-kto
-                                                                        └── ...extensible
+R2 (processed data) ──→ Training Strategy Plugins
+                         ├── knowledge-embedding → completion datasets
+                         ├── corrective-sft      → feedback-weighted SFT datasets
+                         ├── weighted-kto        → KTO datasets with magnitude weights
+                         └── ...extensible
+                                ↓
+                          Axolotl Runner
+                                ↓
+                           QLoRA Adapter
+                                ↓
+                  Upload to R2 + update index
 ```
-
-Neither plugin type splits or chunks data — they transform formats based on rules.
-
----
-
-# Data API
-
-The Data API endpoints below are registered by the built-in data type plugins. Additional endpoints may be registered by installed plugins. Use `GET /v1/data` to discover all available data submission endpoints.
-
-## POST /v1/data/documents
-
-Submit a document for processing. The registered document processor plugins handle format-specific conversion.
-
-### Request Headers
-
-| Header         | Required | Description              |
-|----------------|----------|--------------------------|
-| `Content-Type` | Yes      | `application/json`       |
-
-### Request Body
-
-| Field         | Type                                | Required | Description                                |
-|---------------|-------------------------------------|----------|--------------------------------------------|
-| `source`      | `string`                            | Yes      | Origin URI or description.                 |
-| `source_type` | `'document' \| 'repository' \| 'dataset'` | Yes | Source classification.              |
-| `content`     | `string`                            | Yes      | Raw document content.                      |
-| `license`     | `string`                            | No       | SPDX license identifier.                   |
-| `tags`        | `string[]`                          | No       | Classification tags.                       |
-
-### Response `201 Created`
-
-```json
-{
-  "id": "doc-20250115-001",
-  "source": "internal-wiki/onboarding.md",
-  "source_type": "document",
-  "hash": "sha256:a1b2c3...",
-  "size_bytes": 4096,
-  "processed_by": "markdown-processor",
-  "created_at": "2025-01-15T10:30:00Z"
-}
-```
-
-### Example
-
-```bash
-curl -X POST http://localhost:8001/v1/data/documents \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source": "internal-wiki/onboarding.md",
-    "source_type": "document",
-    "content": "# Onboarding Guide\n...",
-    "tags": ["onboarding", "hr"]
-  }'
-```
-
-## GET /v1/data/documents
-
-List all ingested documents.
-
-### Query Parameters
-
-| Parameter | Type     | Description                              |
-|-----------|----------|------------------------------------------|
-| `tag`     | `string` | Filter by tag (repeatable).              |
-| `limit`   | `number` | Maximum entries to return. Default `50`. |
-| `offset`  | `number` | Pagination offset. Default `0`.          |
-
-### Response `200 OK`
-
-```json
-{
-  "entries": [
-    {
-      "id": "doc-20250115-001",
-      "source": "internal-wiki/onboarding.md",
-      "source_type": "document",
-      "hash": "sha256:a1b2c3...",
-      "size_bytes": 4096,
-      "processed_by": "markdown-processor",
-      "tags": ["onboarding", "hr"],
-      "created_at": "2025-01-15T10:30:00Z"
-    }
-  ],
-  "total": 1,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-## DELETE /v1/data/documents/:id
-
-Remove a document and its processed outputs.
-
-### Response `204 No Content`
 
 ---
 
@@ -359,8 +266,8 @@ All endpoints return standard HTTP error codes with a JSON body:
 | Status | Meaning                                                  |
 |--------|----------------------------------------------------------|
 | `400`  | Malformed request, invalid reward range, missing fields. |
-| `404`  | Referenced session, document, or job not found.          |
+| `404`  | Referenced session or job not found.                     |
 | `409`  | Training job conflict (GPU busy, duplicate submission).  |
 | `422`  | Reward outside configured `reward_range`.                |
-| `500`  | Internal error (Axolotl failure, R2 write failure).      |
+| `500`  | Internal error (Axolotl failure, R2 read/write failure). |
 | `503`  | Training subsystem unavailable (GPU offline).            |

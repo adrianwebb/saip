@@ -3,7 +3,7 @@ title: Submit Knowledge
 description: Upload documents, code, and datasets through the Data API for training
 ---
 
-Documents submitted through the Data API feed SAIP's training strategies. This guide covers supported formats, the submission endpoint, and how documents flow through the processing pipeline.
+Documents submitted through the inference gateway's Data API feed SAIP's training strategies. The inference gateway handles document processing because processors may need model inference (OCR, PDF parsing). Processed outputs are stored in R2, where the training gateway reads them during sleep mode. This guide covers supported formats, the submission endpoint, and how documents flow through the processing pipeline.
 
 ## Supported Formats
 
@@ -40,12 +40,12 @@ POST /v1/data/documents
 Content-Type: application/json
 ```
 
-The training gateway listens on port **8001** (not the inference port 8000).
+The inference gateway listens on port **8000**. Documents are submitted through the inference gateway because document processors may need model inference (OCR, PDF parsing). The processed output is stored in R2 for the training gateway to consume.
 
 #### Single Document
 
 ```bash
-curl -X POST http://localhost:8001/v1/data/documents \
+curl -X POST http://localhost:8000/v1/data/documents \
   -H "Content-Type: application/json" \
   -d '{
     "source": "internal/wiki/architecture.md",
@@ -59,7 +59,7 @@ curl -X POST http://localhost:8001/v1/data/documents \
 #### Dataset Submission
 
 ```bash
-curl -X POST http://localhost:8001/v1/data/documents \
+curl -X POST http://localhost:8000/v1/data/documents \
   -H "Content-Type: application/json" \
   -d '{
     "source": "external/arxiv/papers.jsonl",
@@ -93,13 +93,13 @@ GET /v1/data/documents?limit=20&offset=0
 Returns paginated results with metadata for each submission:
 
 ```bash
-curl "http://localhost:8001/v1/data/documents?tag=onboarding&limit=10"
+curl "http://localhost:8000/v1/data/documents?tag=onboarding&limit=10"
 ```
 
 ### Delete a Document
 
 ```bash
-curl -X DELETE http://localhost:8001/v1/data/documents/doc-20250115-001
+curl -X DELETE http://localhost:8000/v1/data/documents/doc-20250115-001
 ```
 
 This removes the document and its processed outputs from R2. Already-completed training runs retain their data but won't include this document in future jobs.
@@ -140,7 +140,7 @@ Upload → Validation → Dedup → Document Type Router → Document Processor 
 
 3. **Document Type Router** — Inspects the document's `source_type` and file extension to select the appropriate document processor plugin.
 
-4. **Document Processor Plugin** — Converts the raw document into an intermediate format. For example, a Markdown processor strips frontmatter and normalizes headings; a code processor preserves file structure and language metadata. Processors transform format — they do not split or chunk data.
+4. **Document Processor Plugin** — Runs within the inference gateway because processors may need model inference (OCR for scanned PDFs, structured parsing). Converts the raw document into an intermediate format. For example, a Markdown processor strips frontmatter and normalizes headings; a code processor preserves file structure and language metadata. Processors transform format — they do not split or chunk data.
 
 5. **Training Strategy Plugins** — Each registered training strategy receives the processed output and converts it into its own required Axolotl dataset format:
    - **Knowledge Embedding** → completion-format text sequences

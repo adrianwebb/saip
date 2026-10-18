@@ -1,11 +1,17 @@
 ---
 title: Inference API
-description: OpenAI-compatible HTTP endpoints served by the inference gateway
+description: OpenAI-compatible chat completions, SystemOne structured output, and Data API endpoints for document processing served by the inference gateway
 ---
 
 The inference gateway listens on the port configured in `inference.port` (default `8000`). All endpoints accept and return JSON unless noted otherwise.
 
 Base URL: `http://<host>:<inference.port>`
+
+The API is organized into three surfaces:
+
+- **Chat Completions** (`/v1/chat/*`) — OpenAI-compatible model inference with adapter selection
+- **SystemOne** (`/v1/systemone/*`) — Grammar-constrained structured output generation
+- **Data API** (`/v1/data/*`) — Document upload, processing, session history, and feedback ingestion
 
 ## POST /v1/chat/completions
 
@@ -177,6 +183,237 @@ curl -X POST http://localhost:8000/v1/systemone/completions \
   }'
 ```
 
+---
+
+# Data API
+
+The Data API handles document upload, processing, session history ingestion, and feedback collection. Document processor plugins run within the inference gateway because they may require model inference — OCR via Marker for PDFs, code analysis, structured extraction. Processed data is written to R2 object storage, where the training gateway reads it for fine-tuning jobs.
+
+### Document Processor Plugins
+
+| Plugin | Accepts | Processing |
+|--------|---------|------------|
+| `markdown-processor` | `.md`, `.mdx` files | Structured text with heading hierarchy |
+| `code-processor` | Source code files | Language-tagged code with file structure metadata |
+| `pdf-processor` | PDF documents | Text extraction via Marker OCR with section boundaries |
+| `jsonl-processor` | JSONL datasets | Validated record sequences |
+| *(extensible)* | *(new formats)* | *(canonical intermediate format)* |
+
+Each data type plugin registers its own endpoint under `/v1/data/<name>` with standard CRUD operations. When you install a new data type plugin, it registers its own endpoint path, declares its processor function, and specifies which training strategies can consume its output. No changes to the gateway core are needed.
+
+## POST /v1/data/documents
+
+Submit a document for processing. The registered document processor plugins handle format-specific conversion. Documents that require model-assisted processing (e.g., PDF OCR via Marker) are processed inline since the inference gateway has access to the model backend.
+
+### Request Headers
+
+| Header         | Required | Description              |
+|----------------|----------|--------------------------|
+| `Content-Type` | Yes      | `application/json`       |
+
+### Request Body
+
+| Field         | Type                                | Required | Description                                |
+|---------------|-------------------------------------|----------|--------------------------------------------|
+| `source`      | `string`                            | Yes      | Origin URI or description.                 |
+| `source_type` | `'document' \| 'repository' \| 'dataset'` | Yes | Source classification.              |
+| `content`     | `string`                            | Yes      | Raw document content.                      |
+| `license`     | `string`                            | No       | SPDX license identifier.                   |
+| `tags`        | `string[]`                          | No       | Classification tags.                       |
+
+### Response `201 Created`
+
+```json
+{
+  "id": "doc-20250115-001",
+  "source": "internal-wiki/onboarding.md",
+  "source_type": "document",
+  "hash": "sha256:a1b2c3...",
+  "size_bytes": 4096,
+  "processed_by": "markdown-processor",
+  "created_at": "2025-01-15T10:30:00Z"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/v1/data/documents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "internal-wiki/onboarding.md",
+    "source_type": "document",
+    "content": "# Onboarding Guide\n...",
+    "tags": ["onboarding", "hr"]
+  }'
+```
+
+## GET /v1/data/documents
+
+List all ingested documents.
+
+### Query Parameters
+
+| Parameter | Type     | Description                              |
+|-----------|----------|------------------------------------------|
+| `tag`     | `string` | Filter by tag (repeatable).              |
+| `limit`   | `number` | Maximum entries to return. Default `50`. |
+| `offset`  | `number` | Pagination offset. Default `0`.          |
+
+### Response `200 OK`
+
+```json
+{
+  "entries": [
+    {
+      "id": "doc-20250115-001",
+      "source": "internal-wiki/onboarding.md",
+      "source_type": "document",
+      "hash": "sha256:a1b2c3...",
+      "size_bytes": 4096,
+      "processed_by": "markdown-processor",
+      "tags": ["onboarding", "hr"],
+      "created_at": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+## DELETE /v1/data/documents/:id
+
+Remove a document and its processed outputs from R2.
+
+### Response `204 No Content`
+
+## POST /v1/data/sessions
+
+Upload a session history for corrective SFT training. Sessions contain conversation turns with optional tool calls and artifacts.
+
+### Request Body
+
+| Field       | Type        | Required | Description                                    |
+|-------------|-------------|----------|------------------------------------------------|
+| `session_id`| `string`    | Yes      | Unique session identifier.                     |
+| `messages`  | `Message[]` | Yes      | Array of conversation messages.                |
+| `metadata`  | `object`    | No       | Additional session context.                    |
+
+### Response `201 Created`
+
+```json
+{
+  "id": "sess-abc123",
+  "message_count": 12,
+  "created_at": "2025-01-15T11:00:00Z"
+}
+```
+
+## GET /v1/data/sessions
+
+List uploaded session histories.
+
+### Query Parameters
+
+| Parameter | Type     | Description                              |
+|-----------|----------|------------------------------------------|
+| `limit`   | `number` | Maximum entries to return. Default `50`. |
+| `offset`  | `number` | Pagination offset. Default `0`.          |
+
+### Response `200 OK`
+
+```json
+{
+  "entries": [
+    {
+      "id": "sess-abc123",
+      "message_count": 12,
+      "created_at": "2025-01-15T11:00:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+## POST /v1/data/feedback
+
+Submit a feedback record linked to a session. Used as reward signal for weighted KTO and corrective SFT training strategies. Feedback is stored in R2 for the training gateway to consume.
+
+### Request Body
+
+| Field           | Type                      | Required | Description                                            |
+|-----------------|---------------------------|----------|--------------------------------------------------------|
+| `session_id`    | `string`                  | Yes      | Session this feedback refers to.                       |
+| `message_id`    | `string`                  | No       | Specific message within the session.                   |
+| `reward`        | `number`                  | Yes      | Scalar reward (must be within configured `reward_range`). |
+| `confidence`    | `number`                  | No       | Confidence weight (0–1).                               |
+| `dimensions`    | `Record<string, number>`  | No       | Multi-dimensional reward breakdown.                    |
+| `feedback_text` | `string`                  | No       | Free-form human commentary.                            |
+
+### Response `201 Created`
+
+```json
+{
+  "id": "fb-20250115-001",
+  "session_id": "sess-abc123",
+  "reward": 2,
+  "confidence": 0.9,
+  "created_at": "2025-01-15T11:00:00Z"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/v1/data/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-abc123",
+    "reward": 2,
+    "confidence": 0.9,
+    "feedback_text": "Accurate and well-structured response."
+  }'
+```
+
+## GET /v1/data/feedback
+
+List feedback records.
+
+### Query Parameters
+
+| Parameter    | Type     | Description                                    |
+|--------------|----------|------------------------------------------------|
+| `session_id` | `string` | Filter by session ID.                          |
+| `min_reward` | `number` | Minimum reward threshold.                      |
+| `max_reward` | `number` | Maximum reward threshold.                      |
+| `limit`      | `number` | Maximum records to return. Default `50`.       |
+| `offset`     | `number` | Pagination offset. Default `0`.                |
+
+### Response `200 OK`
+
+```json
+{
+  "entries": [
+    {
+      "id": "fb-20250115-001",
+      "session_id": "sess-abc123",
+      "reward": 2,
+      "confidence": 0.9,
+      "feedback_text": "Accurate and well-structured response.",
+      "created_at": "2025-01-15T11:00:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
 ## Error Responses
 
 All endpoints return standard HTTP error codes with a JSON body:
@@ -191,11 +428,12 @@ All endpoints return standard HTTP error codes with a JSON body:
 }
 ```
 
-| Status | Meaning                                               |
-|--------|-------------------------------------------------------|
-| `400`  | Malformed request or invalid parameters.              |
-| `401`  | Missing or invalid authorization.                     |
-| `404`  | Requested adapter or resource not found.              |
-| `429`  | Rate limit exceeded.                                  |
-| `500`  | Internal error (vLLM failure, adapter load failure).  |
-| `503`  | Service unavailable (model not loaded, GPU offline).  |
+| Status | Meaning                                                        |
+|--------|----------------------------------------------------------------|
+| `400`  | Malformed request or invalid parameters.                       |
+| `401`  | Missing or invalid authorization.                              |
+| `404`  | Requested adapter, document, session, or resource not found.   |
+| `422`  | Reward outside configured `reward_range`.                      |
+| `429`  | Rate limit exceeded.                                           |
+| `500`  | Internal error (vLLM failure, adapter load failure, R2 write failure). |
+| `503`  | Service unavailable (model not loaded, GPU offline).           |

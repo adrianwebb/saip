@@ -44,8 +44,8 @@ export default defineConfig({
           items: [
             { label: 'Configuration (saip.yaml)', slug: 'reference/configuration' },
             { label: 'R2 Bucket Layout', slug: 'reference/r2-bucket-layout' },
-            { label: 'Inference API', slug: 'reference/api-inference' },
-            { label: 'Training API', slug: 'reference/api-training' },
+            { label: 'Inference & Data API', slug: 'reference/api-inference' },
+            { label: 'Learning API', slug: 'reference/api-training' },
             { label: 'Adapter Manifest', slug: 'reference/adapter-manifest' },
             { label: 'Cordis Plugins', slug: 'reference/cordis-plugins' },
             { label: 'Glossary', slug: 'reference/glossary' },

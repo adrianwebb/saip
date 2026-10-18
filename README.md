@@ -21,17 +21,21 @@ SAIP consists of two interlocking services connected through a shared remote obj
 │ │Inference │ │ Training │   │Inference │ │ Training │       │
 │ │ Gateway  │ │ Gateway  │   │ Gateway  │ │ Gateway  │       │
 │ │ (Hono)   │ │ (Hono)   │   │ (Hono)   │ │ (Hono)   │       │
+│ │ Data API │ │Learning  │   │ Data API │ │Learning  │       │
+│ │          │ │ API      │   │          │ │ API      │       │
 │ └────┬─────┘ └────┬─────┘   └────┬─────┘ └────┬─────┘       │
 │      │            │              │             │              │
 │      ▼            ▼              ▼             ▼              │
 │    vLLM        Axolotl         vLLM         Axolotl          │
 │  + adapters    + QLoRA       + adapters     + QLoRA          │
+│  + doc proc.                  + doc proc.                    │
 │      │            │              │             │              │
 │      └─────┬──────┘              └──────┬──────┘              │
-│            │                            │                     │
+│            │ writes                reads │                    │
 │            ▼                            ▼                     │
 │      Cloudflare R2 ◄──────────► Cloudflare R2                 │
-│      (adapters + knowledge + sessions + feedback)             │
+│      (handoff boundary: adapters + knowledge + sessions +     │
+│       feedback)                                               │
 │                                                               │
 │   HuggingFace Hub ◄── base model weights                      │
 │   GitHub ◄── project config (saip.yaml)                       │
@@ -42,17 +46,23 @@ SAIP consists of two interlocking services connected through a shared remote obj
 ### Inference Gateway
 
 Serves OpenAI-compatible chat completions via vLLM with dynamic per-request LoRA adapter
-selection. A Hono API layer manages:
+selection. Also owns the Data API (`/v1/data/*`) for document and feedback ingestion —
+document processors run here because they may need model inference (OCR, PDF parsing).
+A Hono API layer manages:
 
 - **vLLM lifecycle** — start/stop the inference server, load/unload adapters
 - **Adapter registry** — sync adapter index from R2, resolve user → adapter mapping
 - **Session collection** — capture conversation histories for training feedback
+- **Data API** — accept documents and feedback, process them, write results to R2
+- **Document processors** — run within inference because they may need model inference
 - **SystemOne endpoint** — decision modeling on the same vLLM instance as inference
 - **User resolution** — map caller identity to adapter group via file-based manifests
 
 ### Training Gateway
 
-Runs Axolotl fine-tuning jobs in the background using three training methods:
+Runs Axolotl fine-tuning jobs in the background using three training methods. Exposes only
+the Learning API (`/v1/learning/*`); data ingestion is handled by the inference gateway.
+The training GPU is dedicated 100% to Axolotl.
 
 - **Knowledge embedding** — continued pretraining on submitted documents, code, datasets
 - **Corrective SFT** — supervised fine-tuning with per-turn feedback weighting
@@ -60,9 +70,7 @@ Runs Axolotl fine-tuning jobs in the background using three training methods:
 
 A Hono API layer manages:
 
-- **Knowledge submission** — accept and store documents in R2
-- **Feedback submission** — accept evaluator feedback linked to sessions
-- **Dataset construction** — transform experiences into Axolotl training formats
+- **Dataset construction** — read processed documents and feedback from R2, transform into Axolotl training formats
 - **Training orchestration** — queue and run Axolotl jobs, promote resulting adapters
 
 ### Shared Infrastructure
@@ -147,9 +155,10 @@ saip down
 SAIP operates in two mutually exclusive modes on a single GPU:
 
 - **Awake** — inference gateway running, training gateway stopped. The system serves
-  requests and collects session histories.
-- **Asleep** — training gateway running, inference gateway stopped. The system processes
-  accumulated experience into new adapters.
+  requests, collects session histories, and ingests documents/feedback through the Data API
+  (processing them with model inference for OCR/parsing) and writes results to R2.
+- **Asleep** — training gateway running, inference gateway stopped. The system reads
+  accumulated data from R2 and trains new adapters. The GPU is dedicated 100% to Axolotl.
 
 On separate GPU nodes, both services can run simultaneously.
 

@@ -1,103 +1,80 @@
 # SAIP Training Gateway
 
-The training gateway runs Axolotl fine-tuning jobs using experience collected by the inference
-gateway and knowledge/feedback submitted through its API. It is one of two core SAIP services
-(see [root README](../README.md)).
+The training gateway runs Axolotl fine-tuning jobs using processed data read from R2 object storage.
+The inference gateway handles all data ingestion and document processing, writing results to R2.
+The training gateway reads from R2 and dedicates its GPU entirely to training. It is one of two
+core SAIP services (see [root README](../README.md)).
 
 ## Design
 
-### Document Processing Pipeline
+### Training Pipeline
 
-SAIP uses a document processing pipeline with pluggable training strategies. Documents are
-uploaded via the Data API, routed by type, processed into an intermediate format, and then
-converted into strategy-specific Axolotl dataset formats by registered training strategy plugins.
+The training gateway reads processed data from R2 (written by the inference gateway) and converts
+it into strategy-specific Axolotl dataset formats using registered training strategy plugins.
 
 ```
-Document Upload → Document Type Router → Document Processor Plugin → Intermediate Format
-                                                                        ↓
-                                                        Training Strategy Plugins (providers)
-                                                        ├── Knowledge Embedding (completion datasets)
-                                                        ├── Corrective SFT (feedback-weighted messages)
-                                                        ├── Weighted KTO (scalar reward records)
-                                                        └── ...extensible
-                                                                        ↓
-                                                                 Axolotl Runner
-                                                                        ↓
-                                                                  QLoRA Adapter
-                                                                        ↓
-                                                         Upload to R2 + update index
+R2 (processed data from inference gateway)
+                ↓
+Training Strategy Plugins
+├── Knowledge Embedding (completion datasets)
+├── Corrective SFT (feedback-weighted messages)
+├── Weighted KTO (scalar reward records)
+└── ...extensible
+                ↓
+         Axolotl Runner
+                ↓
+          QLoRA Adapter
+                ↓
+  Upload to R2 + update index
 ```
 
-No vector databases, chunking, or embeddings are involved. Document processors convert uploaded
-documents into structured intermediate formats. Training strategy plugins then transform that
-intermediate format into their specific Axolotl dataset format. Neither splits data — they
-transform formats based on rules.
+No vector databases, chunking, or embeddings are involved. Training strategy plugins transform
+processed intermediate formats from R2 into their specific Axolotl dataset format. They do not
+split or chunk data — they transform formats based on rules.
 
-### Two API Surfaces
+### Single API Surface: Learning API
 
 | API | Path Prefix | Responsibility |
 |-----|-------------|----------------|
-| **Data API** | `/v1/data/*` | Data submission endpoints registered by data type plugins |
-| **Learning API** | `/v1/learning/*` | Training strategy registration, learning job management, optimization |
+| **Learning API** | `/v1/learning/*` | Training strategy registration, learning job management, feedback, optimization |
 
-The Data API is not a fixed set of routes — **each data type plugin registers its own endpoint**
-under `/v1/data/<name>` with standard CRUD operations. SAIP ships with three built-in endpoints:
+The training gateway exposes only the Learning API. All data ingestion (document upload, session
+history, feedback submission) is handled by the inference gateway's Data API (`/v1/data/*`). The
+two services communicate through R2: the inference gateway writes processed data, and the training
+gateway reads it as input for training jobs. This separation ensures the training GPU is 100%
+dedicated to Axolotl fine-tuning.
 
-- `/v1/data/documents` — file/document upload for continued pretraining
-- `/v1/data/sessions` — session history upload for corrective SFT
-- `/v1/data/feedback` — feedback/reward submission for weighted KTO
+### Training Strategy Plugin Registry
 
-A new data type plugin with complicated input, processing, or output simply registers its own
-endpoint path and processor function. No changes to the gateway core are needed.
-
-The Learning API manages which training strategies are available and orchestrates training jobs.
-These two surfaces are intentionally separated: data ingestion is decoupled from training execution.
-
-### Two Plugin Registries
-
-The training gateway maintains two independent plugin registries connected by an interface contract:
-
-**Data Type Plugins** — each handles one document format:
-
-| Plugin | Accepts | Produces |
-|--------|---------|----------|
-| `markdown-processor` | `.md`, `.mdx` files | Structured text with heading hierarchy |
-| `code-processor` | Source code files | Language-tagged code with file structure metadata |
-| `pdf-processor` | PDF documents | Extracted text with section boundaries |
-| `jsonl-processor` | JSONL datasets | Validated record sequences |
-| *(extensible)* | *(new formats)* | *(canonical intermediate format)* |
+The training gateway maintains a registry of training strategy plugins. Each strategy declares which
+processed data formats it can consume from R2 and produces Axolotl datasets in its required format.
 
 **Training Strategy Plugins** — each implements one learning method:
 
-| Plugin | Consumes | Produces |
-|--------|----------|----------|
+| Plugin | Consumes (from R2) | Produces |
+|--------|---------------------|----------|
 | `knowledge-embedding` | Processed documents | Completion-format text sequences |
 | `corrective-sft` | Feedback-weighted messages | SFT dataset with per-turn weights |
 | `weighted-kto` | Scalar reward records | KTO dataset with magnitude weights |
 | *(extensible)* | *(declared types)* | *(strategy-specific Axolotl format)* |
 
-Both are **Cordis plugins that register themselves at startup**. A data type plugin implements
-the interface: "accept raw document → return intermediate format." A training strategy plugin
-implements: "accept intermediate format of declared types → produce Axolotl dataset." Neither
-knows about the other's internals. Adding a new document type or a new training method requires
-only one new plugin — zero changes to existing code.
+These are **Cordis plugins that register themselves at startup**. A training strategy plugin
+implements: "read processed data from R2 → produce Axolotl dataset." Adding a new training method
+requires only one new plugin — zero changes to existing code. Document processing is handled
+entirely by the inference gateway.
 
-**Gateway plugins** orchestrate the flow between the two registries:
+**Gateway plugins** orchestrate training:
 
 | Plugin | Responsibility |
 |--------|---------------|
-| `document-type-router` | Inspect document format, dispatch to matching data type plugin |
-| `training-strategy-registry` | Track registered strategies, route processed output to matching consumers |
-| `data-api` | Hono HTTP server for document upload, processing, and feedback endpoints |
+| `training-strategy-registry` | Track registered strategies, load processed data from R2 for matching consumers |
 | `learning-api` | Hono HTTP server for strategy listing and job management |
 | `axolotl-runner` | Queue and execute Axolotl training jobs, manage GPU allocation |
 
 Plugins communicate through Cordis events:
 
 ```
-document/uploaded       — new document received via Data API
-document/processed      — document processor completed conversion
-feedback/submitted      — new feedback record stored
+r2/data-updated         — new processed data available in R2 from inference gateway
 learning/job-queued     — learning job added to queue
 learning/job-started    — Axolotl job running
 learning/job-complete   — adapter produced, ready for evaluation
@@ -112,17 +89,18 @@ adapter/promoted        — adapter passed evaluation, uploaded to R2
 | Corrective SFT | Feedback-weighted messages | How to correct mistakes, avoid repeating them | Custom SFT with feedback-weighted loss |
 | Weighted KTO | Scalar reward records (-3 to +3) + confidence | Behavioral policy shaping | Custom KTO with magnitude weighting |
 
-All strategies consume processed documents and/or feedback from the Data API and produce QLoRA
+All strategies consume processed data from R2 (written by the inference gateway) and produce QLoRA
 adapters that are uploaded back to R2 for the inference gateway to serve.
 
 ### Background Processing
 
-Training runs as a background process. The Hono API accepts submissions and manages the
+Training runs as a background process. The Learning API accepts job requests and manages the
 training queue, while Axolotl executes asynchronously. The API remains responsive during
-training.
+training. Training data is read from R2 — the training gateway never ingests data directly.
 
 When operating in "sleep" mode on a single GPU, the inference gateway is stopped and the
 training gateway has exclusive GPU access. On separate GPU nodes, both run simultaneously.
+In either mode, processed data flows through R2 as the handoff boundary.
 
 ### Docker Compose Services
 
