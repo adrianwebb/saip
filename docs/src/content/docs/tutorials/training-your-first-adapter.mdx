@@ -17,48 +17,49 @@ SAIP is built around a continuous improvement cycle: **experience** (the model s
 saip sleep
 ```
 
-This command stops all inference services (freeing GPU memory) and starts the training gateway on port `8001`. The gateway exposes endpoints for knowledge ingestion, feedback collection, and training job management.
+This command stops all inference services (freeing GPU memory) and starts the training gateway on port `8001`. The gateway exposes the Data API (`/v1/data/*`) for document upload and processing, and the Learning API (`/v1/learning/*`) for training strategy registration and job management.
 
 :::note
 The inference API at port `8000` will be unavailable while in sleep mode. Plan your training sessions during low-traffic windows.
 :::
 
-## Submit Knowledge
+## Upload Documents
 
-1. Add a document to the knowledge corpus:
+1. Upload a document via the Data API:
 
 ```bash
-curl http://localhost:8001/v1/knowledge \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "SAIP Deployment Guide",
-    "body": "SAIP runs in two modes: awake for inference and sleep for training. The awake mode starts a vLLM server with the base model and any active LoRA adapter. The sleep mode stops inference and starts the training gateway, which accepts knowledge documents, user feedback, and training job requests.",
-    "tags": ["deployment", "operations"]
-  }'
+curl http://localhost:8001/v1/data/documents \
+  -X POST \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@deployment-guide.md" \
+  -F "title=SAIP Deployment Guide" \
+  -F "tags=deployment,operations"
 ```
 
-2. The response includes a `knowledge_id` and processing status:
+2. The response includes a `document_id` and processing status:
 
 ```json
 {
-  "knowledge_id": "kn_abc123",
-  "status": "indexed",
-  "chunks": 4
+  "document_id": "doc_abc123",
+  "status": "processed",
+  "processor": "markdown-processor",
+  "training_strategies_available": ["knowledge_embedding", "corrective_sft", "weighted_kto"]
 }
 ```
 
-The document is chunked, embedded, and stored in the vector index. These embeddings are used by the `knowledge_embedding` training method to ground the adapter in your domain content.
+The document type router identifies the file format and dispatches it to the appropriate document processor plugin. The processor converts the document into an intermediate format that all registered training strategy plugins can consume. No chunking or embedding occurs — the processed document retains its full structure for downstream format conversion.
 
 :::tip
-You can submit multiple documents before triggering training. The knowledge corpus accumulates across submissions — each training job uses everything indexed so far.
+You can upload multiple documents before triggering training. Each document is processed independently and made available to all training strategies. Training jobs operate on the accumulated set of processed documents.
 :::
 
 ## Submit Feedback
 
-1. Record user feedback linked to an inference session:
+1. Record user feedback linked to an inference session via the Data API:
 
 ```bash
-curl http://localhost:8001/v1/feedback \
+curl http://localhost:8001/v1/data/feedback \
+  -X POST \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "sess_xyz789",
@@ -83,16 +84,16 @@ curl http://localhost:8001/v1/feedback \
 Feedback submitted during sleep mode is queued and applied to the next training job. You do not need to collect feedback in real time — batch submission works equally well.
 :::
 
-## Trigger Training
+## Trigger a Learning Job
 
-1. Start a training job with your chosen method:
+1. Start a learning job via the Learning API, specifying which training strategy to use:
 
 ```bash
-curl http://localhost:8001/v1/training/jobs \
+curl http://localhost:8001/v1/learning/jobs \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{
-    "method": "corrective_sft",
+    "strategy": "corrective_sft",
     "config": {
       "epochs": 3,
       "learning_rate": 2e-5,
@@ -101,34 +102,36 @@ curl http://localhost:8001/v1/training/jobs \
   }'
 ```
 
-2. Available training methods:
+2. Available training strategies (registered as Cordis plugin providers):
 
-| Method | Use Case | Signal Source |
+| Strategy | Use Case | Input Format |
 |---|---|---|
-| `knowledge_embedding` | Ground the model in domain documents | Knowledge corpus embeddings |
-| `corrective_sft` | Fix specific quality issues identified in feedback | Dimension-level feedback scores |
-| `weighted_kto` | Align overall response quality to user preferences | Aggregate reward scores |
+| `knowledge_embedding` | Ground the model in domain documents | Completion datasets (raw text sequences) |
+| `corrective_sft` | Fix specific quality issues identified in feedback | Feedback-weighted message datasets |
+| `weighted_kto` | Align overall response quality to user preferences | Scalar reward records |
+
+Each training strategy is a Cordis plugin that registers itself as a provider. When a learning job is triggered, the strategy plugin converts processed documents and feedback into its specific Axolotl dataset format.
 
 3. The response returns a `job_id` and initial status:
 
 ```json
 {
   "job_id": "train_def456",
-  "method": "corrective_sft",
+  "strategy": "corrective_sft",
   "status": "queued"
 }
 ```
 
 :::tip
-Start with `knowledge_embedding` for your first adapter to establish domain grounding. Use `corrective_sft` and `weighted_kto` in subsequent cycles as you accumulate feedback data.
+Start with `knowledge_embedding` for your first adapter to establish domain grounding. Use `corrective_sft` and `weighted_kto` in subsequent cycles as you accumulate feedback data. New training strategies can be added as Cordis plugins without modifying core SAIP code.
 :::
 
 ## Monitor Progress
 
-1. Check training status at any time:
+1. Check learning job status at any time:
 
 ```bash
-curl http://localhost:8001/v1/training/status
+curl http://localhost:8001/v1/learning/jobs/train_def456
 ```
 
 2. The response includes:
@@ -136,7 +139,7 @@ curl http://localhost:8001/v1/training/status
 ```json
 {
   "job_id": "train_def456",
-  "method": "corrective_sft",
+  "strategy": "corrective_sft",
   "status": "running",
   "progress": {
     "epoch": 2,
