@@ -15,6 +15,11 @@ The inference gateway is a Cordis application composed of focused plugins:
 | `adapter-registry` | Sync adapter index from R2, maintain local cache, resolve versions |
 | `user-resolver` | Map caller identity → adapter group using file-based manifests |
 | `session-collector` | Capture conversation histories, tool calls, artifacts for training |
+| `data-api` | Hono HTTP server for Data API endpoints (`/v1/data/*`) — document upload, session history, feedback |
+| `markdown-processor` | Process `.md`/`.mdx` files into structured text with heading hierarchy |
+| `code-processor` | Process source code files into language-tagged code with metadata |
+| `pdf-processor` | Process PDF documents via Marker OCR into extracted text with sections |
+| `jsonl-processor` | Process JSONL datasets into validated record sequences |
 | `api` | Hono HTTP server exposing OpenAI-compatible `/v1/chat/completions` |
 
 Plugins communicate through Cordis events:
@@ -24,7 +29,18 @@ adapter/promoted    — new adapter available in R2
 adapter/loaded      — adapter loaded into vLLM
 session/complete    — conversation finished, ready for storage
 user/resolved       — caller mapped to adapter group
+document/uploaded   — new document received via Data API
+document/processed  — document processor completed conversion
+data/stored         — processed data written to R2
 ```
+
+### Data Processing and R2 Storage
+
+During awake mode, the inference gateway processes uploaded documents, session histories, and
+feedback through its Data API (`/v1/data/*`). Document processor plugins (markdown, code, PDF/Marker
+OCR, JSONL) run within the inference gateway because they may require model inference. All processed
+data is written to R2 object storage, where the training gateway reads it as input for Axolotl
+fine-tuning jobs. R2 serves as the handoff boundary between the two services.
 
 ### Request Flow
 

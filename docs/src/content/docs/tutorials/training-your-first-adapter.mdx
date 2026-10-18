@@ -17,7 +17,7 @@ SAIP is built around a continuous improvement cycle: **experience** (the model s
 saip sleep
 ```
 
-This command stops all inference services (freeing GPU memory) and starts the training gateway on port `8001`. The gateway exposes the Data API (`/v1/data/*`) for document upload and processing, and the Learning API (`/v1/learning/*`) for training strategy registration and job management.
+This command stops all inference services (freeing GPU memory) and starts the training gateway on port `8001`. The training gateway exposes only the Learning API (`/v1/learning/*`) for training strategy registration and job management. Documents and feedback are submitted through the inference gateway's Data API (`/v1/data/*` on port `8000`) while in awake mode; they accumulate in R2 and are consumed by training during sleep mode.
 
 :::note
 The inference API at port `8000` will be unavailable while in sleep mode. Plan your training sessions during low-traffic windows.
@@ -25,10 +25,12 @@ The inference API at port `8000` will be unavailable while in sleep mode. Plan y
 
 ## Upload Documents
 
-1. Upload a document via the Data API:
+Documents are uploaded through the inference gateway (port `8000`), which processes them and stores the results in R2. Training jobs later consume this processed data from R2.
+
+1. Upload a document via the Data API on the inference gateway:
 
 ```bash
-curl http://localhost:8001/v1/data/documents \
+curl http://localhost:8000/v1/data/documents \
   -X POST \
   -H "Content-Type: multipart/form-data" \
   -F "file=@deployment-guide.md" \
@@ -55,10 +57,10 @@ You can upload multiple documents before triggering training. Each document is p
 
 ## Submit Feedback
 
-1. Record user feedback linked to an inference session via the Data API:
+1. Record user feedback linked to an inference session via the Data API on the inference gateway:
 
 ```bash
-curl http://localhost:8001/v1/data/feedback \
+curl http://localhost:8000/v1/data/feedback \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{

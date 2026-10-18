@@ -9,8 +9,8 @@ SAIP is not a monolith. It is two independent services — an inference gateway 
 
 Inference and training have fundamentally different resource profiles:
 
-- **Inference** is latency-sensitive, memory-bound, and needs to be always-on for interactive use. It loads a base model once and serves many concurrent requests with dynamic adapter selection.
-- **Training** is throughput-oriented, compute-bound, and batch-driven. It loads datasets, runs gradient updates for minutes or hours, then exits.
+- **Inference** is latency-sensitive, memory-bound, and needs to be always-on for interactive use. It loads a base model once and serves many concurrent requests with dynamic adapter selection. It also handles document processing (Data API), because OCR, PDF parsing, and similar ingestion tasks need model inference.
+- **Training** is throughput-oriented, compute-bound, and batch-driven. It loads datasets from R2, runs gradient updates for minutes or hours, then exits. With data ingestion handled by inference, the training GPU is dedicated 100% to Axolotl.
 
 Running both on a single GPU simultaneously would force compromises: the inference engine would need to reserve VRAM for training buffers (starving its KV cache), or training would be starved by inference's persistent model weights. Neither workload gets the resources it actually needs.
 
@@ -25,16 +25,18 @@ Instead, SAIP treats them as **mutually exclusive modes** on a single GPU:
 │   │                  │         │                      │     │
 │   │  • vLLM server   │         │  • Axolotl runner    │     │
 │   │  • Adapter reg.  │         │  • Dataset builder   │     │
-│   │  • User resolver │         │  • Feedback store    │     │
-│   │  • Session coll. │         │  • Knowledge store   │     │
-│   │  • Hono API      │         │  • Hono API          │     │
+│   │  • User resolver │         │  • Learning API      │     │
+│   │  • Session coll. │         │  • Training orch.    │     │
+│   │  • Data API      │         │  • Hono API          │     │
+│   │  • Doc processors│         │                      │     │
+│   │  • Hono API      │         │                      │     │
 │   └────────┬─────────┘         └──────────┬───────────┘     │
 │            │                               │                 │
 └────────────┼───────────────────────────────┼─────────────────┘
-             │                               │
+             │  writes                       │ reads
              ▼                               ▼
         ┌─────────────────────────────────────────┐
-        │          CLOUDFLARE R2                   │
+        │       CLOUDFLARE R2 (handoff boundary)   │
         │                                         │
         │  adapters/    knowledge/    sessions/    │
         │  feedback/    _index.json               │
@@ -48,7 +50,7 @@ Instead, SAIP treats them as **mutually exclusive modes** on a single GPU:
               └─────────┘    └─────────┘
 ```
 
-The CLI orchestrates the swap: `saip awake` tears down the training compose stack and brings up inference; `saip sleep` does the reverse. Because shared state lives in R2, neither service needs to know about the other's runtime state. They read and write the same objects independently.
+The CLI orchestrates the swap: `saip awake` tears down the training compose stack and brings up inference; `saip sleep` does the reverse. R2 is the explicit handoff boundary: the inference gateway writes processed documents, sessions, and feedback to R2; the training gateway reads them when it starts. Neither service needs to know about the other's runtime state.
 
 ### Why Not a Database?
 
@@ -134,8 +136,8 @@ Most individual developers and small teams have exactly one GPU. Running inferen
 
 SAIP's awake/sleep model accepts this constraint explicitly:
 
-- **Awake mode**: inference gateway is running, training gateway is stopped. The GPU serves requests with full VRAM allocation. Sessions accumulate in R2.
-- **Sleep mode**: training gateway is running, inference gateway is stopped. The GPU runs training jobs using accumulated sessions and feedback. New adapters are uploaded to R2.
+- **Awake mode**: inference gateway is running, training gateway is stopped. The GPU serves requests with full VRAM allocation. Inference also ingests documents and feedback through the Data API — processing them (OCR, parsing) using the loaded model — and writes results to R2. Sessions accumulate alongside processed knowledge.
+- **Sleep mode**: training gateway is running, inference gateway is stopped. The GPU runs training jobs, consuming the accumulated data from R2. New adapters are uploaded to R2.
 - **Down mode**: neither service is running. The GPU is free for other work.
 
 The CLI makes switching trivial: `saip awake`, `saip sleep`, `saip down`. Each command tears down one Docker Compose stack and brings up the other. Because state lives in R2, there is no handoff protocol between services — they simply read whatever was written last.

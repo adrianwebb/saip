@@ -155,15 +155,15 @@ Unlike RLHF/DPO, KTO doesn't need paired (chosen, rejected) examples. It works w
 
 ### Submit Feedback
 
-The training gateway listens on port **8001** (not the inference port 8000).
+The inference gateway listens on port **8000**. Feedback is submitted through the inference gateway's Data API, which writes it to R2 for the training gateway to consume.
 
 ```
-POST /v1/feedback
+POST /v1/data/feedback
 Content-Type: application/json
 ```
 
 ```bash
-curl -X POST http://localhost:8001/v1/feedback \
+curl -X POST http://localhost:8000/v1/data/feedback \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "sess-abc123",
@@ -195,14 +195,14 @@ Response:
 The batch endpoint is optional — you can also submit feedback records individually.
 
 ```
-POST /v1/feedback/batch
+POST /v1/data/feedback/batch
 Content-Type: application/json
 ```
 
 Accepts an array of feedback records (max 100 per request):
 
 ```bash
-curl -X POST http://localhost:8001/v1/feedback/batch \
+curl -X POST http://localhost:8000/v1/data/feedback/batch \
   -H "Content-Type: application/json" \
   -d '[
     {"session_id": "sess-a", "reward": 2, "confidence": 0.9},
@@ -213,8 +213,8 @@ curl -X POST http://localhost:8001/v1/feedback/batch \
 ### Query Feedback
 
 ```bash
-curl "http://localhost:8001/v1/feedback?session_id=sess-abc123"
-curl "http://localhost:8001/v1/feedback?min_reward=-1&max_reward=3&limit=20"
+curl "http://localhost:8000/v1/data/feedback?session_id=sess-abc123"
+curl "http://localhost:8000/v1/data/feedback?min_reward=-1&max_reward=3&limit=20"
 ```
 
 ## Best Practices
