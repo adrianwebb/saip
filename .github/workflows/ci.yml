@@ -39,3 +39,9 @@ jobs:
 
       - name: Test shared
         run: pnpm --filter @saip/shared test
+
+      - name: Typecheck & build inference
+        run: pnpm --filter @saip/inference build
+
+      - name: Test inference
+        run: pnpm --filter @saip/inference test

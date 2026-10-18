@@ -26,6 +26,10 @@ export const ADAPTER_REGISTRY_SERVICE = 'adapterRegistry'
 export class AdapterRegistryService extends Service {
   static readonly provide = ADAPTER_REGISTRY_SERVICE
 
+  constructor(ctx: any) {
+    super(ctx, ADAPTER_REGISTRY_SERVICE)
+  }
+
   /** Validate a full registry (adapters + users) against the documented contract. */
   validate(input: RegistryInput): ValidationResult {
     return validateRegistry(input)
