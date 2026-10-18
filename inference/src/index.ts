@@ -10,6 +10,8 @@ import { Context } from 'cordis'
 import { AdapterRegistryService } from '@saip/shared/services'
 import { AdapterCompilerService } from './plugins/adapter-compiler.js'
 import { GatewayStateService } from './plugins/gateway-state.js'
+import { UserResolverService } from './plugins/user-resolver.js'
+import { ApiCoreService } from './plugins/api-core.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
 
@@ -30,6 +32,8 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(AdapterRegistryService)
   await ctx.plugin(AdapterCompilerService)
   await ctx.plugin(GatewayStateService, { config, storage, vllm: opts.vllm })
+  await ctx.plugin(UserResolverService, { users: config.users })
+  await ctx.plugin(ApiCoreService, { modelBase: config.model.base, adapters: config.adapters })
 
   // Validate the loaded registry once at boot — CLI/inference/training must
   // agree on validity, so an invalid registry fails loudly here.
@@ -39,8 +43,8 @@ export async function createApp(opts: CreateAppOptions = {}) {
     throw new Error(`invalid adapter registry: ${codes}`)
   }
 
-  // Remaining plugins (userResolver, apiCore, apiChat, apiSystemOne,
-  // sessionCollector, dataApi) register here as they are implemented.
+  // Remaining plugins (apiCore, apiChat, apiSystemOne, sessionCollector,
+  // dataApi) register here as they are implemented.
   return ctx
 }
 
