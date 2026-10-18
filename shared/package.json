@@ -12,6 +12,7 @@
     "./hf-client": "./dist/hf-client.js",
     "./adapter-manifest": "./dist/adapter-manifest.js",
     "./adapter-registry": "./dist/adapter-registry.js",
+    "./hosting": "./dist/hosting.js",
     "./services": "./dist/services.js",
     "./user-manifest": "./dist/user-manifest.js",
     "./types": "./dist/types.js"

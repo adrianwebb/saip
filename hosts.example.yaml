@@ -1,0 +1,51 @@
+# SAIP Host Registry
+#
+# Defines where SAIP services deploy/run. Local is always present as the
+# baseline host; cloud entries are additional named targets.
+#
+# SECURITY RULE: this file references secrets by NAME only (e.g. key_secret,
+# secrets.<ref>). Actual secret VALUES resolve at runtime from a SecretsProvider
+# (shell environment / CI secret store today). Never put real tokens or keys here.
+#
+# Consumed by `saip awake|sleep|down|status --host <name>` and `saip deploy`.
+
+hosts:
+  # Baseline local machine (the gaming-laptop / single-GPU target).
+  - name: default
+    kind: local
+    role: both
+    gpu_node: local
+    compose_dir: .            # repo root holds inference/ and training/ stacks
+
+  # Two-GPU Hyperstack cloud pair — scaffolded; provisioning gated behind an
+  # explicit opt-in because the Terraform provider is alpha. Uncomment to use.
+  #
+  # - name: cloud-inference
+  #   kind: hyperstack
+  #   role: inference
+  #   tofu:
+  #     workspace: infra/tofu/hyperstack
+  #     vars:
+  #       region: CANADA-1
+  #       flavor: n3-H100x1
+  #   ssh:
+  #     host: "<inference_floating_ip>"   # output of the tofu module
+  #     user: ubuntu
+  #     key_secret: SAIP_SSH_PRIVATE_KEY  # SECRET NAME, not value
+  #   secrets:
+  #     api_key: SAIP_HYPERSTACK_API_KEY  # SECRET NAME, not value
+  #
+  # - name: cloud-training
+  #   kind: hyperstack
+  #   role: training
+  #   tofu:
+  #     workspace: infra/tofu/hyperstack
+  #     vars:
+  #       region: CANADA-1
+  #       flavor: n3-H100x1
+  #   ssh:
+  #     host: "<training_floating_ip>"
+  #     user: ubuntu
+  #     key_secret: SAIP_SSH_PRIVATE_KEY
+  #   secrets:
+  #     api_key: SAIP_HYPERSTACK_API_KEY
