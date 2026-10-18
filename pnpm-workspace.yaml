@@ -3,3 +3,5 @@ packages:
   - cli
   - inference
   - training
+allowBuilds:
+  esbuild: true
