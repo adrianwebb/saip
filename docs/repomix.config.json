@@ -1,0 +1,33 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "output": {
+    "filePath": "dist/context-pack/saip-docs.xml",
+    "style": "xml",
+    "fileSummary": true,
+    "directoryStructure": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "includeEmptyDirectories": false,
+    "git": {
+      "addGitDiff": false,
+      "addGitLogs": false
+    }
+  },
+  "security": {
+    "enableSecurityCheck": false
+  },
+  "include": [
+    "src/content/docs/**",
+    "../README.md",
+    "../AGENTS.md"
+  ],
+  "ignore": {
+    "useGitignore": false,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/*.map"
+    ]
+  }
+}

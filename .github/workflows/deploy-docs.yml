@@ -47,11 +47,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile || pnpm install
 
-      - name: Build documentation site
+      - name: Build documentation site (astro + context packs + link check)
         run: cd docs && pnpm build
 
-      - name: Check internal links
-        run: cd docs && bash scripts/check-links.sh dist
+      - name: Verify context packs exist
+        run: |
+          test -s docs/dist/context-pack/saip-docs.xml
+          test -s docs/dist/context-pack/saip-docs.md
+          test -s docs/dist/context-pack/saip-docs.json
+          echo "✅ All three context packs present"
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

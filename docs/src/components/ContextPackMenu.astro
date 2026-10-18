@@ -1,0 +1,130 @@
+---
+/**
+ * ContextPackMenu — "Download for AI" dropdown in the site header.
+ * Links to Repomix-generated documentation context packs served at stable
+ * URLs under /context-pack/. Files are downloaded, not navigated to.
+ */
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+
+<div class="ctx-menu" id="context-pack-menu">
+  <button
+    type="button"
+    class="ctx-toggle"
+    aria-haspopup="true"
+    aria-expanded="false"
+    data-ctx-toggle
+  >
+    Download for AI
+    <svg aria-hidden="true" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M2 5l6 6 6-6z"/>
+    </svg>
+  </button>
+  <div class="ctx-panel" hidden data-ctx-panel role="menu">
+    <a role="menuitem" href={`${base}/context-pack/saip-docs.xml`} download="saip-docs.xml">
+      <strong>XML</strong><span>recommended for LLMs</span>
+    </a>
+    <a role="menuitem" href={`${base}/context-pack/saip-docs.md`} download="saip-docs.md">
+      <strong>Markdown</strong><span>skills &amp; repo instructions</span>
+    </a>
+    <a role="menuitem" href={`${base}/context-pack/saip-docs.json`} download="saip-docs.json">
+      <strong>JSON</strong><span>programmatic use</span>
+    </a>
+    <a role="menuitem" class="ctx-info" href={`${base}/guides/download-for-ai/`}>
+      About context packs
+    </a>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const menu = document.getElementById('context-pack-menu');
+    if (!menu) return;
+    const toggle = menu.querySelector('[data-ctx-toggle]');
+    const panel = menu.querySelector('[data-ctx-panel]');
+    const setOpen = (open) => {
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+    };
+    toggle.addEventListener('click', () => setOpen(panel.hidden));
+    document.addEventListener('click', (e) => {
+      if (!menu.contains(e.target)) setOpen(false);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    });
+  })();
+</script>
+
+<style>
+  .ctx-menu {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .ctx-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font: inherit;
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: #fff;
+    background: var(--sl-color-accent-high, #6366f1);
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.8rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .ctx-toggle:hover {
+    filter: brightness(1.15);
+  }
+
+  .ctx-panel {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 0;
+    z-index: 100;
+    min-width: 15rem;
+    display: flex;
+    flex-direction: column;
+    padding: 0.4rem;
+    background: var(--sl-color-gray-6, #fff);
+    border: 1px solid var(--sl-color-gray-4, #ccc);
+    border-radius: 0.6rem;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  }
+
+  .ctx-panel a {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 0.4rem;
+    text-decoration: none;
+    color: var(--sl-color-text, inherit);
+  }
+
+  .ctx-panel a:hover {
+    background: var(--sl-color-gray-5, #eee);
+  }
+
+  .ctx-panel a strong {
+    font-size: 0.9rem;
+  }
+
+  .ctx-panel a span {
+    font-size: 0.75rem;
+    color: var(--sl-color-gray-3, #888);
+  }
+
+  .ctx-panel .ctx-info {
+    margin-top: 0.25rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--sl-color-gray-4, #ddd);
+    font-size: 0.8rem;
+  }
+</style>

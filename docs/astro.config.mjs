@@ -64,6 +64,9 @@ export default defineConfig({
         },
       ],
       customCss: [],
+      components: {
+        Header: './src/overrides/Header.astro',
+      },
     }),
   ],
 });

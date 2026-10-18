@@ -13,7 +13,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
-pnpm-lock.yaml
+.pnpm-store/
 
 # Python (Axolotl artifacts)
 __pycache__/
