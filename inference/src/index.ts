@@ -8,7 +8,7 @@
 
 import { Context } from 'cordis'
 import { AdapterRegistryService, SecretsService } from '@saip/shared/services'
-import { EnvSecrets } from '@saip/shared'
+import { EnvSecrets, MetricsService } from '@saip/shared'
 import { AdapterCompilerService } from './plugins/adapter-compiler.js'
 import { GatewayStateService } from './plugins/gateway-state.js'
 import { UserResolverService } from './plugins/user-resolver.js'
@@ -23,6 +23,7 @@ import { DataFeedbackService } from './plugins/data-feedback.js'
 import { ServerService } from './plugins/server.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
+import type { MonitoringProvider } from '@saip/shared'
 
 export interface CreateAppOptions {
   config?: SaipRuntimeConfig
@@ -32,6 +33,8 @@ export interface CreateAppOptions {
   vllm?: VllmBackend
   /** Override promoted-version lookup (defaults to reading adapters/_index.json). */
   latestVersion?: (name: string) => number | undefined
+  /** Monitoring sink for the Metrics service (default noop). */
+  monitoring?: MonitoringProvider
 }
 
 /** Build a latestVersion fn: prefer injected, else read the R2 adapter index. */
@@ -76,6 +79,7 @@ export async function createApp(opts: CreateAppOptions = {}) {
   }
 
   await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  await ctx.plugin(MetricsService, { provider: opts.monitoring })
   await ctx.plugin(AdapterCompilerService)
   await ctx.plugin(GatewayStateService, { config, storage, vllm: opts.vllm })
   await ctx.plugin(UserResolverService, { users: config.users })
@@ -88,6 +92,13 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(DataDocumentsService, { storage })
   await ctx.plugin(DataSessionsService, { storage })
   await ctx.plugin(DataFeedbackService, { storage, rewardRange: config.training?.methods?.weighted_kto?.reward_range })
+
+  // Monitoring bridge: map domain events → metrics. Observe-only; never affects
+  // request handling (MetricsService already swallows sink errors).
+  const metrics = (ctx as any).metrics
+  ctx.on('chat/request', () => metrics.counter('saip_chat_requests_total'))
+  ctx.on('session/complete', () => metrics.counter('saip_sessions_collected_total'))
+  ctx.on('data/stored', (evt: { kind: string }) => metrics.counter('saip_data_stored_total', { kind: evt.kind }))
 
   // Compose all API sub-apps into one server (registered last so every route
   // plugin already exists on ctx).

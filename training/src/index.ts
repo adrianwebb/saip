@@ -8,7 +8,7 @@
 
 import { Context } from 'cordis'
 import { AdapterRegistryService, SecretsService } from '@saip/shared/services'
-import { EnvSecrets, BearerTokenAuth, AllowAllDevAuth, type AuthProvider } from '@saip/shared'
+import { EnvSecrets, BearerTokenAuth, AllowAllDevAuth, MetricsService, type AuthProvider, type MonitoringProvider } from '@saip/shared'
 import { LearningApiService } from './plugins/learning-api.js'
 import { createMiddleware } from 'hono/factory'
 
@@ -22,6 +22,7 @@ export interface CreateAppOptions {
   adapters?: any[]
   registeredStrategies?: string[]
   defaultAdapterFor?: (callerId?: string) => string | undefined
+  monitoring?: MonitoringProvider
 }
 
 function pickAuthProvider(security: SecurityConfig, secrets: any): AuthProvider {
@@ -33,6 +34,7 @@ export async function createApp(opts: CreateAppOptions = {}) {
   const ctx = new Context()
   await ctx.plugin(AdapterRegistryService)
   await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  await ctx.plugin(MetricsService, { provider: opts.monitoring })
 
   const security = opts.security ?? { dev_mode: false, api_tokens: [] }
   const provider = pickAuthProvider(security, (ctx as any).secrets)
@@ -49,6 +51,9 @@ export async function createApp(opts: CreateAppOptions = {}) {
     defaultAdapterFor: opts.defaultAdapterFor,
     authMiddleware,
   })
+
+  // Monitoring bridge: count queued learning jobs. Observe-only.
+  ctx.on('learning/job-queued', () => (ctx as any).metrics.counter('saip_learning_jobs_queued_total'))
   // Remaining plugins (axolotlRunner, r2Sync) register here as they are implemented.
   return ctx
 }

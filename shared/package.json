@@ -14,6 +14,7 @@
     "./adapter-registry": "./dist/adapter-registry.js",
     "./hosting": "./dist/hosting.js",
     "./auth": "./dist/auth.js",
+    "./monitoring": "./dist/monitoring.js",
     "./services": "./dist/services.js",
     "./user-manifest": "./dist/user-manifest.js",
     "./types": "./dist/types.js"

@@ -25,6 +25,9 @@ declare module 'cordis' {
   interface Context {
     learningApi?: LearningApiService
   }
+  interface Events {
+    'learning/job-queued'(payload: { jobId: string; adapter: string; strategy: string }): void
+  }
 }
 
 let jobCounter = 0
@@ -73,8 +76,10 @@ export class LearningApiService extends Service {
         return c.json({ error: { code: result.error.code, message: result.error.message } }, result.error.status as 404 | 422)
       }
       const job = result.job
+      const jobId = nextJobId()
+      this.ctx.emit('learning/job-queued', { jobId, adapter: job.adapter, strategy: job.strategy })
       return c.json({
-        job_id: nextJobId(),
+        job_id: jobId,
         adapter: job.adapter,
         strategy: job.strategy,
         inherited: { data_scopes: job.data_scopes },
