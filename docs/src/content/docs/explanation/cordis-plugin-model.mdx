@@ -1,0 +1,296 @@
+---
+title: Cordis Plugin Model
+description: Why SAIP uses Cordis and how its plugin system enables extensibility
+---
+
+Both SAIP services — inference and training — are built on Cordis, a meta-framework for spatiotemporal composability. This page explains what Cordis is, why SAIP chose it over alternatives, and how its plugin model shapes the platform's extensibility story.
+
+## What Cordis Is
+
+Cordis describes itself as "a meta-framework of spatiotemporal composability." That phrase deserves unpacking:
+
+- **Meta-framework**: Cordis does not prescribe what your application does. It prescribes how your application's parts relate to each other. It is a framework for building frameworks, or more precisely, a framework for composing services into applications.
+- **Spatiotemporal**: "Spatial" refers to structural composition (which services exist, how they nest, what they depend on). "Temporal" refers to lifecycle management (when services start, stop, restart, and how those transitions propagate). Most frameworks handle one or the other; Cordis handles both as a unified concern.
+- **Composability**: Services are composed, not configured. You don't write a monolithic config file describing your entire application; you compose plugins that declare their own dependencies and provide their own services. The application emerges from composition, not from configuration.
+
+In practical terms, Cordis gives you a plugin system with dependency injection, lifecycle management, event-driven communication, and hot reload — all in a single coherent model rather than a patchwork of libraries.
+
+## Core Concepts
+
+### Context
+
+The Context is the fundamental unit of scope in Cordis. Every service, plugin, and effect exists within a context. Contexts can be extended (creating child scopes that inherit from parents) and isolated (creating sibling scopes that share a parent but not each other's state).
+
+```typescript
+import { Context } from 'cordis'
+
+const ctx = new Context()
+// ctx is the root context
+// All services registered here are globally visible
+
+const childCtx = ctx.extend({ customProp: 'value' })
+// childCtx inherits everything from ctx
+// plus has its own customProp
+```
+
+In SAIP, the root context holds global services (logger, events, registry). Each plugin receives an extended context scoped to its own lifecycle. Plugins can create further child contexts for internal isolation.
+
+### Fiber
+
+A Fiber is the lifecycle container for a plugin. When you register a plugin with `ctx.plugin(myPlugin, config)`, Cordis creates a Fiber that manages that plugin's loading, activation, and disposal. Fibers track:
+
+- **State**: PENDING → LOADING → ACTIVE → UNLOADING → DISPOSED (or FAILED)
+- **Dependencies**: which services this plugin requires from other plugins
+- **Disposables**: cleanup functions registered during the plugin's active phase
+- **Epoch**: a revision counter that triggers reload when dependencies change
+
+Fibers are what make hot reload possible. When a plugin's config changes or a dependency restarts, the fiber detects the epoch change, unloads the old instance (running all disposables), and loads a new instance — all without affecting other fibers that don't depend on the changed plugin.
+
+### Service
+
+A Service is a named, injectable capability registered on a context. Services are the primary interface between plugins: rather than importing each other directly, plugins declare dependencies on services by name.
+
+```typescript
+// Plugin A provides a service
+class AdapterRegistry extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'adapterRegistry')
+  }
+  
+  async resolve(alias: string): Promise<string> { ... }
+}
+
+// Plugin B consumes the service
+export const userResolver: Plugin = {
+  name: 'user-resolver',
+  inject: ['adapterRegistry'],  // declares dependency
+  apply(ctx, config) {
+    // ctx.adapterRegistry is guaranteed to be available
+    // If adapterRegistry fails or restarts, this plugin
+    // automatically unloads and reloads when it recovers
+  }
+}
+```
+
+Services are resolved through Cordis's reflect system, which tracks providers and dependents. When a service provider fails or disposes, all dependent fibers are notified and can react accordingly.
+
+### Plugin
+
+A Plugin is a reusable unit of functionality with a defined lifecycle. Plugins declare:
+
+- **name**: identifier for logging and debugging
+- **Config schema**: optional StandardSchema for config validation
+- **inject**: list of required service dependencies
+- **apply/callback**: the function or class that implements the plugin
+
+Plugins are registered with `ctx.plugin()` and managed by fibers. They can be nested (a plugin can register sub-plugins on its own context), creating hierarchical application structures.
+
+### Events
+
+Events are the communication mechanism between plugins that don't have direct service dependencies. Cordis provides a typed event system on every context:
+
+```typescript
+// Emit an event
+ctx.emit('adapter/promoted', { id: 'coding-general@v13', alias: 'coding-general@latest' })
+
+// Listen for an event
+ctx.on('adapter/promoted', (payload) => {
+  // React to adapter promotion
+})
+
+// Waterfall pattern: transform a value through listeners
+const config = await ctx.waterfall('internal/config', fiber, () => defaultConfig)
+```
+
+Events decouple producers from consumers. The session collector emits `session/completed`; the feedback store listens for it. Neither knows about the other's implementation. This makes it possible to add new listeners (e.g., a metrics exporter) without modifying existing plugins.
+
+## Why Cordis Over Alternatives
+
+SAIP evaluated several composition approaches before choosing Cordis:
+
+### Express Middleware
+
+Express middleware is a linear pipeline: request flows through handlers in order. This works for HTTP routing but fails for long-lived services with bidirectional dependencies. vLLM management, adapter registry, and session collection are not middleware stages — they are concurrent services with mutual dependencies. Express has no lifecycle management, no dependency resolution, and no hot reload.
+
+### NestJS Dependency Injection
+
+NestJS provides DI and lifecycle hooks, but it is opinionated about application structure (decorators, modules, controllers). Its DI container is static: dependencies are resolved at startup and don't adapt to runtime failures. Hot reload requires restarting the entire application. For a system where plugins need to restart independently (e.g., reloading the adapter registry without dropping active inference requests), NestJS's model is too rigid.
+
+### Custom Event Emitters
+
+Building a custom event system is tempting and initially simple. But custom systems inevitably reinvent lifecycle management, dependency tracking, and error propagation — badly. Every custom event emitter eventually grows into a worse version of what Cordis already provides. The maintenance cost of a custom composition framework exceeds the learning cost of adopting an existing one.
+
+### Why Cordis Wins
+
+Cordis occupies a specific niche that the alternatives miss:
+
+- **Dynamic lifecycle**: plugins start, stop, and restart independently based on dependency availability, not global application state
+- **Structural composition**: plugins nest and isolate, creating scoped service environments rather than flat registries
+- **Minimal opinion**: Cordis doesn't care about HTTP, databases, ORMs, or any specific domain. It cares about composition. Everything else is a plugin.
+- **Hot module replacement**: update plugin code or config at runtime without application restart. Critical for development velocity and for operational flexibility (swapping adapters, updating configs, recovering from failures)
+- **Type safety**: TypeScript-native with full type inference for services, events, and config schemas
+
+## Plugin Lifecycle
+
+Understanding the lifecycle is essential for writing correct plugins:
+
+```
+Registration → Dependency Resolution → Loading → Active → Disposal
+     ↑                                        │
+     └──────────── Restart ←──────────────────┘
+```
+
+1. **Registration**: `ctx.plugin(myPlugin, config)` creates a Fiber and registers it with the registry. The fiber enters PENDING state.
+
+2. **Dependency Resolution**: The fiber checks whether all declared `inject` services are available. If any are missing, the fiber stays PENDING until they appear. If a dependency fails or disposes, the fiber transitions to UNLOADING.
+
+3. **Loading**: Once all dependencies are satisfied, the fiber executes the plugin's `apply` function (or instantiates its class). Config is validated against the StandardSchema if provided. The fiber enters LOADING state during execution.
+
+4. **Active**: The plugin's apply function has returned successfully. Any disposables registered during apply are tracked. The fiber is now ACTIVE and its provided services are available to dependents.
+
+5. **Disposal**: When the fiber is disposed (parent context destroyed, plugin removed, or dependency failure), all registered disposables run in reverse order. The fiber enters UNLOADING, then DISPOSED. Dependents are notified and may unload themselves.
+
+6. **Restart**: If a dependency restarts or config changes, the fiber disposes its current instance and re-enters Loading. This is automatic and transparent to the plugin author — your apply function simply runs again with fresh dependencies.
+
+The critical invariant: **disposables always run before re-initialization**. Resources are cleaned up before new ones are acquired. This prevents leaks and ensures that restarted plugins don't accumulate stale state.
+
+## Hot Module Replacement
+
+Cordis supports updating plugin code at runtime through its fiber restart mechanism. When a plugin's source file changes (detected by a file watcher or triggered programmatically), the fiber:
+
+1. Disposes the current instance (running all cleanup)
+2. Re-imports the module
+3. Re-validates config
+4. Re-executes the apply function
+5. Re-registers services and event listeners
+
+This happens without restarting the host application or affecting unrelated plugins. For SAIP, this means:
+
+- Update the adapter registry logic without dropping active inference requests
+- Change session collection behavior without restarting vLLM
+- Modify training dataset construction without stopping the training gateway
+- Develop plugins iteratively with immediate feedback
+
+## Configuration Validation via StandardSchema
+
+Cordis uses the [Standard Schema](https://github.com/standard-schema/standard-schema) specification for config validation. This means plugins can use Zod, Valibot, ArkType, or any compliant validator:
+
+```typescript
+import { z } from 'zod'
+
+const configSchema = z.object({
+  bucket: z.string(),
+  region: z.string().default('auto'),
+  maxAdapters: z.number().int().positive().default(16),
+})
+
+export const adapterRegistry: Plugin = {
+  name: 'adapter-registry',
+  Config: configSchema,  // Cordis validates on load and reload
+  apply(ctx, config) {
+    // config is typed as z.infer<typeof configSchema>
+    // Invalid config throws ValidationError before apply runs
+  }
+}
+```
+
+Validation happens at load time and reload time. Invalid config prevents the plugin from entering ACTIVE state — it transitions to FAILED instead, with a descriptive error message. This catches configuration errors early and prevents partially-initialized plugins from causing downstream failures.
+
+## How SAIP Uses Cordis Differently
+
+The inference and training gateways use Cordis with different priorities:
+
+### Inference Gateway
+
+- **Long-lived services**: vLLM manager, adapter registry, and API server run continuously for days or weeks
+- **Hot reload priority**: adapter registry and user resolver must update without dropping requests
+- **Event-driven session tracking**: session collector listens to API events, not direct calls
+- **Graceful degradation**: if the adapter registry fails, the API server continues serving requests with a fallback adapter rather than crashing
+
+Plugins: `vllmManager`, `adapterRegistry`, `userResolver`, `sessionCollector`, `api`
+
+### Training Gateway
+
+- **Batch-oriented services**: Axolotl runner starts, trains, and exits; dataset builder runs on demand
+- **Config-driven**: training jobs are configured via YAML, validated through StandardSchema
+- **Sequential lifecycle**: dataset building → config generation → training execution → artifact upload
+- **Error recovery**: failed training runs dispose cleanly, leaving partial artifacts for inspection
+
+Plugins: `axolotlRunner`, `knowledgeStore`, `feedbackStore`, `datasetBuilder`, `api`
+
+The shared pattern: both gateways compose focused plugins that communicate through events and services, validate config at load time, and manage resources through disposables. The difference is temporal: inference plugins are long-lived and hot-reloadable; training plugins are batch-oriented and restart between jobs.
+
+## Writing a Custom SAIP Plugin
+
+Here is a minimal plugin that adds metrics export to the inference gateway:
+
+```typescript
+import { Context, Plugin } from 'cordis'
+import { z } from 'zod'
+
+const configSchema = z.object({
+  endpoint: z.string().url(),
+  intervalMs: z.number().int().positive().default(60000),
+})
+
+export const metricsExporter: Plugin = {
+  name: 'metrics-exporter',
+  Config: configSchema,
+  inject: ['adapterRegistry', 'sessionCollector'],
+  
+  apply(ctx, config) {
+    let buffer: MetricPoint[] = []
+    
+    // Listen for session completions
+    ctx.on('session/completed', (session) => {
+      buffer.push({
+        timestamp: session.completed_at,
+        adapter: session.adapter_id,
+        messageCount: session.message_count,
+      })
+    })
+    
+    // Periodic flush
+    const timer = setInterval(async () => {
+      if (buffer.length === 0) return
+      const batch = buffer.splice(0)
+      try {
+        await fetch(config.endpoint, {
+          method: 'POST',
+          body: JSON.stringify(batch),
+        })
+      } catch (err) {
+        ctx.logger.error('Metrics flush failed:', err)
+        buffer.unshift(...batch)  // retry on next interval
+      }
+    }, config.intervalMs)
+    
+    // Cleanup on disposal
+    return () => {
+      clearInterval(timer)
+      // Flush remaining metrics synchronously
+      if (buffer.length > 0) {
+        ctx.logger.warn(`Disposing with ${buffer.length} unflushed metrics`)
+      }
+    }
+  }
+}
+```
+
+Key observations:
+
+- **Dependencies are declared, not imported**: `inject: ['adapterRegistry', 'sessionCollector']` ensures these services exist before the plugin activates. If either fails, this plugin automatically unloads.
+- **Cleanup is guaranteed**: the returned disposable runs on any shutdown path — graceful stop, restart, or dependency failure.
+- **Config is validated**: invalid URLs or negative intervals are caught before apply runs.
+- **Communication is event-based**: the plugin listens for `session/completed` rather than calling the session collector directly. Adding this plugin does not modify any existing plugin.
+
+Register it in the inference gateway's entry point:
+
+```typescript
+ctx.plugin(metricsExporter, {
+  endpoint: 'https://metrics.example.com/ingest',
+  intervalMs: 30000,
+})
+```
+
+That is the entire integration. No middleware registration, no route modification, no config file editing. The plugin declares what it needs, does its work, cleans up after itself, and communicates through events. This is the composability that Cordis provides and that SAIP relies on for extensibility.

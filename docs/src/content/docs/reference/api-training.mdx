@@ -1,0 +1,303 @@
+---
+title: Training API
+description: HTTP endpoints for knowledge submission, feedback, and training management
+---
+
+The training gateway listens on the port configured in `training.port` (default `8001`). All endpoints accept and return JSON.
+
+Base URL: `http://<host>:<training.port>`
+
+## POST /v1/knowledge
+
+Submit a knowledge document for ingestion and embedding.
+
+### Request Headers
+
+| Header         | Required | Description              |
+|----------------|----------|--------------------------|
+| `Content-Type` | Yes      | `application/json`       |
+
+### Request Body
+
+| Field       | Type                              | Required | Description                                |
+|-------------|-----------------------------------|----------|--------------------------------------------|
+| `source`    | `string`                          | Yes      | Origin URI or description.                 |
+| `source_type` | `'document' \| 'repository' \| 'dataset'` | Yes | Source classification.              |
+| `content`   | `string`                          | Yes      | Raw document content.                      |
+| `license`   | `string`                          | No       | SPDX license identifier.                   |
+| `tags`      | `string[]`                        | No       | Classification tags.                       |
+
+### Response `201 Created`
+
+```json
+{
+  "id": "kn-20250115-001",
+  "source": "https://example.com/doc.md",
+  "source_type": "document",
+  "hash": "sha256:a1b2c3...",
+  "size_bytes": 4096,
+  "created_at": "2025-01-15T10:30:00Z"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8001/v1/knowledge \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "internal-wiki/onboarding.md",
+    "source_type": "document",
+    "content": "# Onboarding Guide\n...",
+    "tags": ["onboarding", "hr"]
+  }'
+```
+
+## GET /v1/knowledge
+
+List all knowledge entries.
+
+### Query Parameters
+
+| Parameter | Type     | Description                              |
+|-----------|----------|------------------------------------------|
+| `tag`     | `string` | Filter by tag (repeatable).              |
+| `limit`   | `number` | Maximum entries to return. Default `50`. |
+| `offset`  | `number` | Pagination offset. Default `0`.          |
+
+### Response `200 OK`
+
+```json
+{
+  "entries": [
+    {
+      "id": "kn-20250115-001",
+      "source": "internal-wiki/onboarding.md",
+      "source_type": "document",
+      "hash": "sha256:a1b2c3...",
+      "size_bytes": 4096,
+      "tags": ["onboarding", "hr"],
+      "created_at": "2025-01-15T10:30:00Z",
+      "updated_at": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+### Example
+
+```bash
+curl "http://localhost:8001/v1/knowledge?tag=onboarding&limit=10"
+```
+
+## POST /v1/feedback
+
+Submit a feedback record linked to a session. Used as reward signal for weighted KTO training.
+
+### Request Body
+
+| Field           | Type                      | Required | Description                                            |
+|-----------------|---------------------------|----------|--------------------------------------------------------|
+| `session_id`    | `string`                  | Yes      | Session this feedback refers to.                       |
+| `message_id`    | `string`                  | No       | Specific message within the session.                   |
+| `reward`        | `number`                  | Yes      | Scalar reward (must be within configured `reward_range`). |
+| `confidence`    | `number`                  | No       | Confidence weight (0–1).                               |
+| `dimensions`    | `Record<string, number>`  | No       | Multi-dimensional reward breakdown.                    |
+| `feedback_text` | `string`                  | No       | Free-form human commentary.                            |
+
+### Response `201 Created`
+
+```json
+{
+  "id": "fb-20250115-001",
+  "session_id": "sess-abc123",
+  "reward": 2,
+  "confidence": 0.9,
+  "created_at": "2025-01-15T11:00:00Z"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8001/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-abc123",
+    "reward": 2,
+    "confidence": 0.9,
+    "feedback_text": "Accurate and well-structured response."
+  }'
+```
+
+## GET /v1/feedback
+
+List feedback records.
+
+### Query Parameters
+
+| Parameter    | Type     | Description                                    |
+|--------------|----------|------------------------------------------------|
+| `session_id` | `string` | Filter by session ID.                          |
+| `min_reward` | `number` | Minimum reward threshold.                      |
+| `max_reward` | `number` | Maximum reward threshold.                      |
+| `limit`      | `number` | Maximum records to return. Default `50`.       |
+| `offset`     | `number` | Pagination offset. Default `0`.                |
+
+### Response `200 OK`
+
+```json
+{
+  "records": [
+    {
+      "id": "fb-20250115-001",
+      "session_id": "sess-abc123",
+      "reward": 2,
+      "confidence": 0.9,
+      "feedback_text": "Accurate and well-structured response.",
+      "created_at": "2025-01-15T11:00:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+### Example
+
+```bash
+curl "http://localhost:8001/v1/feedback?session_id=sess-abc123"
+```
+
+## POST /v1/training/jobs
+
+Trigger a new training job.
+
+### Request Body
+
+| Field           | Type                                                    | Required | Description                                          |
+|-----------------|---------------------------------------------------------|----------|------------------------------------------------------|
+| `method`        | `'knowledge_embedding' \| 'corrective_sft' \| 'weighted_kto'` | Yes | Training method to run.                      |
+| `adapter_id`    | `string`                                                | No       | Target adapter ID. Defaults to user's training adapter. |
+| `knowledge_ids` | `string[]`                                              | No       | Knowledge entries to include (for embedding/SFT).    |
+| `feedback_ids`  | `string[]`                                              | No       | Feedback records to include (for KTO).               |
+| `params`        | `object`                                                | No       | Method-specific parameter overrides.                 |
+
+### Response `202 Accepted`
+
+```json
+{
+  "job_id": "train-20250115-001",
+  "method": "corrective_sft",
+  "status": "queued",
+  "created_at": "2025-01-15T12:00:00Z"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8001/v1/training/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "method": "corrective_sft",
+    "knowledge_ids": ["kn-20250115-001"],
+    "params": {
+      "epochs": 3,
+      "learning_rate": 2e-5
+    }
+  }'
+```
+
+## GET /v1/training/status
+
+Check the current state of the training subsystem.
+
+### Response `200 OK`
+
+```json
+{
+  "gpu_available": true,
+  "active_job": null,
+  "queue_depth": 2,
+  "last_completed": {
+    "job_id": "train-20250114-003",
+    "method": "weighted_kto",
+    "completed_at": "2025-01-14T23:45:00Z",
+    "duration_seconds": 1800
+  }
+}
+```
+
+### Example
+
+```bash
+curl http://localhost:8001/v1/training/status
+```
+
+## GET /v1/training/jobs
+
+List training jobs.
+
+### Query Parameters
+
+| Parameter | Type     | Description                                          |
+|-----------|----------|------------------------------------------------------|
+| `status`  | `string` | Filter by status (`queued`, `running`, `completed`, `failed`). |
+| `method`  | `string` | Filter by training method.                           |
+| `limit`   | `number` | Maximum jobs to return. Default `20`.                |
+| `offset`  | `number` | Pagination offset. Default `0`.                      |
+
+### Response `200 OK`
+
+```json
+{
+  "jobs": [
+    {
+      "job_id": "train-20250115-001",
+      "method": "corrective_sft",
+      "status": "running",
+      "adapter_id": "general",
+      "progress": 0.45,
+      "created_at": "2025-01-15T12:00:00Z",
+      "started_at": "2025-01-15T12:01:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+### Example
+
+```bash
+curl "http://localhost:8001/v1/training/jobs?status=running"
+```
+
+## Error Responses
+
+All endpoints return standard HTTP error codes with a JSON body:
+
+```json
+{
+  "error": {
+    "message": "Description of the error",
+    "type": "invalid_request_error",
+    "code": "knowledge_not_found"
+  }
+}
+```
+
+| Status | Meaning                                                  |
+|--------|----------------------------------------------------------|
+| `400`  | Malformed request, invalid reward range, missing fields. |
+| `404`  | Referenced session, knowledge, or job not found.         |
+| `409`  | Training job conflict (GPU busy, duplicate submission).  |
+| `422`  | Reward outside configured `reward_range`.                |
+| `500`  | Internal error (Axolotl failure, R2 write failure).      |
+| `503`  | Training subsystem unavailable (GPU offline).            |

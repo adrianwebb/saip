@@ -1,0 +1,207 @@
+---
+title: Adapter Composition
+description: How multiple specialization adapters combine into agent identities
+---
+
+SAIP agents are not monolithic models. They are compositions of specialized LoRA adapters layered onto a shared base model. This page explains the mathematics, mechanics, and design philosophy behind adapter composition — why agents are built this way and what it enables.
+
+## LoRA Additive Math
+
+LoRA (Low-Rank Adaptation) modifies a pretrained weight matrix W₀ by adding a low-rank delta:
+
+```
+W_effective = W₀ + λ × ΔW
+```
+
+where:
+- **W₀** is the frozen base model weight matrix (never modified)
+- **ΔW = B × A** is the product of two low-rank matrices (A ∈ ℝ^(d×r), B ∈ ℝ^(r×k), r ≪ min(d,k))
+- **λ** (lambda) is the adapter gain, a scalar multiplier controlling the adapter's influence
+
+For a rank-16 adapter on a 4B parameter model, ΔW typically has ~4 million trainable parameters versus ~4 billion in W₀. The adapter captures a tiny, focused perturbation on top of the base model's general capabilities.
+
+The key insight is **additivity**. Because the modification is additive, multiple adapters can be combined by summing their deltas:
+
+```
+W_effective = W₀ + λ₁ × ΔW₁ + λ₂ × ΔW₂ + ... + λₙ × ΔWₙ
+```
+
+This is not an approximation. It is exact arithmetic. The base model's weights remain frozen and untouched; adapters are purely additive overlays that can be combined, separated, and recombined without interference at the mathematical level.
+
+## Weighted Adapter Merging
+
+In practice, an agent identity combines multiple specialization adapters. Consider an agent that needs coding ability, research skills, and project-specific knowledge:
+
+```
+W_agent = W_base 
+        + λ_code × ΔW_coding 
+        + λ_research × ΔW_research 
+        + λ_project × ΔW_project_acme
+```
+
+Each adapter contributes its specialization proportionally to its gain (λ). The gains are **independent hyperparameters** — increasing the coding adapter's gain does not affect the research adapter's contribution. This independence is what makes composition tractable: you can tune each specialization separately.
+
+### The Mixing Console Analogy
+
+Think of agent definition as operating a mixing console:
+
+```
+┌─────────────────────────────────────────────────┐
+│              AGENT: acme-dev-assistant           │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  Base Model: Qwen3.5-4B-AWQ    ████████████░░░  │
+│                                                 │
+│  Adapters:                                      │
+│  ┌──────────────────────────────────────────┐   │
+│  │ coding-general@v12    λ=0.85  ████████░░ │   │
+│  │ research-arxiv@v7     λ=0.60  ██████░░░░ │   │
+│  │ project-acme@v3       λ=0.90  █████████░ │   │
+│  │ tone-professional@v5  λ=0.40  ████░░░░░░ │   │
+│  └──────────────────────────────────────────┘   │
+│                                                 │
+│  Decoding Profile:                              │
+│  temperature=0.7  top_p=0.9  max_tokens=4096   │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+Each fader (λ) controls one adapter's contribution. The base model provides the foundation. The decoding profile shapes output generation independently of adapter weights. All three dimensions — adapter selection, adapter gains, decoding parameters — are orthogonal controls.
+
+### End-to-End Composition Pipeline
+
+The full lifecycle from training through deployment follows a linear pipeline where specialization adapters are trained independently, compiled into a single agent adapter, and served through vLLM:
+
+```mermaid
+flowchart TD
+    EXP[Experience] --> TR[Trainer]
+    TR --> SA1[Coding Adapter]
+    TR --> SA2[Research Adapter]
+    TR --> SA3[Project Adapter]
+    SA1 & SA2 & SA3 --> COMP[Adapter Compiler]
+    COMP --> |weighted merge| AGENT[Agent Adapter v42]
+    AGENT --> |gain λ| VLLM[vLLM Server]
+    VLLM --> INF[Inference Responses]
+```
+
+Each specialization adapter is trained on its own dataset using the appropriate training method (SFT for coding corrections, KTO for research preferences, CPT for project knowledge). The compiler merges them into a single deployable artifact. At inference time, vLLM loads the compiled adapter and applies it with the configured gain. Feedback from inference responses flows back as new experience, closing the loop.
+
+## Adapter Gain (λ) as an Evaluated Hyperparameter
+
+Adapter gain is not a fixed constant. It is a hyperparameter that should be **evaluated empirically** for each adapter and each composition context.
+
+### The Gain Curve
+
+Adapter performance as a function of gain typically follows a characteristic curve:
+
+```
+Performance
+    ↑
+    │          ╭────╮
+    │        ╭─╯    ╰──╮
+    │      ╭─╯         ╰──╮
+    │    ╭─╯              ╰───
+    │  ╭─╯
+    │╭─╯
+    ├──────────────────────────→ λ
+    0   0.3  0.5  0.7  1.0  1.5
+        ↑         ↑          ↑
+     underfit   sweet spot  overfit
+```
+
+- **Low λ (< 0.3)**: The adapter's signal is too weak. The base model dominates, and the specialization is barely expressed. Underfitting.
+- **Mid λ (0.5–0.9)**: The adapter's specialization is clearly expressed without overwhelming the base model's general capabilities. This is the productive range.
+- **High λ (> 1.0)**: The adapter's delta dominates the base weights. The model loses general capabilities and begins to exhibit artifacts: repetitive phrasing, degraded coherence, domain tunnel vision. Overfitting to the adapter's training distribution.
+
+The optimal λ depends on:
+- **Adapter rank**: higher-rank adapters can express more complex adaptations and tolerate higher gains
+- **Training data quality**: adapters trained on clean, diverse data sustain higher gains before overfitting
+- **Composition depth**: when combining many adapters, individual gains should be lower to prevent cumulative saturation
+- **Task specificity**: narrowly specialized adapters need higher gains to overcome the base model's general tendencies; broadly useful adapters work well at moderate gains
+
+### Evaluating Gain
+
+Gain evaluation should use held-out data that represents the agent's actual usage distribution, not the adapter's training data. SAIP's adapter promotion workflow includes gain sweep evaluation: test the adapter at multiple λ values on representative sessions and select the gain that maximizes the relevant metric (task completion rate, reward score, or human preference rating).
+
+## Three Independent Knobs
+
+Agent behavior is controlled by three orthogonal parameter sets. Confusing them leads to tuning frustration:
+
+### 1. Specialization Weights (Which Adapters)
+
+The binary decision: which adapters are included in the composition at all. Adding a research adapter gives the agent research capabilities; removing it takes them away. This is a discrete, architectural choice.
+
+### 2. Agent Gain (How Much Each Adapter Contributes)
+
+The continuous λ values for each included adapter. These control the intensity of each specialization. Tuning gain adjusts *how strongly* the agent expresses each capability, not *which* capabilities it has.
+
+### 3. Decoding Profile (How Output Is Generated)
+
+Temperature, top-p, repetition penalty, max tokens, and other sampling parameters. These shape the generation process independently of the model's weights. A high-temperature decode profile makes any adapter composition more creative/noisy; a low-temperature profile makes it more deterministic/repetitive.
+
+These three knobs are **independent**. Changing the decoding profile does not require retraining adapters. Adjusting adapter gains does not require changing which adapters are loaded. Adding a new adapter does not require adjusting the decoding profile. This orthogonality is what makes agent iteration fast: you can experiment with composition without retraining, and experiment with training without redesigning the agent.
+
+## vLLM's Current Limitation: One Adapter Per Request
+
+vLLM currently supports loading multiple adapters into GPU memory simultaneously, but each inference request can activate **only one adapter**. This is a runtime limitation of vLLM's LoRA implementation, not a mathematical limitation of LoRA itself.
+
+SAIP works around this through **compiled agent adapters**: before deployment, the desired adapter composition is merged into a single adapter file using weighted summation:
+
+```
+ΔW_compiled = λ₁ × ΔW₁ + λ₂ × ΔW₂ + ... + λₙ × ΔWₙ
+```
+
+The compiled adapter is a single LoRA file that encodes the full composition. At inference time, vLLM loads this single file and applies it per-request. The composition happened offline; inference sees a single adapter.
+
+### Tradeoffs of Compilation
+
+- **Pros**: Works with current vLLM. No runtime overhead. Compiled adapters can be versioned and cached like any other adapter.
+- **Cons**: Composition is static. Changing any adapter's gain requires recompilation. Cannot dynamically adjust specialization weights per-request.
+
+## Future: Mixture-of-Adapters
+
+When vLLM (or a successor engine) supports multi-adapter activation per request, SAIP will move to **dynamic adapter composition**:
+
+- Each request carries an agent identity specifying adapter IDs and gains
+- The inference engine applies the weighted sum at runtime, per-request
+- Different requests to the same base model can use different compositions without recompilation
+- Gain adjustment becomes a runtime parameter, not a compile-time decision
+
+This is analogous to the difference between baking a cake (compiled) and having a buffet where diners compose their own plates (dynamic). The mathematical foundation is identical; the operational flexibility is vastly different.
+
+A more advanced future direction is **router-driven dynamic weighting**, where a lightweight classifier examines the incoming request and adjusts adapter gains based on detected intent. A coding question would boost the coding adapter; a research question would boost the research adapter. This approaches mixture-of-experts routing but at the adapter level, preserving the interpretability and modularity of explicit composition.
+
+## Adapter Versioning and Promotion
+
+Adapters are versioned artifacts, not ephemeral training outputs. Each adapter version has:
+
+- A unique ID (e.g., `coding-general@v12`)
+- A manifest recording base model, rank, alpha, training method, parent version, and metrics
+- Aliases for stable references (`coding-general@latest` → `coding-general@v12`)
+
+### Promotion Workflow
+
+1. **Train**: produce a candidate adapter (e.g., `coding-general@v13-candidate`)
+2. **Evaluate**: test on held-out sessions, compare metrics against current production version
+3. **Promote**: if metrics improve, update the alias to point to the new version
+4. **Compile**: if the adapter is part of a composition, recompile the agent adapter with the new version
+5. **Deploy**: switch to awake mode with the updated adapter set
+
+Aliases enable atomic promotion: updating `coding-general@latest` in `_index.json` is a single write operation. All agents referencing that alias immediately use the new version on their next request. Rollback is equally atomic: revert the alias to the previous version.
+
+This versioning system is what makes adapter composition safe for production use. You can experiment with new adapter versions without affecting live agents, evaluate them rigorously, and promote them atomically when ready. The composition is declarative (which adapters at which gains), the versions are immutable, and the promotion is reversible.
+
+## Adapter Competition and Breeding
+
+When multiple composition recipes exist for the same agent identity — different adapter combinations, different gain configurations, or different training methods applied to the same specialization — SAIP supports **automated competition** to select the winner.
+
+The process works as follows:
+
+1. **Generate candidates**: produce multiple compiled agent adapters from different recipes (e.g., one with coding@v12 + research@v7 at λ=0.8/0.6, another with coding@v13-candidate + research@v7 at λ=0.7/0.65)
+2. **Evaluate on shared benchmarks**: run each candidate against the same held-out evaluation suite, measuring task completion rate, reward scores, safety metrics, and latency
+3. **Select the winner**: the candidate that maximizes the composite evaluation metric earns promotion; losers are archived for future reference
+4. **Breed improvements**: winning compositions inform the next generation of candidates — if higher coding gain consistently wins, future recipes start from that baseline
+
+This approach treats adapter composition as an **optimization problem** rather than a manual tuning exercise. Over successive generations, the competition process converges toward compositions that reflect actual usage patterns and organizational priorities rather than initial guesses. The versioning system ensures every candidate is reproducible and every competition result is auditable.
+
+Competition is particularly valuable when combined with GRPO replay: GRPO-generated adapters can compete against KTO-trained adapters for the same specialization slot, letting empirical performance rather than methodological preference determine which training pathway contributes to the production agent.

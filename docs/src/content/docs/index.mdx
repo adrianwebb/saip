@@ -1,0 +1,73 @@
+---
+title: SAIP Documentation
+description: Simple AI Platform — teach an AI new skills and serve it through a chat API, all on a single GPU
+template: splash
+hero:
+  title: Simple AI Platform
+  tagline: Teach an AI model new skills and knowledge, then serve it through a chat API — all on a single GPU.
+  actions:
+    - text: Get Started →
+      link: /tutorials/getting-started/
+      variant: primary
+    - text: Understand the Architecture
+      link: /explanation/architecture/
+      variant: secondary
+---
+
+import { CardGrid, Card, LinkCard, Icon } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <LinkCard title="Tutorials" href="/tutorials/getting-started/" icon="open-book">
+    Step-by-step lessons to deploy SAIP and train your first adapter.
+  </LinkCard>
+  <LinkCard title="Guides" href="/guides/deploy-local/" icon="pencil">
+    Practical recipes for deployment, configuration, and daily operations.
+  </LinkCard>
+  <LinkCard title="Reference" href="/reference/configuration/" icon="information">
+    Technical specifications for configuration, APIs, and data formats.
+  </LinkCard>
+  <LinkCard title="Understanding SAIP" href="/explanation/architecture/" icon="bulb">
+    Concepts and design decisions behind the platform architecture.
+  </LinkCard>
+</CardGrid>
+
+## New to AI?
+
+Large language models start as **base models** — general-purpose AI trained on vast amounts of text. They know language but aren't specialized for your task. **Fine-tuning** teaches them new behavior by showing examples of what good responses look like. Instead of retraining the entire model (expensive and slow), SAIP uses **adapters** — tiny overlays (1-5% of the model size) that modify behavior for specific tasks while leaving the base model untouched. You can swap adapters per request, so one base model serves many specializations.
+
+SAIP automates this cycle: collect real interactions, score them, train new adapters, and serve the improved model — continuously, on a single consumer GPU.
+
+📖 **[See the full glossary](/reference/glossary/)** for definitions of every technical term used in these docs.
+
+## What is SAIP?
+
+SAIP is a two-service platform that closes the loop between serving AI responses and improving the model:
+
+- **Inference Gateway** serves OpenAI-compatible chat completions via vLLM (a high-performance inference engine) with dynamic per-request LoRA adapter (a small behavioral overlay) selection
+- **Training Gateway** runs Axolotl (an open-source fine-tuning framework) jobs using three methods: knowledge embedding (teaching domain facts), corrective SFT (learning from corrected mistakes), and weighted KTO (learning from scored feedback)
+
+Both services share a Cloudflare R2 object store (S3-compatible cloud storage) for adapters, knowledge documents, session histories, and feedback. They can run on a single 7 GB VRAM GPU or scale to remote GPU nodes.
+
+Both services are built from interchangeable plugins — extend anything without forking. Every capability, from API endpoints to adapter management to session collection, is a [Cordis](/reference/glossary/#cordis) plugin that can be added, removed, or replaced independently.
+
+## What You Can Do
+
+- **Serve specialized AI without managing LoRA files** — callers are mapped to adapters automatically; no client-side adapter management needed
+- **Teach your model from real feedback** — use three complementary training methods: inject domain knowledge, correct bad responses, and learn from scalar reward scores
+- **Extend any behavior without modifying core code** — both gateways are composed of focused, hot-reloadable Cordis plugins
+- **Manage users with simple YAML files** — map callers to adapter groups without a database or auth service
+- **Operate from the command line** — `saip awake`, `saip sleep`, `saip down`, `saip status` for everyday operations
+- **Deploy locally or remotely with the same config** — run on your own GPU or push to Hyperstack cloud nodes without changing anything
+
+## Technology Stack
+
+| Component | Technology | What this means |
+|-----------|-----------|-----------------|
+| Plugin framework | Cordis v4 | Both services are assembled from small, replaceable modules — no monolith |
+| Inference engine | vLLM (multi-LoRA, AWQ) | Serves responses fast and swaps adapters per request without reloading the model |
+| Training framework | Axolotl (QLoRA, SFT, KTO) | Handles all fine-tuning mechanics so you focus on data and rewards |
+| API framework | Hono | Lightweight HTTP layer that speaks OpenAI-compatible chat completions |
+| Base model | Qwen3.5-4B (AWQ) | A capable 4-billion-parameter model compressed to fit consumer GPUs |
+| Object storage | Cloudflare R2 | Shared cloud file system for adapters, knowledge, sessions, and feedback |
+| Containerization | Docker Compose v2 | One command starts the entire stack; each service runs in isolation |
+| Language | TypeScript (Node.js ≥ 22) | Single language across both gateways and all plugins |

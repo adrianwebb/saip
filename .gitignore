@@ -1,3 +1,36 @@
+# Project-specific
+/examples/
 /context/
 /.dsh-*
 /.codegraph/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+dist/
+*.tsbuildinfo
+pnpm-lock.yaml
+
+# Python (Axolotl artifacts)
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+docs/.astro/

@@ -1,0 +1,201 @@
+---
+title: Inference API
+description: OpenAI-compatible HTTP endpoints served by the inference gateway
+---
+
+The inference gateway listens on the port configured in `inference.port` (default `8000`). All endpoints accept and return JSON unless noted otherwise.
+
+Base URL: `http://<host>:<inference.port>`
+
+## POST /v1/chat/completions
+
+OpenAI-compatible chat completion endpoint. Automatically selects the caller's configured adapter based on authentication context.
+
+### Request Headers
+
+| Header          | Required | Description                                       |
+|-----------------|----------|---------------------------------------------------|
+| `Authorization` | Yes      | `Bearer <token>` identifying the caller.          |
+| `Content-Type`  | Yes      | `application/json`                                |
+
+### Request Body
+
+| Field            | Type       | Required | Description                                                      |
+|------------------|------------|----------|------------------------------------------------------------------|
+| `model`          | `string`   | No       | Adapter ID override. Omit to use the caller's default adapter.   |
+| `messages`       | `Message[]`| Yes      | Array of chat messages (`role`, `content`).                      |
+| `temperature`    | `number`   | No       | Sampling temperature. Default `1.0`.                             |
+| `max_tokens`     | `number`   | No       | Maximum tokens in the response.                                  |
+| `top_p`          | `number`   | No       | Nucleus sampling threshold.                                      |
+| `stream`         | `boolean`  | No       | If `true`, response is SSE. Default `false`.                     |
+| `stop`           | `string \| string[]` | No | Stop sequences.                                        |
+
+### Response (non-streaming)
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1705312200,
+  "model": "general@000042",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Response text here."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170
+  }
+}
+```
+
+### Response (streaming)
+
+Server-Sent Events with `data:` lines containing partial `chat.completion.chunk` objects. Final chunk includes `[DONE]`.
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $SAIP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is SAIP?"}
+    ],
+    "temperature": 0.7
+  }'
+```
+
+## GET /v1/models
+
+Lists available adapters for the authenticated caller.
+
+### Response
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "general@000042",
+      "object": "model",
+      "owned_by": "saip",
+      "base_model": "Qwen/Qwen3.5-4B",
+      "training_method": "corrective_sft"
+    }
+  ]
+}
+```
+
+### Example
+
+```bash
+curl http://localhost:8000/v1/models \
+  -H "Authorization: Bearer $SAIP_TOKEN"
+```
+
+## GET /health
+
+Health check endpoint. Returns `200` when the inference gateway and underlying vLLM backend are operational.
+
+### Response
+
+```json
+{
+  "status": "ok",
+  "model_loaded": true,
+  "adapters_active": 2,
+  "uptime_seconds": 3600
+}
+```
+
+### Example
+
+```bash
+curl http://localhost:8000/health
+```
+
+## SystemOne Endpoints
+
+Available only when `inference.systemone.enabled` is `true`. These endpoints provide structured output generation using grammar-constrained decoding.
+
+### POST /v1/systemone/completions
+
+Generates structured output conforming to a provided JSON schema or grammar.
+
+#### Request Body
+
+| Field      | Type     | Required | Description                                              |
+|------------|----------|----------|----------------------------------------------------------|
+| `messages` | `Message[]` | Yes   | Chat messages providing context.                         |
+| `schema`   | `object` | Yes      | JSON Schema defining the expected output structure.      |
+| `grammar`  | `string` | No       | GBNF grammar string (alternative to `schema`).           |
+| `model`    | `string` | No       | Adapter ID override.                                     |
+
+#### Response
+
+```json
+{
+  "id": "sysone-abc123",
+  "object": "systemone.completion",
+  "created": 1705312200,
+  "model": "general@000042",
+  "output": {
+    "field1": "value1",
+    "field2": 42
+  },
+  "valid": true
+}
+```
+
+#### Example
+
+```bash
+curl -X POST http://localhost:8000/v1/systemone/completions \
+  -H "Authorization: Bearer $SAIP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Extract entities from: John works at Acme Corp."}
+    ],
+    "schema": {
+      "type": "object",
+      "properties": {
+        "person": {"type": "string"},
+        "organization": {"type": "string"}
+      },
+      "required": ["person", "organization"]
+    }
+  }'
+```
+
+## Error Responses
+
+All endpoints return standard HTTP error codes with a JSON body:
+
+```json
+{
+  "error": {
+    "message": "Description of the error",
+    "type": "invalid_request_error",
+    "code": "adapter_not_found"
+  }
+}
+```
+
+| Status | Meaning                                               |
+|--------|-------------------------------------------------------|
+| `400`  | Malformed request or invalid parameters.              |
+| `401`  | Missing or invalid authorization.                     |
+| `404`  | Requested adapter or resource not found.              |
+| `429`  | Rate limit exceeded.                                  |
+| `500`  | Internal error (vLLM failure, adapter load failure).  |
+| `503`  | Service unavailable (model not loaded, GPU offline).  |

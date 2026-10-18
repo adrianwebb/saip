@@ -101,6 +101,7 @@ Read these once per project — from its manifest, CI workflows, and existing ta
 | Merge style for feature PRs | branch protection settings, maintainer | squash (changelog from PR titles) |
 | Required labels / issue templates | `.github/ISSUE_TEMPLATE`, `gh label list` | `bug`, `enhancement` |
 | Integration + production branch names | `git branch -r` | `staging` + `main` |
+| Git remote protocol | `git remote -v` | HTTPS (preferred) or SSH |
 
 **No GitHub / no `gh`?** The flow is identical; only the tool layer changes. Substitute per forge:
 
@@ -420,7 +421,7 @@ Run this every time, immediately before opening the PR (this is the artifact the
 - [ ] Cross-links present: `(#<issue>)` in commits, `Closes #<issue>` ready in PR body
 - [ ] PR small (< ~10 files, < ~15 min CI) or split into stacked PRs
 - [ ] Self-reviewed own diff: no debug leftovers, no stray files
-- [ ] Changelog entry added, if the project keeps one
+- [ ] Changelog entry added under `[Unreleased]` in `CHANGELOG.md` (see Changelog Convention)
 
 ## Release Candidate Workflow (`staging` → `main`)
 
@@ -535,6 +536,53 @@ The type prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`) drives rele
 
 **Squash-merge vs. per-layer commits — how both survive.** Feature branches keep incremental conventional commits (docs, test, fix) for reviewability *during* development. On squash-merge to `staging`, those collapse into one commit, so the changelog is written from **the PR title and merged PR list, not from individual branch commits** — which is why the PR title must itself be a valid conventional-commit subject (`fix: ... (#91)`). If a project extracts its changelog from raw `git log` on `main` instead of the PR list, use a merge commit rather than squash for that PR and confirm with the maintainer before choosing. Never let the two mechanisms disagree silently: pick one, record it in the project config.
 
+## Changelog Convention
+
+Every project maintains a `CHANGELOG.md` at the repository root. This is non-negotiable.
+
+### Format
+
+Follow [Keep a Changelog](https://keepachangelog.com/) structure:
+
+```markdown
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+### Added
+- Description of new feature (#<issue>)
+
+### Fixed
+- Description of bug fix (#<issue>)
+
+## [1.0.0] - 2026-10-18
+### Added
+- Initial release
+```
+
+### Rules
+
+1. **Entries come from PR titles, not individual commits.** Since feature PRs are squash-merged, each merged PR produces exactly one changelog entry. The PR title IS the changelog line.
+2. **Group by type.** Use the conventional commit prefix to sort entries under the correct heading:
+   - `feat:` → **Added**
+   - `fix:` → **Fixed**
+   - `refactor:` → **Changed**
+   - `docs:` → **Documentation** (optional section; include if docs changes are user-visible)
+   - `chore:`, `test:` → omit unless user-facing
+3. **Always include the issue number.** Every changelog entry ends with `(#<issue>)`.
+4. **Update during the RC, not after.** The changelog entry for a version is committed on `staging` as part of the release candidate PR. It ships with the code.
+5. **[Unreleased] is always present.** New entries land under `[Unreleased]` during normal feature work. At release time, `[Unreleased]` is renamed to the new version and date, and a fresh empty `[Unreleased]` section is added above it.
+6. **Monorepo projects:** each subproject with independent versioning maintains its own `CHANGELOG.md`. A root-level `CHANGELOG.md` tracks cross-cutting changes (CI, shared infrastructure, top-level documentation). Prefix entries with the subproject name when they appear in the root changelog: `- saip-trainer: add weighted KTO plugin (#12)`.
+7. **Write for humans, not parsers.** Each entry is one readable sentence describing what changed and why it matters. Not a commit hash dump.
+
+### When to Add Entries
+
+Add a changelog entry whenever your PR introduces a user-visible or developer-visible change. Internal refactors with no external impact can be omitted. When in doubt, include it — it is easier to trim a changelog than to reconstruct missing history.
+
 ## Evidence Before Claims
 
 This workflow's gates are claims until verified. Apply `verification-before-completion` at every one of them:
@@ -550,6 +598,33 @@ This workflow's gates are claims until verified. Apply `verification-before-comp
 
 Checking a PR's testing box before reading the CI result is a false claim, not a shortcut.
 
+## Agent Loop Guard (MANDATORY)
+
+Agents must not repeat the same action without progress. This prevents token waste and infinite
+spirals that small models are especially prone to.
+
+**The rule:** If the same tool call, command, or message has been attempted **3 times** with the
+same (or functionally equivalent) result, the agent MUST stop retrying and instead:
+
+1. **Diagnose** why the repetition is not producing progress.
+2. **Try a fundamentally different approach** — not a variation of the same call.
+3. **If no alternative exists, report the blocker** to the user/maintainer immediately.
+
+**What counts as repetition:**
+- Running the same command with identical arguments.
+- Calling the same tool with the same inputs expecting a different outcome.
+- Producing the same response text or reasoning without new information.
+- Re-reading the same file without acting on its contents.
+
+**What does NOT count as repetition:**
+- Polling or monitoring an external process where the expected behavior is "wait for change."
+- Iterating through a known finite list (e.g., checking each file in a directory).
+- Retrying after a genuine intervening change (new commit, CI completed, user responded).
+
+**Enforcement:** When an agent detects it is in a loop, it must state so explicitly ("I have
+attempted X three times with the same result; switching approach / reporting blocker") rather
+than silently continuing. Silence during a loop is the failure mode this rule prevents.
+
 ## Red Flags — STOP
 
 These mean you have left the workflow; fix it before continuing:
@@ -563,6 +638,7 @@ These mean you have left the workflow; fix it before continuing:
 - Tagging anything other than `main`, or reusing an existing tag
 - Long-lived branch that has not synced `staging` recently
 - Hotfix that skipped the `main` → `staging` sync
+- Same tool call or command repeated 3+ times without progress (see Agent Loop Guard)
 
 ## Quick Reference
 

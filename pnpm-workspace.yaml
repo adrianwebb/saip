@@ -1,0 +1,9 @@
+packages:
+  - shared
+  - cli
+  - inference
+  - training
+  - docs
+allowBuilds:
+  esbuild: true
+  sharp: true

@@ -1,0 +1,74 @@
+# SAIP Platform Configuration
+# This file is committed to the repo. Secrets go in .env (never committed).
+# Schema: saip.schema.yaml
+
+platform:
+  name: saip
+  version: "0.1.0"
+
+# Base model configuration
+model:
+  base: "Qwen/Qwen3.5-4B"
+  quantization: "awq"
+  max_model_len: 65536
+  dtype: "float16"
+
+# LoRA / adapter defaults
+adapter:
+  default_rank: 16
+  default_alpha: 32
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+# Remote storage
+storage:
+  r2:
+    bucket: "${SAIP_R2_BUCKET}"
+    endpoint: "${SAIP_R2_ENDPOINT}"
+    # Credentials loaded from .env: SAIP_R2_ACCESS_KEY_ID, SAIP_R2_SECRET_ACCESS_KEY
+  huggingface:
+    token_env: "SAIP_HF_TOKEN"
+
+# User → adapter mapping (file-based for MVP)
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+
+# Inference service
+inference:
+  port: 8000
+  gpu_node: "local"
+  max_loras: 4
+  max_cpu_loras: 32
+  systemone:
+    enabled: true
+
+# Training service
+training:
+  port: 8001
+  gpu_node: "local"
+  methods:
+    knowledge_embedding:
+      enabled: true
+      sequence_len: 4096
+    corrective_sft:
+      enabled: true
+      sequence_len: 4096
+    weighted_kto:
+      enabled: true
+      reward_range: [-3, 3]
+      magnitude_weights:
+        1: 0.5
+        2: 1.0
+        3: 1.5
+
+# Cordis plugin loading
+plugins: []

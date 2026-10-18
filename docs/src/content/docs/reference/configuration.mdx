@@ -1,0 +1,206 @@
+---
+title: Configuration Reference (saip.yaml)
+description: Complete schema reference for the SAIP platform configuration file
+---
+
+The `saip.yaml` file at the repository root defines all platform configuration. Secrets are never stored in this file; they are loaded from `.env` or environment variables via `${ENV_VAR}` interpolation.
+
+## platform
+
+| Field     | Type     | Default | Description                          |
+|-----------|----------|---------|--------------------------------------|
+| `name`    | `string` | —       | Platform identifier.                 |
+| `version` | `string` | —       | Semantic version of the deployment.  |
+
+```yaml
+platform:
+  name: saip
+  version: "0.1.0"
+```
+
+## model
+
+| Field            | Type     | Default | Description                                                        |
+|------------------|----------|---------|--------------------------------------------------------------------|
+| `base`           | `string` | —       | HuggingFace model ID for the base model.                           |
+| `quantization`   | `string` | —       | Quantization method (`awq`, `gptq`, `fp8`, or omitted for none).  |
+| `max_model_len`  | `number` | —       | Maximum context length passed to vLLM.                             |
+| `dtype`          | `string` | —       | Torch dtype (`float16`, `bfloat16`, `auto`).                      |
+
+```yaml
+model:
+  base: "Qwen/Qwen3.5-4B"
+  quantization: "awq"
+  max_model_len: 65536
+  dtype: "float16"
+```
+
+## adapter
+
+Global LoRA adapter defaults applied when a training job does not specify overrides.
+
+| Field            | Type       | Default | Description                                                |
+|------------------|------------|---------|------------------------------------------------------------|
+| `default_rank`   | `number`   | —       | Default LoRA rank (`r`).                                   |
+| `default_alpha`  | `number`   | —       | Default LoRA scaling factor (`alpha`).                     |
+| `target_modules` | `string[]` | —       | Linear module names to apply LoRA adapters to.             |
+
+```yaml
+adapter:
+  default_rank: 16
+  default_alpha: 32
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+```
+
+## storage
+
+### storage.r2
+
+Cloudflare R2 object storage configuration. Credentials (`SAIP_R2_ACCESS_KEY_ID`, `SAIP_R2_SECRET_ACCESS_KEY`) are loaded from `.env`.
+
+| Field      | Type     | Interpolation | Description                            |
+|------------|----------|---------------|----------------------------------------|
+| `bucket`   | `string` | ✅ `${…}`     | R2 bucket name.                        |
+| `endpoint` | `string` | ✅ `${…}`     | R2 S3-compatible endpoint URL.         |
+
+```yaml
+storage:
+  r2:
+    bucket: "${SAIP_R2_BUCKET}"
+    endpoint: "${SAIP_R2_ENDPOINT}"
+```
+
+### storage.huggingface
+
+| Field       | Type     | Interpolation | Description                                                    |
+|-------------|----------|---------------|----------------------------------------------------------------|
+| `token_env` | `string` | ❌            | Name of the environment variable containing the HF API token.  |
+
+```yaml
+  huggingface:
+    token_env: "SAIP_HF_TOKEN"
+```
+
+## users
+
+Array of user-to-adapter mappings. Each entry binds a user ID to specific adapters for inference and training.
+
+| Field                | Type     | Description                                                     |
+|----------------------|----------|-----------------------------------------------------------------|
+| `id`                 | `string` | User identifier.                                                |
+| `adapters.inference` | `string` | Adapter alias or ID used for inference (e.g. `general@latest`). |
+| `adapters.training`  | `string` | Adapter ID used as the training target.                         |
+
+```yaml
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+```
+
+## inference
+
+Inference gateway service configuration.
+
+| Field               | Type      | Default | Description                                                          |
+|---------------------|-----------|---------|----------------------------------------------------------------------|
+| `port`              | `number`  | —       | HTTP port for the inference API.                                     |
+| `gpu_node`          | `string`  | —       | GPU node identifier for scheduling.                                  |
+| `max_loras`         | `number`  | —       | Maximum number of LoRA adapters loaded on GPU simultaneously.        |
+| `max_cpu_loras`     | `number`  | —       | Maximum number of LoRA adapters cached on CPU for hot-swapping.      |
+| `systemone.enabled` | `boolean` | —       | Enable SystemOne structured-output endpoints alongside chat completions. |
+
+```yaml
+inference:
+  port: 8000
+  gpu_node: "local"
+  max_loras: 4
+  max_cpu_loras: 32
+  systemone:
+    enabled: true
+```
+
+## training
+
+Training gateway service configuration.
+
+| Field    | Type     | Default | Description                              |
+|----------|----------|---------|------------------------------------------|
+| `port`   | `number` | —       | HTTP port for the training API.          |
+| `gpu_node` | `string` | —     | GPU node identifier for scheduling.      |
+
+### training.methods
+
+Each method has an `enabled` boolean and method-specific parameters.
+
+#### knowledge_embedding
+
+| Field          | Type      | Description                                          |
+|----------------|-----------|------------------------------------------------------|
+| `enabled`      | `boolean` | Enable knowledge-embedding training method.          |
+| `sequence_len` | `number`  | Maximum sequence length for embedding training data. |
+
+#### corrective_sft
+
+| Field          | Type      | Description                                          |
+|----------------|-----------|------------------------------------------------------|
+| `enabled`      | `boolean` | Enable corrective supervised fine-tuning method.     |
+| `sequence_len` | `number`  | Maximum sequence length for SFT training data.       |
+
+#### weighted_kto
+
+| Field               | Type               | Description                                                           |
+|---------------------|--------------------|-----------------------------------------------------------------------|
+| `enabled`           | `boolean`          | Enable weighted Kahneman-Tversky Optimization method.                 |
+| `reward_range`      | `[number, number]` | Min/max reward values (e.g. `[-3, 3]`).                               |
+| `magnitude_weights` | `Record<int, float>` | Weight multiplier per absolute reward magnitude. Keys are integers. |
+
+```yaml
+training:
+  port: 8001
+  gpu_node: "local"
+  methods:
+    knowledge_embedding:
+      enabled: true
+      sequence_len: 4096
+    corrective_sft:
+      enabled: true
+      sequence_len: 4096
+    weighted_kto:
+      enabled: true
+      reward_range: [-3, 3]
+      magnitude_weights:
+        1: 0.5
+        2: 1.0
+        3: 1.5
+```
+
+## plugins
+
+Array of Cordis plugin entries to load into both gateways. Each entry is a plugin specifier understood by the Cordis loader.
+
+| Field | Type    | Description                                    |
+|-------|---------|------------------------------------------------|
+| —     | `any[]` | Plugin specifiers (strings, objects, or maps). |
+
+```yaml
+plugins: []
+```
+
+## Environment Variable Interpolation
+
+Fields marked with ✅ in the tables above support `${ENV_VAR}` syntax. At load time, each `${VAR}` token is replaced with the value of the corresponding environment variable. Missing variables cause a startup error.
+
+Supported fields:
+- `storage.r2.bucket`
+- `storage.r2.endpoint`
+
+All other fields are literal values. Secret values (API keys, tokens) should be referenced by their env-var *name* (e.g. `token_env: "SAIP_HF_TOKEN"`) rather than interpolated directly.

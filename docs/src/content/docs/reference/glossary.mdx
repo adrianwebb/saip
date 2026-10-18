@@ -1,0 +1,108 @@
+---
+title: Glossary
+description: Key terms and concepts used throughout the SAIP documentation
+---
+
+## Core Concepts
+
+### Adapter (LoRA adapter)
+
+A small set of learned modifications layered on top of a frozen base model. Think of it like a transparent overlay that changes how the model behaves for specific tasks without replacing the original model. Adapters are tiny (typically 1-5% of the base model size) and can be swapped in and out per request.
+
+### Base model
+
+The foundational AI model (e.g., Qwen3.5-4B) that has been pretrained on vast amounts of text. It knows language and general knowledge but hasn't been specialized for any particular task. SAIP keeps the base model frozen and layers adapters on top.
+
+### Continual learning
+
+The ability to keep improving a model over time by incorporating new experiences, rather than training once and deploying forever. SAIP's core value proposition.
+
+### Fine-tuning
+
+The process of adjusting a pretrained model's behavior for specific tasks by training it on additional examples. SAIP uses parameter-efficient fine-tuning (QLoRA) to make this affordable on consumer GPUs.
+
+### Inference
+
+Running a trained model to generate responses. When you send a chat message to SAIP and get a reply back, that's inference.
+
+### Learning loop
+
+SAIP's core cycle: Experience (collect interactions) → Evaluation (score and critique) → Adaptation (train new adapters) → repeat.
+
+### Plugin
+
+A self-contained module that adds a specific capability to a SAIP service. Plugins can be added, removed, or replaced without modifying the core system. Both the inference and training gateways are built entirely from plugins.
+
+### Reward
+
+A numerical score (-3 to +3) indicating how good or bad a model response was. Rewards drive preference learning through Weighted KTO.
+
+### VRAM (Video RAM)
+
+Memory on your GPU dedicated to model computation. More VRAM = larger models or longer contexts. SAIP targets 7+ GB VRAM for Qwen3.5-4B with QLoRA.
+
+## Training Methods
+
+### Corrective SFT
+
+Supervised Fine-Tuning that uses feedback to teach the model how to correct mistakes. Bad responses are masked so they aren't reinforced; corrected responses are trained with higher weight.
+
+### GRPO (Group Relative Policy Optimization)
+
+A reinforcement learning method where the model generates multiple candidate responses, evaluates them against a reward function, and learns from the relative differences. SAIP uses GRPO for simulated replay and exploration.
+
+### Knowledge embedding (Continued pretraining)
+
+Training the model on raw documents to build familiarity with a domain. This teaches WHAT the model knows, not HOW it should behave.
+
+### KTO (Kahneman-Tversky Optimization)
+
+A preference learning method that works with single responses labeled good/bad rather than requiring paired comparisons. SAIP extends this with scalar reward magnitudes (Weighted KTO).
+
+### LoRA (Low-Rank Adaptation)
+
+A technique that adds small trainable matrices alongside frozen model weights, enabling efficient fine-tuning. The "low-rank" means these matrices are much smaller than the original weights.
+
+### QLoRA (Quantized LoRA)
+
+LoRA applied to a 4-bit quantized base model. This dramatically reduces VRAM requirements, enabling fine-tuning on consumer GPUs with 7+ GB VRAM.
+
+### SFT (Supervised Fine-Tuning)
+
+Training a model on example input-output pairs to teach it desired behavior. The most straightforward form of fine-tuning.
+
+### Weighted KTO
+
+SAIP's extension of KTO that accepts scalar reward magnitudes (-3 to +3) instead of binary good/bad labels. Stronger rewards produce stronger learning signals.
+
+## Infrastructure
+
+### AWQ (Activation-aware Weight Quantization)
+
+A compression technique that reduces model weight precision from 16-bit to 4-bit, allowing larger models to run on smaller GPUs with minimal quality loss.
+
+### Cloudflare R2
+
+An S3-compatible object storage service where SAIP stores adapters, knowledge documents, session histories, and feedback. Think of it as a cloud file system that both the inference and training services can access.
+
+### Docker Compose
+
+A tool that runs multiple containerized services together. SAIP packages each service (inference gateway, training gateway, vLLM, Axolotl) as containers orchestrated by Docker Compose.
+
+### vLLM
+
+A high-performance inference engine that serves LLM responses. SAIP uses vLLM for its multi-adapter support, allowing different users to get different specialized behaviors from the same base model.
+
+## Frameworks & Tools
+
+### Axolotl
+
+An open-source fine-tuning framework that handles model loading, dataset preprocessing, LoRA/QLoRA training, and checkpointing. SAIP uses Axolotl as its training engine.
+
+### Cordis
+
+A TypeScript plugin framework that SAIP uses to compose both services from small, focused plugins. Every capability — API endpoints, adapter management, session collection — is a plugin that can be replaced or extended.
+
+### Hono
+
+A lightweight, fast HTTP framework for Node.js. SAIP uses Hono to serve OpenAI-compatible API endpoints.

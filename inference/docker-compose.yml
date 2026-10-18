@@ -1,0 +1,56 @@
+# SAIP Inference Gateway
+# Usage: docker compose -f inference/docker-compose.yml up -d
+
+services:
+  inference-api:
+    build:
+      context: ..
+      dockerfile: inference/Dockerfile
+    ports:
+      - "${SAIP_INFERENCE_PORT:-8000}:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - ../saip.yaml:/app/saip.yaml:ro
+      - adapter-cache:/app/adapters
+    depends_on:
+      vllm:
+        condition: service_healthy
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    ports:
+      - "8080:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - adapter-cache:/adapters
+    command: >
+      --model ${SAIP_MODEL_BASE:-Qwen/Qwen3.5-4B}
+      --quantization ${SAIP_MODEL_QUANTIZATION:-awq}
+      --max-model-len ${SAIP_MAX_MODEL_LEN:-65536}
+      --dtype ${SAIP_MODEL_DTYPE:-float16}
+      --enable-lora
+      --max-loras ${SAIP_MAX_LORAS:-4}
+      --max-cpu-loras ${SAIP_MAX_CPU_LORAS:-32}
+      --lora-modules ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  model-cache:
+  adapter-cache:
