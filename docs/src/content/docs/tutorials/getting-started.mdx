@@ -1,0 +1,139 @@
+---
+title: Getting Started
+description: Deploy SAIP locally and make your first inference request
+---
+
+This tutorial walks you through deploying SAIP on your local machine, starting the inference stack, and making your first chat completion request. By the end, you'll have a working local AI platform serving Qwen3.5-4B with adapter support.
+
+## Prerequisites
+
+Before you begin, make sure you have the following:
+
+1. **Node.js ≥22** — SAIP's CLI and tooling require Node.js 22 or later. Verify with `node --version`.
+2. **Docker Compose v2** — The inference and training stacks run as Docker Compose services. Verify with `docker compose version`.
+3. **NVIDIA GPU with ≥7GB VRAM** — vLLM requires a CUDA-capable GPU. A minimum of 7GB VRAM is needed for Qwen3.5-4B with AWQ quantization. Verify with `nvidia-smi`.
+4. **Cloudflare R2 bucket** — SAIP stores trained adapters in object storage. Create an R2 bucket in your Cloudflare dashboard and generate an API token with read/write access.
+5. **HuggingFace account with Qwen3.5-4B access** — The base model is gated. Request access at [Qwen/Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) and generate an access token in your HuggingFace settings.
+
+:::note
+SAIP currently supports NVIDIA GPUs only. AMD ROCm and Apple Silicon support are planned for future releases.
+:::
+
+## Clone and Install
+
+1. Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/adrianwebb/saip.git
+cd saip
+pnpm install
+```
+
+:::tip
+SAIP uses pnpm as its package manager. If you don't have it installed, run `corepack enable` (included with Node.js 22+) or install via `npm install -g pnpm`.
+:::
+
+## Configure Secrets
+
+1. Copy the example environment file and fill in your credentials:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit `.env` and set the following variables:
+
+| Variable | Description |
+|---|---|
+| `SAIP_R2_BUCKET` | Your Cloudflare R2 bucket name |
+| `SAIP_R2_ENDPOINT` | R2 endpoint URL (e.g., `https://<account-id>.r2.cloudflarestorage.com`) |
+| `SAIP_R2_ACCESS_KEY_ID` | R2 API access key ID |
+| `SAIP_R2_SECRET_ACCESS_KEY` | R2 API secret access key |
+| `SAIP_HF_TOKEN` | HuggingFace access token with Qwen3.5-4B permissions |
+
+:::note
+Never commit `.env` to version control. It is included in `.gitignore` by default.
+:::
+
+## Review Configuration
+
+1. Open `saip.yaml` in the project root. This file controls all runtime behavior. Key sections include:
+
+- **`model`** — Base model identifier, quantization method, and context length. Defaults to Qwen3.5-4B with AWQ.
+- **`adapter`** — LoRA adapter configuration including rank, alpha, target modules, and merge strategy.
+- **`storage`** — R2 bucket reference and local cache paths for adapter artifacts.
+- **`users`** — Authentication tokens and role assignments for API access.
+- **`inference`** — vLLM server settings: port, max concurrent requests, GPU memory utilization, and tensor parallelism.
+- **`training`** — Training gateway settings: learning rate schedulers, batch sizes, gradient accumulation, and evaluation intervals.
+
+:::tip
+The default `saip.yaml` works out of the box for single-GPU setups. You only need to edit it when customizing model parameters or scaling to multi-GPU.
+:::
+
+## Start in Awake Mode
+
+1. Launch the inference stack:
+
+```bash
+saip awake
+```
+
+This command performs three actions in sequence:
+
+- Stops any running training services (if present).
+- Starts the inference Docker Compose stack (vLLM server, gateway, and supporting services).
+- Waits until the vLLM health endpoint reports ready before returning.
+
+You should see output confirming that all services are healthy. The inference API will be available at `http://localhost:8000`.
+
+:::note
+First startup downloads the base model from HuggingFace. This can take several minutes depending on your connection speed. Subsequent starts use the cached weights.
+:::
+
+## Make Your First Request
+
+1. Send a chat completion request to the inference API:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-token>" \
+  -d '{
+    "model": "qwen3.5-4b",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is SAIP?"}
+    ]
+  }'
+```
+
+Replace `<your-api-token>` with a token defined in the `users` section of `saip.yaml`.
+
+2. You should receive a JSON response containing the model's completion in `choices[0].message.content`.
+
+:::tip
+SAIP exposes an OpenAI-compatible API. Any client library that supports the OpenAI Chat Completions format (OpenAI SDK, LiteLLM, LangChain) works without modification.
+:::
+
+## Check Status
+
+1. Verify the platform state at any time:
+
+```bash
+saip status
+```
+
+The output includes:
+
+- **Mode** — `awake` (inference active) or `sleep` (training active).
+- **Services** — Health status of each Docker Compose service.
+- **GPU** — Current VRAM usage and utilization.
+- **Active adapter** — The currently loaded LoRA adapter, if any.
+- **Uptime** — How long the current mode has been running.
+
+## Next Steps
+
+Now that you have a working inference deployment, continue with:
+
+- **[Training Your First Adapter](/tutorials/training-your-first-adapter/)** — Learn the full experience→evaluation→adaptation loop by submitting knowledge, collecting feedback, and training a custom adapter.
+- **[Architecture](/concepts/architecture/)** — Understand how the awake/sleep cycle, adapter lifecycle, and storage layer fit together.

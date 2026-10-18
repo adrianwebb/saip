@@ -1,0 +1,204 @@
+---
+title: Configure Adapters
+description: Set up user-to-adapter mappings and adapter groups
+---
+
+SAIP uses adapters (LoRA/QLoRA weight deltas) to specialize a base model for different tasks and users. This guide explains how to configure adapter mappings, versioning, and resolution in `saip.yaml`.
+
+## User Manifest Format
+
+User-to-adapter mappings live in the top-level `users` array of `saip.yaml`. Each entry specifies separate adapters for inference and training:
+
+```yaml
+# User → adapter mapping (file-based for MVP)
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+
+  - id: "alice"
+    adapters:
+      inference: "coding@latest"
+      training: "coding"
+
+  - id: "bob"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+```
+
+Each user entry has:
+- **`id`** — the user identifier (use `"default"` for unauthenticated requests).
+- **`adapters.inference`** — the adapter used for inference requests.
+- **`adapters.training`** — the adapter used as the base for training runs.
+
+### Resolution Order
+
+When a request arrives, the inference gateway resolves the adapter in this order:
+
+1. **Explicit header** — `X-SAIP-Adapter: coding@000042` overrides everything.
+2. **User mapping** — looked up from the authenticated user ID in the `users` array.
+3. **Default** — falls back to the entry with `id: "default"`.
+
+## Adapter Versioning Convention
+
+Adapters follow a `<name>@<version>` naming scheme:
+
+| Pattern | Meaning | Example |
+|---------|---------|---------|
+| `name@latest` | Resolves to the highest numbered version | `general@latest` → `general@000042` |
+| `name@NNNNNN` | Pins to a specific 6-digit version | `coding@000018` |
+| `name@base` | Uses the base model with no adapter | `general@base` |
+
+### How `@latest` Resolves
+
+The inference gateway scans the R2 adapter directory at startup and on each polling cycle:
+
+```
+adapters/
+├── general@000040/
+├── general@000041/
+├── general@000042/    ← general@latest resolves here
+├── coding@000017/
+└── coding@000018/     ← coding@latest resolves here
+```
+
+Versions are zero-padded 6-digit integers, sorted lexicographically. This ensures `000042 > 000041` without numeric parsing.
+
+:::caution[Version Gaps]
+Version numbers don't need to be contiguous, but they must be monotonically increasing. Never reuse a version number — if `general@000042` was defective, publish `general@000043` instead of overwriting.
+:::
+
+## Adapter Aliasing (Runtime Resolution)
+
+Adapter aliasing is a **runtime concept**, not a configuration field in `saip.yaml`. The inference gateway maintains an adapter index (`adapters/_index.json` in R2) that maps aliases to concrete versions:
+
+```json
+{
+  "adapters": {
+    "general@000042": { "id": "general@000042", "base_model": "Qwen/Qwen3.5-4B", ... },
+    "coding@000018": { "id": "coding@000018", "base_model": "Qwen/Qwen3.5-4B", ... }
+  },
+  "aliases": {
+    "general@latest": "general@000042",
+    "coding@latest": "coding@000018"
+  },
+  "updated_at": "2025-01-15T10:00:00Z"
+}
+```
+
+When `saip.yaml` references `general@latest`, the gateway resolves it through this index to the concrete version `general@000042`. This allows you to use stable names like `@latest` in your user mappings while the underlying version advances with each training run.
+
+:::tip[Canary Deployments]
+For gradual rollouts, pin specific users to a concrete version (e.g., `general@000040`) while others track `general@latest`. Update the alias in the R2 index when satisfied with the new version.
+:::
+
+## Adding New Users
+
+To add a user to the system:
+
+1. **Add to `saip.yaml`:**
+
+```yaml
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+
+  - id: "newuser"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+```
+
+2. **Reload configuration** (no restart needed):
+
+```bash
+saip reload
+```
+
+3. **Verify resolution:**
+
+```bash
+saip status --adapter-resolution newuser
+# Output: newuser → general@latest → general@000042
+```
+
+## How the Inference Gateway Resolves Adapters
+
+The gateway performs adapter resolution on every incoming request:
+
+```
+Request arrives
+    │
+    ▼
+Has X-SAIP-Adapter header? ──Yes──► Load specified adapter
+    │No
+    ▼
+Authenticated user ID? ──No──► Load default user's adapter
+    │Yes
+    ▼
+User in users array? ──Yes──► Resolve user's adapters.inference
+    │No
+    ▼
+Load default user's adapters.inference
+```
+
+### Hot Reloading
+
+The gateway polls R2 every 60 seconds for new adapter versions. When a new version matching a `@latest` reference appears:
+
+1. The new adapter weights are downloaded to local cache.
+2. The vLLM engine loads the adapter in a background thread.
+3. New requests route to the updated adapter; in-flight requests complete on the old version.
+4. The old adapter is unloaded after a grace period.
+
+:::note[Zero-Downtime Swaps]
+Adapter hot-reloading is seamless — no requests are dropped during the transition. The swap typically takes 5–15 seconds depending on adapter size and network speed.
+:::
+
+## Complete Example
+
+A production-ready `saip.yaml` user configuration:
+
+```yaml
+# User → adapter mapping
+users:
+  - id: "default"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+
+  - id: "alice"
+    adapters:
+      inference: "coding@latest"
+      training: "coding"
+
+  - id: "bob"
+    adapters:
+      inference: "general@000040"
+      training: "general"
+
+  - id: "carol"
+    adapters:
+      inference: "research@latest"
+      training: "research"
+
+  - id: "dave"
+    adapters:
+      inference: "general@latest"
+      training: "general"
+```
+
+In this setup:
+- **Alice** uses `coding@latest` for both inference and training.
+- **Bob** is pinned to `general@000040` for inference (a known-good version).
+- **Carol** uses the latest research adapter.
+- **Dave** tracks `general@latest`, acting as a canary tester.
+- **Unauthenticated requests** fall back to the `default` user's `general@latest`.
+
+:::note[Adapter Aliasing]
+The `@latest` suffix is resolved at runtime through the adapter index in R2 (`adapters/_index.json`). See [Adapter Aliasing](#adapter-aliasing-runtime-resolution) above for details.
+:::

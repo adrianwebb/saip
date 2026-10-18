@@ -1,0 +1,175 @@
+# JSON Schema for saip.yaml
+# Used by shared/src/config-schema.ts for runtime validation
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: SAIP Platform Configuration
+type: object
+required: [platform, model, storage]
+additionalProperties: false
+
+properties:
+  platform:
+    type: object
+    required: [name, version]
+    properties:
+      name:
+        type: string
+        const: saip
+      version:
+        type: string
+        pattern: "^\\d+\\.\\d+\\.\\d+"
+
+  model:
+    type: object
+    required: [base]
+    properties:
+      base:
+        type: string
+        description: HuggingFace model ID
+      quantization:
+        type: string
+        enum: [awq, gptq, bitsandbytes, none]
+        default: awq
+      max_model_len:
+        type: integer
+        minimum: 1024
+        default: 65536
+      dtype:
+        type: string
+        enum: [float16, bfloat16, float32]
+        default: float16
+
+  adapter:
+    type: object
+    properties:
+      default_rank:
+        type: integer
+        minimum: 1
+        default: 16
+      default_alpha:
+        type: integer
+        minimum: 1
+        default: 32
+      target_modules:
+        type: array
+        items:
+          type: string
+        default: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+  storage:
+    type: object
+    required: [r2]
+    properties:
+      r2:
+        type: object
+        required: [bucket, endpoint]
+        properties:
+          bucket:
+            type: string
+            description: R2 bucket name (supports ${ENV_VAR} interpolation)
+          endpoint:
+            type: string
+            description: R2 S3-compatible endpoint URL
+      huggingface:
+        type: object
+        properties:
+          token_env:
+            type: string
+            description: Environment variable name containing HF token
+            default: SAIP_HF_TOKEN
+
+  users:
+    type: array
+    items:
+      type: object
+      required: [id, adapters]
+      properties:
+        id:
+          type: string
+        adapters:
+          type: object
+          properties:
+            inference:
+              type: string
+              description: Adapter alias for inference (e.g., general@latest)
+            training:
+              type: string
+              description: Adapter name for training output
+
+  inference:
+    type: object
+    properties:
+      port:
+        type: integer
+        default: 8000
+      gpu_node:
+        type: string
+        default: local
+      max_loras:
+        type: integer
+        minimum: 1
+        default: 4
+      max_cpu_loras:
+        type: integer
+        minimum: 1
+        default: 32
+      systemone:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+
+  training:
+    type: object
+    properties:
+      port:
+        type: integer
+        default: 8001
+      gpu_node:
+        type: string
+        default: local
+      methods:
+        type: object
+        properties:
+          knowledge_embedding:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              sequence_len:
+                type: integer
+                default: 4096
+          corrective_sft:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              sequence_len:
+                type: integer
+                default: 4096
+          weighted_kto:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              reward_range:
+                type: array
+                items:
+                  type: integer
+                minItems: 2
+                maxItems: 2
+                default: [-3, 3]
+              magnitude_weights:
+                type: object
+                additionalProperties:
+                  type: number
+
+  plugins:
+    type: array
+    items:
+      type: object
+    default: []

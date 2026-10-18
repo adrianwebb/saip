@@ -1,0 +1,226 @@
+---
+title: Submit Feedback
+description: Provide evaluation feedback to shape agent behavior
+---
+
+Feedback is SAIP's mechanism for aligning agent behavior with human expectations. Submitted feedback drives corrective supervised fine-tuning (SFT) and weighted Kahneman-Tversky Optimization (KTO), directly shaping future model outputs.
+
+## Feedback Record Format
+
+Each feedback record captures a human evaluation of a specific agent interaction:
+
+```json
+{
+  "session_id": "sess-abc123",
+  "message_id": "msg-xyz789",
+  "reward": 2,
+  "confidence": 0.85,
+  "dimensions": {
+    "correctness": 2,
+    "process": 1,
+    "efficiency": 3,
+    "risk": 0
+  },
+  "feedback_text": "Correct answer but took too many steps to get there."
+}
+```
+
+### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | The conversation session this feedback refers to |
+| `reward` | number | Overall reward score (-3 to +3) |
+
+### Optional Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message_id` | string | Specific message within the session (omit for whole-session feedback) |
+| `confidence` | number | Evaluator confidence weight (0.0 to 1.0) |
+| `dimensions` | object | Per-dimension scores (see below) |
+| `feedback_text` | string | Free-text explanation |
+
+## Reward Scale
+
+The overall `reward` field uses a symmetric 7-point scale:
+
+| Value | Label | Meaning |
+|-------|-------|---------|
+| **+3** | Excellent | Perfect response, nothing to improve |
+| **+2** | Good | Correct and helpful, minor improvements possible |
+| **+1** | Acceptable | Mostly correct but noticeably suboptimal |
+| **0** | Neutral | Neither helpful nor harmful |
+| **-1** | Poor | Partially incorrect or misleading |
+| **-2** | Bad | Significantly wrong, wasted user's time |
+| **-3** | Harmful | Dangerous, deceptive, or actively damaging |
+
+:::caution[Calibration Matters]
+Consistent calibration across evaluators is critical. A +2 from one evaluator should mean the same thing as a +2 from another. Establish shared rubrics and periodically cross-calibrate by scoring the same sessions together.
+:::
+
+## Confidence Field
+
+The `confidence` field (0.0–1.0) weights the feedback during training:
+
+- **0.9–1.0:** Expert evaluation, fully trusted.
+- **0.7–0.89:** Experienced evaluator, high trust.
+- **0.5–0.69:** Moderate confidence, used with reduced weight.
+- **Below 0.5:** Low confidence, included but heavily down-weighted.
+
+Confidence multiplies the effective loss contribution during KTO training. A reward of +3 at confidence 0.5 contributes the same gradient signal as a reward of +1.5 at confidence 1.0.
+
+:::tip[When to Lower Confidence]
+Reduce confidence when:
+- You're unsure about the domain-specific correctness.
+- The session involved ambiguous requirements.
+- You didn't observe the full context of the interaction.
+- You're evaluating outside your area of expertise.
+:::
+
+## Dimension Scores
+
+Dimension scores provide granular signal beyond the overall reward. Each dimension uses the same -3 to +3 scale:
+
+### Correctness
+Was the factual content accurate? Did the agent produce correct code, valid reasoning, and truthful statements?
+
+### Process
+Did the agent follow a sound methodology? Did it plan before acting, verify its work, and use appropriate tools?
+
+### Efficiency
+Did the agent achieve the goal without unnecessary steps, redundant queries, or wasted tokens?
+
+### Risk
+Did the agent avoid unsafe actions? Did it handle sensitive operations cautiously, ask for confirmation when appropriate, and refuse harmful requests?
+
+:::note[Dimension Independence]
+Dimensions are evaluated independently. A response can score +3 on correctness but -2 on efficiency (right answer, terrible path). This separation helps the model learn *what* to optimize separately from *how* to optimize it.
+:::
+
+## Linking Feedback to Sessions
+
+Feedback must reference a valid `session_id`. Sessions are created by the inference gateway and logged to R2:
+
+```
+<bucket>/sessions/
+├── sess_20240315_x7k9m2.jsonl    # Turn-by-turn transcript
+└── sess_20240315_y8l0n3.jsonl
+```
+
+To find session IDs:
+
+```bash
+# List recent sessions (inference gateway, port 8000)
+curl http://localhost:8000/v1/sessions?limit=10
+
+# Get a specific session transcript (inference gateway, port 8000)
+curl http://localhost:8000/v1/sessions/sess-abc123
+```
+
+:::tip[Message-Level Feedback]
+When providing feedback on a specific message, include `message_id`. This enables the training pipeline to construct precise preference pairs for KTO — comparing the actual response against what would have been better at that exact point in the conversation.
+:::
+
+## How Feedback Feeds Training
+
+### Corrective SFT
+
+Negative feedback (reward ≤ -1) generates corrective training examples:
+
+1. The original session transcript is retrieved.
+2. The flagged turn is identified.
+3. A corrected response is generated (either human-written or LLM-assisted with human review).
+4. The (prompt, corrected_response) pair becomes an SFT training example.
+
+Corrective SFT teaches the model *what to do instead* when it encounters similar situations.
+
+### Weighted KTO
+
+All feedback (positive and negative) feeds into Kahneman-Tversky Optimization:
+
+1. Positive examples (reward ≥ +1) form the "desirable" set.
+2. Negative examples (reward ≤ -1) form the "undesirable" set.
+3. Neutral examples (reward = 0) are excluded.
+4. Each example's loss is weighted by its `confidence` value.
+5. Dimension scores modulate which aspects of the response the KTO loss emphasizes.
+
+KTO adjusts the model's policy to increase the probability of desirable responses and decrease the probability of undesirable ones, without requiring paired comparisons.
+
+:::note[KTO vs RLHF]
+Unlike RLHF/DPO, KTO doesn't need paired (chosen, rejected) examples. It works with unpaired binary signals, making it much easier to collect feedback at scale. The tradeoff is slightly slower convergence per data point, compensated by lower collection cost.
+:::
+
+## API Endpoint
+
+### Submit Feedback
+
+The training gateway listens on port **8001** (not the inference port 8000).
+
+```
+POST /v1/feedback
+Content-Type: application/json
+```
+
+```bash
+curl -X POST http://localhost:8001/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-abc123",
+    "message_id": "msg-xyz789",
+    "reward": 2,
+    "confidence": 0.85,
+    "dimensions": {
+      "correctness": 2,
+      "process": 1,
+      "efficiency": 3,
+      "risk": 0
+    },
+    "feedback_text": "Correct answer but took too many steps."
+  }'
+```
+
+Response:
+
+```json
+{
+  "id": "fb_20240315_p4q5r6s7",
+  "status": "accepted",
+  "queued_for": ["corrective-sft", "weighted-kto"]
+}
+```
+
+### Batch Submit (Optional)
+
+The batch endpoint is optional — you can also submit feedback records individually.
+
+```
+POST /v1/feedback/batch
+Content-Type: application/json
+```
+
+Accepts an array of feedback records (max 100 per request):
+
+```bash
+curl -X POST http://localhost:8001/v1/feedback/batch \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"session_id": "sess-a", "reward": 2, "confidence": 0.9},
+    {"session_id": "sess-b", "reward": -1, "confidence": 0.7, "feedback_text": "Hallucinated API endpoint"}
+  ]'
+```
+
+### Query Feedback
+
+```bash
+curl "http://localhost:8001/v1/feedback?session_id=sess-abc123"
+curl "http://localhost:8001/v1/feedback?min_reward=-1&max_reward=3&limit=20"
+```
+
+## Best Practices
+
+- **Provide feedback_text on negative feedback** — the text guides corrective SFT generation. "Wrong" is less useful than "Used deprecated `os.popen()` instead of `subprocess.run()`."
+- **Score dimensions even when giving overall feedback** — dimension scores dramatically improve KTO signal quality.
+- **Submit feedback promptly** — fresh context produces more accurate evaluations.
+- **Don't skip neutral interactions** — if a response was fine but unremarkable, a quick +1/0.6 still contributes useful signal.
+- **Audit your own feedback** — periodically review your past submissions to maintain calibration consistency.

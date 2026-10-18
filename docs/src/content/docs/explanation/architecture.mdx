@@ -1,0 +1,143 @@
+---
+title: Architecture
+description: Why SAIP is two services, how they connect, and the design decisions behind the platform
+---
+
+SAIP is not a monolith. It is two independent services — an inference gateway and a training gateway — that share state through object storage rather than a database. This page explains why the platform is shaped this way, and what each technology choice buys you.
+
+## The Two-Service Split
+
+Inference and training have fundamentally different resource profiles:
+
+- **Inference** is latency-sensitive, memory-bound, and needs to be always-on for interactive use. It loads a base model once and serves many concurrent requests with dynamic adapter selection.
+- **Training** is throughput-oriented, compute-bound, and batch-driven. It loads datasets, runs gradient updates for minutes or hours, then exits.
+
+Running both on a single GPU simultaneously would force compromises: the inference engine would need to reserve VRAM for training buffers (starving its KV cache), or training would be starved by inference's persistent model weights. Neither workload gets the resources it actually needs.
+
+Instead, SAIP treats them as **mutually exclusive modes** on a single GPU:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    SINGLE GPU HOST                          │
+│                                                             │
+│   ┌──────────────────┐         ┌──────────────────────┐     │
+│   │  INFERENCE GW    │  ←swap→ │   TRAINING GW        │     │
+│   │                  │         │                      │     │
+│   │  • vLLM server   │         │  • Axolotl runner    │     │
+│   │  • Adapter reg.  │         │  • Dataset builder   │     │
+│   │  • User resolver │         │  • Feedback store    │     │
+│   │  • Session coll. │         │  • Knowledge store   │     │
+│   │  • Hono API      │         │  • Hono API          │     │
+│   └────────┬─────────┘         └──────────┬───────────┘     │
+│            │                               │                 │
+└────────────┼───────────────────────────────┼─────────────────┘
+             │                               │
+             ▼                               ▼
+        ┌─────────────────────────────────────────┐
+        │          CLOUDFLARE R2                   │
+        │                                         │
+        │  adapters/    knowledge/    sessions/    │
+        │  feedback/    _index.json               │
+        └─────────────────────────────────────────┘
+                     ▲              ▲
+                     │              │
+              ┌──────┴──┐    ┌──────┴──┐
+              │  CLI    │    │HuggingFace│
+              │(awake/  │    │ Hub      │
+              │ sleep)  │    │(models)  │
+              └─────────┘    └─────────┘
+```
+
+The CLI orchestrates the swap: `saip awake` tears down the training compose stack and brings up inference; `saip sleep` does the reverse. Because shared state lives in R2, neither service needs to know about the other's runtime state. They read and write the same objects independently.
+
+### Why Not a Database?
+
+A traditional architecture would put adapter metadata, session logs, and feedback records in PostgreSQL or Redis. That adds operational complexity (another container, backups, migrations, connection pooling) for data that is:
+
+- **Append-heavy**: sessions and feedback are written once, read occasionally during training
+- **Blob-oriented**: adapter weights are multi-megabyte binary files, not rows
+- **Globally distributed**: R2 replicates to edge locations automatically
+- **Cheap**: no egress fees, no per-query costs, no connection limits
+
+R2 is S3-compatible, so any tool that speaks S3 can inspect SAIP's state directly. There is no ORM layer, no migration framework, no query planner. The "schema" is file paths and JSON manifests.
+
+## Technology Choices
+
+### vLLM for Inference
+
+vLLM was chosen over alternatives (TGI, llama.cpp, Ollama) because it uniquely supports the combination SAIP requires:
+
+- **Multi-LoRA serving**: load dozens of adapters into GPU memory simultaneously, select per-request via API parameter. No reload between users.
+- **AWQ quantization**: run Qwen3.5-4B at 4-bit precision, fitting base model + multiple adapters in ~7 GB VRAM.
+- **PagedAttention**: efficient KV cache management enables high concurrency without OOM on long contexts.
+- **OpenAI-compatible API**: drop-in replacement for any client expecting `/v1/chat/completions`.
+
+The tradeoff is that vLLM is Python-based and heavyweight. SAIP wraps it in a Docker container and manages it as a Cordis plugin — the TypeScript gateway handles routing, user resolution, and session collection while vLLM handles the actual token generation.
+
+### Axolotl for Training
+
+Axolotl was chosen over LLaMA-Factory, Unsloth, and custom training loops because:
+
+- **Plugin system**: Axolotl's configuration-driven approach maps cleanly to SAIP's three training methods (knowledge embedding, corrective SFT, weighted KTO) without forking the framework.
+- **QLoRA support**: 4-bit base model with low-rank adapters, matching the inference-side AWQ setup.
+- **Multiple RL methods**: built-in support for DPO, KTO, GRPO, and ORPO means SAIP can add preference-based training without rewriting loss functions.
+- **Active development**: regular upstream releases with new model support and optimization passes.
+
+Like vLLM, Axolotl runs in its own container. The training gateway builds dataset files from R2 objects, writes an Axolotl config YAML, and invokes the training run as a subprocess.
+
+### Cordis for Service Composition
+
+Both gateways are composed of Cordis plugins rather than monolithic application code. See [Cordis Plugin Model](/explanation/cordis-plugin-model/) for the full rationale, but the short version:
+
+- **Lifecycle management**: plugins declare dependencies on other plugins' services; Cordis handles load ordering, restart propagation, and graceful shutdown.
+- **Hot reload**: update a plugin's code or config without restarting the entire gateway. Critical for development and for swapping adapters at runtime.
+- **Isolation**: each plugin gets its own context scope. A failing adapter registry doesn't crash the API server.
+- **Events**: plugins communicate through typed events rather than direct imports, making the dependency graph explicit and testable.
+
+### Hono for APIs
+
+Hono sits between the Cordis plugin system and the outside world:
+
+- **Lightweight**: no framework overhead, no decorator magic, no DI container beyond what Cordis already provides.
+- **OpenAI-compatible**: the inference API implements `/v1/chat/completions` and `/v1/models` exactly as OpenAI specifies, so existing clients work unchanged.
+- **Runtime-agnostic**: runs on Node.js in production but could run on Cloudflare Workers or Deno if deployment targets change.
+- **Middleware-compatible**: standard request/response pipeline integrates cleanly with Cordis's event system for session tracking and adapter injection.
+
+### Cloudflare R2 for Shared State
+
+R2 was chosen over S3, GCS, MinIO, and local filesystem storage because:
+
+- **Zero egress fees**: training reads sessions and feedback from R2 without bandwidth charges. On S3, this would be the dominant cost.
+- **S3-compatible API**: existing SDKs work without modification.
+- **Global edge replication**: adapters uploaded from one region are available everywhere without manual replication.
+- **No infrastructure**: unlike MinIO, there is no container to manage, no disk to provision, no cluster to maintain.
+
+The tradeoff is vendor lock-in to Cloudflare's API surface. For a project designed to run on a single GPU with minimal ops burden, this is acceptable.
+
+## The User → Adapter Resolution Chain
+
+When a request arrives at the inference gateway, it goes through a deterministic resolution chain:
+
+1. **Caller identification**: extract the caller ID from the API key, header, or user manifest.
+2. **Adapter lookup**: consult the user manifest (`users.yaml`) to find the caller's assigned adapter group.
+3. **Alias resolution**: resolve aliases like `general@latest` to concrete adapter versions via `adapters/_index.json`.
+4. **vLLM injection**: pass the resolved adapter ID as a request parameter to vLLM, which selects the corresponding LoRA weights from its loaded set.
+5. **Session recording**: log the request/response pair to `sessions/<id>/` in R2 for future training data.
+
+This chain is implemented across three Cordis plugins (`userResolver`, `adapterRegistry`, `sessionCollector`) that communicate through events. None of them knows about vLLM internals or R2 path conventions directly — they depend on abstracted services that handle those concerns.
+
+The result is that callers never manage adapters themselves. They authenticate, and the platform routes them to the right specialization automatically. When a new adapter version is trained and promoted, the alias updates atomically in `_index.json`, and the next request uses it without any client-side change.
+
+## Awake/Sleep Mode: Single-GPU Time-Sharing
+
+Most individual developers and small teams have exactly one GPU. Running inference and training concurrently on it is technically possible but practically painful: training slows to a crawl when sharing VRAM with an active inference server, and inference latency spikes during training batches.
+
+SAIP's awake/sleep model accepts this constraint explicitly:
+
+- **Awake mode**: inference gateway is running, training gateway is stopped. The GPU serves requests with full VRAM allocation. Sessions accumulate in R2.
+- **Sleep mode**: training gateway is running, inference gateway is stopped. The GPU runs training jobs using accumulated sessions and feedback. New adapters are uploaded to R2.
+- **Down mode**: neither service is running. The GPU is free for other work.
+
+The CLI makes switching trivial: `saip awake`, `saip sleep`, `saip down`. Each command tears down one Docker Compose stack and brings up the other. Because state lives in R2, there is no handoff protocol between services — they simply read whatever was written last.
+
+This is not a limitation to work around. It is a design feature that matches how individual practitioners actually work: interact with the agent during the day, train overnight, repeat.

@@ -1,0 +1,160 @@
+---
+title: R2 Bucket Layout
+description: Cloudflare R2 storage structure for adapters, knowledge, sessions, and feedback
+---
+
+SAIP uses a single Cloudflare R2 bucket (configured via `storage.r2` in `saip.yaml`) for all persistent artifacts. The bucket follows a fixed prefix convention.
+
+## Directory Tree
+
+```
+<bucket>/
+├── adapters/
+│   ├── _index.json
+│   └── <adapter-id>/
+│       ├── adapter_config.json
+│       ├── adapter_model.safetensors
+│       └── manifest.json
+├── knowledge/
+│   ├── _index.json
+│   └── <knowledge-id>/
+│       ├── content.<ext>
+│       └── manifest.json
+├── sessions/
+│   ├── _index.json
+│   └── <session-id>/
+│       ├── conversation.jsonl
+│       ├── artifacts/
+│       │   └── <artifact-files>
+│       └── manifest.json
+└── feedback/
+    ├── _index.json
+    └── <feedback-id>.json
+```
+
+## adapters/
+
+Stores trained LoRA adapter weights and metadata.
+
+### adapters/_index.json
+
+Global adapter registry. See [Adapter Manifest](/reference/adapter-manifest/) for the full schema.
+
+| Field      | Type                                | Description                                         |
+|------------|-------------------------------------|-----------------------------------------------------|
+| `adapters` | `Record<string, AdapterManifest>`  | Map of adapter ID → manifest.                       |
+| `aliases`  | `Record<string, string>`           | Alias → canonical ID (e.g. `"general@latest"` → `"general@000042"`). |
+| `updated_at` | `string` (ISO 8601)              | Last modification timestamp.                        |
+
+### adapters/\<id\>/adapter_config.json
+
+HuggingFace PEFT adapter configuration. Standard `peft` library format containing rank, alpha, target modules, task type, and base model reference.
+
+### adapters/\<id\>/adapter_model.safetensors
+
+LoRA weight file in safetensors format. Contains only the low-rank delta matrices, not the full base model.
+
+### adapters/\<id\>/manifest.json
+
+[`AdapterManifest`](/reference/adapter-manifest/) JSON document with training provenance, version, and metrics.
+
+## knowledge/
+
+Stores ingested knowledge documents used for knowledge-embedding training.
+
+### knowledge/_index.json
+
+| Field      | Type                                 | Description                         |
+|------------|--------------------------------------|-------------------------------------|
+| `entries`  | `Record<string, KnowledgeManifest>` | Map of knowledge ID → manifest.     |
+| `updated_at` | `string` (ISO 8601)               | Last modification timestamp.        |
+
+### knowledge/\<id\>/content.*
+
+The raw knowledge document. Extension varies by source type (`.txt`, `.md`, `.json`, `.pdf`). Content hash is recorded in the manifest.
+
+### knowledge/\<id\>/manifest.json
+
+[`KnowledgeManifest`](#knowledgemanifest) JSON document.
+
+| Field        | Type                          | Description                                      |
+|--------------|-------------------------------|--------------------------------------------------|
+| `id`         | `string`                      | Unique knowledge entry identifier.               |
+| `source`     | `string`                      | Origin URI or description.                       |
+| `source_type`| `'document' \| 'repository' \| 'dataset'` | Classification of the source.          |
+| `license`    | `string?`                     | SPDX license identifier.                         |
+| `hash`       | `string`                      | SHA-256 hash of the content file.                |
+| `size_bytes` | `number`                      | Content file size in bytes.                      |
+| `created_at` | `string` (ISO 8601)           | Creation timestamp.                              |
+| `updated_at` | `string` (ISO 8601)           | Last update timestamp.                           |
+| `tags`       | `string[]?`                   | Optional classification tags.                    |
+
+## sessions/
+
+Stores conversation logs and generated artifacts from inference sessions.
+
+### sessions/_index.json
+
+| Field      | Type                               | Description                         |
+|------------|------------------------------------|-------------------------------------|
+| `sessions` | `Record<string, SessionManifest>` | Map of session ID → manifest.       |
+| `updated_at` | `string` (ISO 8601)             | Last modification timestamp.        |
+
+### sessions/\<id\>/conversation.jsonl
+
+Newline-delimited JSON. Each line is one message object in OpenAI chat format:
+
+```jsonl
+{"role":"user","content":"Explain quantum entanglement","timestamp":"2025-01-15T10:30:00Z"}
+{"role":"assistant","content":"Quantum entanglement is...","timestamp":"2025-01-15T10:30:01Z"}
+```
+
+### sessions/\<id\>/artifacts/
+
+Directory for non-text outputs generated during the session (images, code files, data exports). Filenames are opaque identifiers. Referenced from `conversation.jsonl` when applicable.
+
+### sessions/\<id\>/manifest.json
+
+[`SessionManifest`](#sessionmanifest) JSON document.
+
+| Field            | Type              | Description                                   |
+|------------------|-------------------|-----------------------------------------------|
+| `id`             | `string`          | Unique session identifier.                    |
+| `caller`         | `string`          | User ID that initiated the session.           |
+| `adapter_id`     | `string`          | Adapter used for inference.                   |
+| `started_at`     | `string` (ISO 8601) | Session start timestamp.                    |
+| `completed_at`   | `string?` (ISO 8601) | Session end timestamp (null if ongoing).    |
+| `message_count`  | `number`          | Total messages in conversation.jsonl.         |
+| `artifact_count` | `number`          | Number of files in artifacts/.                |
+
+## feedback/
+
+Stores human or automated feedback records linked to sessions, used for weighted KTO training.
+
+### feedback/_index.json
+
+| Field      | Type                               | Description                         |
+|------------|------------------------------------|-------------------------------------|
+| `records`  | `Record<string, FeedbackRecord>`  | Map of feedback ID → record.        |
+| `updated_at` | `string` (ISO 8601)             | Last modification timestamp.        |
+
+### feedback/\<id\>.json
+
+[`FeedbackRecord`](#feedbackrecord) JSON document.
+
+| Field           | Type                      | Description                                           |
+|-----------------|---------------------------|-------------------------------------------------------|
+| `id`            | `string`                  | Unique feedback record identifier.                    |
+| `session_id`    | `string`                  | Associated session ID.                                |
+| `message_id`    | `string?`                 | Specific message within the session (optional).       |
+| `reward`        | `number`                  | Scalar reward signal (within configured `reward_range`). |
+| `confidence`    | `number?`                 | Confidence weight for this feedback (0–1).            |
+| `dimensions`    | `Record<string, number>?` | Multi-dimensional reward breakdown.                   |
+| `feedback_text` | `string?`                 | Free-form human commentary.                           |
+| `created_at`    | `string` (ISO 8601)       | Record creation timestamp.                            |
+
+## Index File Conventions
+
+All `_index.json` files serve as lightweight registries to avoid listing the entire bucket prefix. They are updated atomically (read-modify-write) on every mutation. Concurrent writers must handle conflicts via conditional PUT or optimistic locking.
+
+Index files contain only manifest summaries, not full content. The authoritative data lives in the per-entity subdirectories.

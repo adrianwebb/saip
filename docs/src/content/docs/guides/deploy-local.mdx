@@ -1,0 +1,212 @@
+---
+title: Deploy Locally
+description: Run SAIP on a single machine with one GPU
+---
+
+This guide walks you through running SAIP on a single local machine with a consumer or workstation GPU. Local deployment is ideal for development, testing, and small-scale inference workloads.
+
+## Hardware Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| GPU VRAM | 7 GB | 12 GB+ |
+| System RAM | 16 GB | 32 GB |
+| Disk | 50 GB free | 100 GB SSD |
+| CUDA | 12.1+ | 12.4+ |
+
+:::caution[VRAM Warning]
+Models loaded by SAIP require at least **7 GB of available VRAM**. Integrated GPUs and older cards with less than 7 GB will fail during model loading with an OOM error. Check your available VRAM before proceeding:
+
+```bash
+nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader
+```
+:::
+
+## Prerequisites
+
+### Docker & NVIDIA Container Toolkit
+
+SAIP runs inside Docker containers with GPU passthrough. Install both components:
+
+1. **Install Docker Engine** (not Docker Desktop):
+
+```bash
+# Ubuntu/Debian
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+2. **Install NVIDIA Container Toolkit**:
+
+```bash
+# Add the NVIDIA package repository
+distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt update && sudo apt install -y nvidia-container-toolkit
+```
+
+3. **Verify GPU access inside Docker**:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+```
+
+You should see your GPU listed in the output. If this command fails, troubleshoot the toolkit installation before continuing.
+
+:::tip[Docker Group]
+If you get a permission denied error when running `docker`, log out and back in after adding yourself to the `docker` group, or run `newgrp docker` in your current shell.
+:::
+
+## Configuration
+
+### Create Your `.env` File
+
+Copy the example environment file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Required variables for local deployment:
+
+```ini
+# Cloudflare R2 storage for adapters, knowledge, sessions, feedback
+SAIP_R2_BUCKET=saip-local
+SAIP_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+SAIP_R2_ACCESS_KEY_ID=your-access-key
+SAIP_R2_SECRET_ACCESS_KEY=your-secret-key
+
+# HuggingFace Hub token for downloading base models
+SAIP_HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+:::note[Bucket Naming]
+For local deployments, use a dedicated R2 bucket (e.g., `saip-local`) to avoid conflicts with remote training nodes that may write to the same storage.
+:::
+
+### Verify R2 Connectivity
+
+Before starting services, confirm your R2 credentials work:
+
+```bash
+aws s3 ls s3://${SAIP_R2_BUCKET}/ \
+  --endpoint-url ${SAIP_R2_ENDPOINT} \
+  --access-key ${SAIP_R2_ACCESS_KEY_ID} \
+  --secret-key ${SAIP_R2_SECRET_ACCESS_KEY}
+```
+
+If this returns an error, double-check your credentials and endpoint URL. See [Troubleshooting](#r2-connection-failures) below.
+
+## Running SAIP
+
+### Start Services (`saip awake`)
+
+The `awake` command pulls images, downloads the model from R2, and starts the inference server:
+
+```bash
+saip awake
+```
+
+Expected output:
+
+```
+[awake] Pulling inference image... done
+[awake] Syncing model from R2 (Qwen/Qwen3.5-4B)... done (4.2 GB)
+[awake] Starting inference container on GPU 0... running
+[awake] Health check passed — API available at http://localhost:8000/v1
+```
+
+:::tip[First Run]
+The first `saip awake` downloads the model weights from R2, which can take 5–15 minutes depending on your connection. Subsequent starts skip this step if the local cache is intact.
+:::
+
+### Stop Services (`saip sleep`)
+
+Gracefully shut down inference while preserving cached models:
+
+```bash
+saip sleep
+```
+
+This stops containers but keeps downloaded models on disk so the next `awake` starts faster.
+
+### Full Teardown (`saip down`)
+
+Remove containers, volumes, and cached models:
+
+```bash
+saip down
+```
+
+Use this when switching models or troubleshooting a corrupted state.
+
+## GPU Monitoring
+
+Monitor GPU utilization while SAIP is running:
+
+```bash
+# Continuous monitoring (refresh every 1 second)
+watch -n 1 nvidia-smi
+
+# One-shot query for scripting
+nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu \
+  --format=csv,noheader
+```
+
+:::tip[vLLM Metrics]
+SAIP exposes Prometheus metrics at `http://localhost:8000/metrics`. Key metrics to watch:
+- `vllm:gpu_cache_usage_perc` — KV cache utilization (high = near capacity)
+- `vllm:num_requests_running` — active inference requests
+- `vllm:avg_generation_throughput_tokens_per_s` — tokens generated per second
+:::
+
+## Troubleshooting
+
+### Out of Memory (OOM)
+
+**Symptoms:** Container exits with `CUDA out of memory` or `torch.cuda.OutOfMemoryError`.
+
+**Solutions:**
+1. Reduce `SAIP_MAX_MODEL_LEN` in `.env` (e.g., from 4096 to 2048).
+2. Use a more quantized model variant (AWQ/GPTQ over FP16).
+3. Close other GPU-consuming processes: `nvidia-smi` shows PIDs using VRAM.
+4. Set `SAIP_GPU_MEMORY_UTILIZATION=0.85` to reserve headroom (default is 0.90).
+
+### CUDA Errors
+
+**Symptoms:** `CUDA error: device-side assert triggered` or `no kernel image is available for execution on the device`.
+
+**Solutions:**
+1. Verify CUDA compatibility: `nvidia-smi` shows the driver CUDA version; it must be ≥ the container's CUDA version.
+2. Update NVIDIA drivers: `sudo apt install --only-upgrade nvidia-driver-*`.
+3. Restart the Docker daemon after driver updates: `sudo systemctl restart docker`.
+4. Run `saip down && saip awake` to rebuild containers against the new driver.
+
+### R2 Connection Failures
+
+**Symptoms:** `AccessDenied`, `NoSuchBucket`, or timeout errors during `saip awake`.
+
+**Solutions:**
+1. Verify credentials are correct and not expired.
+2. Confirm the bucket exists and your key has read/write permissions.
+3. Check that `SAIP_R2_ENDPOINT` uses the correct regional endpoint (not the global S3 endpoint).
+4. Test connectivity outside Docker first (see [Verify R2 Connectivity](#verify-r2-connectivity)).
+5. If behind a proxy, set `HTTPS_PROXY` in your `.env`.
+
+:::caution[Credentials in Logs]
+Never paste full R2 credentials into issue reports or chat. Redact keys to their last 4 characters (e.g., `...a3f9`) when sharing error output.
+:::
+
+### Container Won't Start
+
+**Symptoms:** `docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]]`.
+
+**Solutions:**
+1. Confirm NVIDIA Container Toolkit is installed: `dpkg -l | grep nvidia-container-toolkit`.
+2. Restart Docker: `sudo systemctl restart docker`.
+3. Verify the runtime is configured: `cat /etc/docker/daemon.json` should include `"nvidia"` in runtimes.
+4. Reinstall the toolkit if the runtime entry is missing.

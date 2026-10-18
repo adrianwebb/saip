@@ -1,0 +1,114 @@
+---
+title: Adapter Manifest
+description: Format and fields of adapter manifest files stored in R2
+---
+
+Every trained adapter has a `manifest.json` file stored at `adapters/<id>/manifest.json` in R2. This file records training provenance, version history, and evaluation metrics.
+
+## AdapterManifest
+
+Defined in [`shared/src/types.ts`](https://github.com/adrianwebb/saip/blob/main/shared/src/types.ts).
+
+| Field             | Type                                              | Required | Description                                                       |
+|-------------------|---------------------------------------------------|----------|-------------------------------------------------------------------|
+| `id`              | `string`                                          | Yes      | Unique adapter identifier (e.g. `general@000042`).                |
+| `base_model`      | `string`                                          | Yes      | HuggingFace model ID of the base model.                           |
+| `base_revision`   | `string`                                          | No       | Git revision or commit hash of the base model.                    |
+| `rank`            | `number`                                          | Yes      | LoRA rank (`r`) used during training.                             |
+| `alpha`           | `number`                                          | Yes      | LoRA scaling factor (`alpha`) used during training.               |
+| `version`         | `number`                                          | Yes      | Monotonically increasing version number within this adapter lineage. |
+| `parent`          | `string`                                          | No       | ID of the parent adapter this was trained from (for chaining).    |
+| `training_run`    | `string`                                          | No       | Training job ID that produced this adapter.                       |
+| `training_method` | `'knowledge_embedding' \| 'corrective_sft' \| 'weighted_kto'` | No | Method used to produce this adapter.                  |
+| `metrics`         | `Record<string, number>`                          | No       | Evaluation metrics from training (e.g. `loss`, `accuracy`).      |
+| `created_at`      | `string` (ISO 8601)                               | Yes      | Timestamp when this adapter version was created.                  |
+| `updated_at`      | `string` (ISO 8601)                               | Yes      | Timestamp of last metadata update.                                |
+
+### Example
+
+```json
+{
+  "id": "general@000042",
+  "base_model": "Qwen/Qwen3.5-4B",
+  "base_revision": "a1b2c3d4",
+  "rank": 16,
+  "alpha": 32,
+  "version": 42,
+  "parent": "general@000041",
+  "training_run": "train-20250115-001",
+  "training_method": "corrective_sft",
+  "metrics": {
+    "train_loss": 0.342,
+    "eval_loss": 0.389,
+    "eval_accuracy": 0.912
+  },
+  "created_at": "2025-01-15T13:30:00Z",
+  "updated_at": "2025-01-15T13:30:00Z"
+}
+```
+
+## training_method Enum
+
+| Value                 | Description                                                        |
+|-----------------------|--------------------------------------------------------------------|
+| `knowledge_embedding` | Adapter trained on knowledge document embeddings.                  |
+| `corrective_sft`      | Adapter trained via supervised fine-tuning on corrected examples.  |
+| `weighted_kto`        | Adapter trained via Kahneman-Tversky Optimization with magnitude-weighted feedback rewards. |
+
+## AdapterIndex
+
+Stored at `adapters/_index.json` in R2. Provides a global registry of all adapters and their aliases.
+
+Defined in [`shared/src/types.ts`](https://github.com/adrianwebb/saip/blob/main/shared/src/types.ts).
+
+| Field        | Type                               | Description                                                              |
+|--------------|------------------------------------|--------------------------------------------------------------------------|
+| `adapters`   | `Record<string, AdapterManifest>` | Map of canonical adapter ID → full manifest.                             |
+| `aliases`    | `Record<string, string>`          | Map of alias → canonical ID. Used for mutable references like `@latest`. |
+| `updated_at` | `string` (ISO 8601)               | Last modification timestamp of the index itself.                         |
+
+### Example
+
+```json
+{
+  "adapters": {
+    "general@000042": {
+      "id": "general@000042",
+      "base_model": "Qwen/Qwen3.5-4B",
+      "rank": 16,
+      "alpha": 32,
+      "version": 42,
+      "parent": "general@000041",
+      "training_run": "train-20250115-001",
+      "training_method": "corrective_sft",
+      "metrics": { "eval_loss": 0.389 },
+      "created_at": "2025-01-15T13:30:00Z",
+      "updated_at": "2025-01-15T13:30:00Z"
+    }
+  },
+  "aliases": {
+    "general@latest": "general@000042"
+  },
+  "updated_at": "2025-01-15T13:30:00Z"
+}
+```
+
+### Alias Resolution
+
+Aliases provide mutable pointers to immutable adapter versions. The conventional alias format is `<name>@latest`, which always points to the highest-versioned adapter in that lineage. Resolution order:
+
+1. Look up the key in `aliases`.
+2. If found, use the returned canonical ID to look up in `adapters`.
+3. If not found, treat the key as a direct canonical ID.
+
+User configurations in `saip.yaml` reference adapters via aliases (e.g. `general@latest`) so that promoted adapters are picked up automatically without config changes.
+
+## Version Numbering
+
+Versions are monotonically increasing integers within an adapter lineage (identified by the prefix before `@`). When a new adapter is trained:
+
+1. Read the current highest version for the lineage from `_index.json`.
+2. Increment by 1.
+3. Write the new manifest with the incremented version.
+4. Update `_index.json` atomically.
+5. Update any `@latest` alias to point to the new canonical ID.

@@ -1,0 +1,28 @@
+{
+  "name": "@saip/inference",
+  "version": "0.1.0",
+  "description": "SAIP Inference Gateway — vLLM + Hono + Cordis",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@saip/shared": "workspace:*",
+    "cordis": "^4.0.0-rc.11",
+    "hono": "^4.7.0",
+    "@hono/node-server": "^1.13.0",
+    "yaml": "^2.6.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "Apache-2.0"
+}
