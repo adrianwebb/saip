@@ -1,6 +1,6 @@
 {
   "name": "@saip/training",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SAIP Training Gateway — Axolotl + Hono + Cordis",
   "type": "module",
   "main": "dist/index.js",
