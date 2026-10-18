@@ -1,0 +1,44 @@
+# SAIP Training Gateway
+# Usage: docker compose -f training/docker-compose.yml up -d
+
+services:
+  training-api:
+    build:
+      context: ..
+      dockerfile: training/Dockerfile
+    ports:
+      - "${SAIP_TRAINING_PORT:-8001}:8001"
+    env_file:
+      - ../.env
+    volumes:
+      - ../saip.yaml:/app/saip.yaml:ro
+      - training-data:/app/data
+    depends_on:
+      axolotl-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  axolotl-worker:
+    image: winglian/axolotl:main-latest
+    runtime: nvidia
+    env_file:
+      - ../.env
+    volumes:
+      - ../saip.yaml:/app/saip.yaml:ro
+      - training-data:/app/data
+      - model-cache:/root/.cache/huggingface
+      - adapter-output:/app/output
+    # Axolotl runs as a background worker; the API triggers jobs via shared volume
+    command: ["tail", "-f", "/dev/null"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  training-data:
+  model-cache:
+  adapter-output:
