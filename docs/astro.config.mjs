@@ -49,6 +49,7 @@ export default defineConfig({
             { label: 'Learning API', slug: 'reference/api-training' },
             { label: 'Adapter Definitions', slug: 'reference/adapter-definitions' },
             { label: 'Adapter Manifest', slug: 'reference/adapter-manifest' },
+            { label: 'Security Model', slug: 'reference/security-model' },
             { label: 'Cordis Plugins', slug: 'reference/cordis-plugins' },
             { label: 'Glossary', slug: 'reference/glossary' },
           ],

@@ -8,6 +8,7 @@
 
 import { Service } from 'cordis'
 import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import type { AdapterDefinition } from '@saip/shared'
 import { resolveJobLinkage, type JobRequest } from '../lib/job-linkage.js'
 
@@ -16,6 +17,8 @@ export interface LearningApiConfig {
   registeredStrategies?: string[]
   /** Resolve a caller id to their default training adapter (users[].adapters.training). */
   defaultAdapterFor?: (callerId?: string) => string | undefined
+  /** Optional auth middleware applied to mutating job routes (fail-closed enforcement). */
+  authMiddleware?: MiddlewareHandler<any>
 }
 
 declare module 'cordis' {
@@ -34,12 +37,14 @@ export class LearningApiService extends Service {
   private adapters: AdapterDefinition[]
   private strategies: string[]
   private defaultAdapterFor: (callerId?: string) => string | undefined
+  private authMiddleware?: MiddlewareHandler<any>
 
   constructor(ctx: any, config: LearningApiConfig = {}) {
     super(ctx, 'learningApi')
     this.adapters = config.adapters ?? []
     this.strategies = config.registeredStrategies ?? []
     this.defaultAdapterFor = config.defaultAdapterFor ?? (() => undefined)
+    this.authMiddleware = config.authMiddleware
     this.routes()
   }
 
@@ -48,6 +53,7 @@ export class LearningApiService extends Service {
 
   private routes() {
     const { app } = this
+    if (this.authMiddleware) (app as any).use('/v1/learning/jobs', this.authMiddleware)
 
     app.get('/v1/learning/strategies', (c) => {
       return c.json({ strategies: this.strategies })
@@ -55,8 +61,9 @@ export class LearningApiService extends Service {
 
     app.post('/v1/learning/jobs', async (c) => {
       const body = (await c.req.json().catch(() => ({}))) as JobRequest
-      // Caller identity resolution is injected; MVP uses an optional header.
-      const caller = c.req.header('x-saip-caller') || undefined
+      // Caller identity comes from the authenticated principal when present.
+      const principal = (c as any).get?.('principal') as { callerId?: string } | undefined
+      const caller = principal?.callerId ?? c.req.header('x-saip-caller') ?? undefined
       const result = resolveJobLinkage(body, {
         adapters: this.adapters,
         defaultAdapter: this.defaultAdapterFor(caller),

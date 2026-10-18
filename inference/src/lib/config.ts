@@ -9,11 +9,17 @@
 
 import { readFileSync, existsSync } from 'node:fs'
 import { parse as parseYaml } from 'yaml'
-import type { AdapterDefinition, UserEntry } from '@saip/shared'
+import type { AdapterDefinition, UserEntry, ApiTokenConfig } from '@saip/shared'
 
 export interface Message {
   role: string
   content: string
+}
+
+export interface SecurityConfig {
+  dev_mode: boolean
+  api_tokens: ApiTokenConfig[]
+  ui?: { admin_secret?: string }
 }
 
 export interface SaipRuntimeConfig {
@@ -31,6 +37,7 @@ export interface SaipRuntimeConfig {
     }
   }
   storage?: Record<string, unknown>
+  security: SecurityConfig
 }
 
 const DEFAULTS: SaipRuntimeConfig = {
@@ -38,6 +45,7 @@ const DEFAULTS: SaipRuntimeConfig = {
   users: [],
   adapters: [],
   inference: { port: 8000, maxLoras: 4, systemone: { enabled: false } },
+  security: { dev_mode: false, api_tokens: [] },
 }
 
 export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipRuntimeConfig {
@@ -70,5 +78,12 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
         }
       : undefined,
     storage: raw.storage,
+    security: {
+      dev_mode: !!raw.security?.dev_mode,
+      api_tokens: Array.isArray(raw.security?.api_tokens)
+        ? raw.security.api_tokens.map((t: any) => ({ caller: String(t.caller), token_secret: String(t.token_secret ?? t.secret ?? '') }))
+        : [],
+      ui: raw.security?.ui ? { admin_secret: raw.security.ui.admin_secret } : undefined,
+    },
   }
 }

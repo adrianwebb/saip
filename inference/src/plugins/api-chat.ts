@@ -8,6 +8,7 @@
 
 import { Service } from 'cordis'
 import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import type { AdapterDefinition, UserEntry } from '@saip/shared'
 import type { Message } from '../lib/config.js'
 import type { VllmBackend } from '../lib/backends.js'
@@ -20,6 +21,8 @@ export interface ApiChatConfig {
   vllm?: VllmBackend
   /** Latest promoted version per adapter name (from R2 index in prod). */
   latestVersion: (name: string) => number | undefined
+  /** Optional auth middleware applied to the chat route (fail-closed enforcement). */
+  authMiddleware?: MiddlewareHandler<any>
 }
 
 interface ChatBody {
@@ -46,7 +49,9 @@ export class ApiChatService extends Service {
 
   constructor(ctx: any, private cfg: ApiChatConfig) {
     super(ctx, 'apiChat')
-    this.app.post("/v1/chat/completions", (c) => this.handle(c))
+    const mw = this.app as any
+    if (cfg.authMiddleware) mw.use('/v1/chat/completions', cfg.authMiddleware)
+    this.app.post('/v1/chat/completions', (c) => this.handle(c))
   }
 
   private callerId(header?: string): string | undefined {
@@ -71,7 +76,10 @@ export class ApiChatService extends Service {
       return c.json({ error: { message: 'messages is required', code: 'invalid_request' } }, 400)
     }
 
-    const caller = this.callerId(c.req.header('authorization'))
+    // Prefer the authenticated principal (set by auth middleware); fall back to
+    // the raw bearer only when no auth provider is attached.
+    const principal = c.get?.('principal') as { callerId?: string } | undefined
+    const caller = principal?.callerId ?? this.callerId(c.req.header('authorization'))
     let serveId: string
     try {
       if (body.model) {

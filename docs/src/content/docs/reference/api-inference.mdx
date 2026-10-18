@@ -13,6 +13,20 @@ The API is organized into three surfaces:
 - **SystemOne** (`/v1/systemone/*`) — Grammar-constrained structured output generation
 - **Data API** (`/v1/data/*`) — Document upload, processing, session history, and feedback ingestion
 
+## Authentication
+
+Every mutating/serving route (chat, systemone, data) is protected by a pluggable
+[AuthProvider](/saip/reference/security-model/) configured under `security:` in `saip.yaml`.
+
+- Send `Authorization: Bearer <token>`; the token maps to a caller identity via named secrets.
+- The resolved caller selects their configured adapter automatically.
+- **Fail-closed:** unless `security.dev_mode` is explicitly `true`, a request without a valid bearer token is rejected with `401`. There is no silent fallback to an anonymous/default user on protected routes.
+- `GET /health` stays public for liveness checks.
+
+:::note[Development]
+Set `security.dev_mode: true` to authenticate all requests as a single `dev` principal during local development. Never use it in production.
+:::
+
 ## POST /v1/chat/completions
 
 OpenAI-compatible chat completion endpoint. Automatically selects the caller's configured adapter based on authentication context.

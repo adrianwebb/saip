@@ -1,0 +1,46 @@
+---
+title: Security Model
+description: Pluggable authentication for SAIP APIs, MCP access, and web UIs
+---
+
+SAIP exposes three kinds of surface, each protected through one pluggable seam so implementations can be swapped without touching feature code:
+
+| Surface | Auth mechanism | Provider |
+|---------|----------------|----------|
+| HTTP API (`/v1/*`) | Bearer token → caller identity | `BearerTokenAuth` |
+| MCP tools | Same bearer tokens as the API | `BearerTokenAuth` |
+| Web UI | Password / session guard | `PasswordSessionAuth` |
+
+## Configuration
+
+```yaml
+security:
+  dev_mode: false            # true ⇒ all requests authenticate as 'dev' (local only)
+  api_tokens:                # caller → bearer-token secret mapping
+    - caller: alice
+      token_secret: SAIP_TOKEN_ALICE   # SECRET NAME, never the value
+  ui:
+    admin_secret: SAIP_UI_ADMIN        # SECRET NAME guarding web UIs
+```
+
+:::caution[Secrets by name only]
+Committed config references secrets by **name**. Token values live in the shell environment / CI secret store and resolve at runtime via the shared `SecretsProvider`. A token whose named secret is absent simply cannot authenticate (it is skipped), rather than failing the whole request path.
+:::
+
+## Fail-closed default
+
+The default posture is deny: with `dev_mode: false` and no resolvable matching token, protected routes return `401`. There is **no silent fallback** to an anonymous or default user on authenticated routes — resolving "unknown caller → default user" applies only *after* a request has authenticated. `GET /health` is intentionally public for liveness probes.
+
+## Dev mode
+
+`security.dev_mode: true` installs `AllowAllDevAuth`, which authenticates every request as a single `dev` principal. This exists for local development and automated tests; it must never be enabled in a deployment reachable from untrusted networks.
+
+## Extending
+
+`AuthProvider` is an interface (`verifyApi(req): Principal | null`, optional `verifyUi`). Swap in OAuth2, OIDC, or a session-backed implementation behind the same seam without changing route handlers — the middleware attaches the resolved `Principal` to the request context and downstream code reads the authenticated caller from there.
+
+## Related
+
+- [Inference API](/saip/reference/api-inference/) — bearer usage on chat/systemone/data routes
+- [Learning API](/saip/reference/api-training/) — bearer usage on training job routes
+- [Manage Secrets guide](/saip/guides/manage-secrets/) — how secrets are provided at runtime

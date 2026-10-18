@@ -257,3 +257,31 @@ properties:
     items:
       type: object
     default: []
+
+  security:
+    type: object
+    description: Pluggable authentication config. Fail-closed unless dev_mode or tokens configured.
+    properties:
+      dev_mode:
+        type: boolean
+        default: false
+        description: When true, all API/UI requests authenticate as 'dev'. Never the default.
+      api_tokens:
+        type: array
+        default: []
+        description: Caller→bearer-token mappings; values resolved from named secrets, never stored here.
+        items:
+          type: object
+          required: [caller, token_secret]
+          properties:
+            caller:
+              type: string
+            token_secret:
+              type: string
+              description: Name of the secret holding this caller's token value.
+      ui:
+        type: object
+        properties:
+          admin_secret:
+            type: string
+            description: Name of the secret guarding web UI access.

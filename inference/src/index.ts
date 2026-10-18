@@ -7,10 +7,12 @@
  */
 
 import { Context } from 'cordis'
-import { AdapterRegistryService } from '@saip/shared/services'
+import { AdapterRegistryService, SecretsService } from '@saip/shared/services'
+import { EnvSecrets } from '@saip/shared'
 import { AdapterCompilerService } from './plugins/adapter-compiler.js'
 import { GatewayStateService } from './plugins/gateway-state.js'
 import { UserResolverService } from './plugins/user-resolver.js'
+import { AuthService } from './plugins/auth.js'
 import { ApiCoreService } from './plugins/api-core.js'
 import { ApiChatService } from './plugins/api-chat.js'
 import { ApiSystemOneService } from './plugins/api-systemone.js'
@@ -54,31 +56,38 @@ async function makeLatestVersion(
 }
 
 export async function createApp(opts: CreateAppOptions = {}) {
-  const config = opts.config ?? loadConfig(opts.configPath)
+  const loaded = opts.config ?? loadConfig(opts.configPath)
+  // Defensive: a hand-built config may omit newer optional sections.
+  const config: SaipRuntimeConfig = { ...loaded, security: loaded.security ?? { dev_mode: false, api_tokens: [] } }
   const storage = opts.storage ?? new MemoryStorage()
 
   const ctx = new Context()
   const latestVersion = await makeLatestVersion(storage, opts.latestVersion)
+
   // Shared services first so dependents can inject them via ctx.
   await ctx.plugin(AdapterRegistryService)
-  await ctx.plugin(AdapterCompilerService)
-  await ctx.plugin(GatewayStateService, { config, storage, vllm: opts.vllm })
-  await ctx.plugin(UserResolverService, { users: config.users })
-  await ctx.plugin(ApiCoreService, { modelBase: config.model.base, adapters: config.adapters })
-  await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
-  await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion })
-  await ctx.plugin(SessionCollectorService, { storage })
-  await ctx.plugin(DataDocumentsService, { storage })
-  await ctx.plugin(DataSessionsService, { storage })
-  await ctx.plugin(DataFeedbackService, { storage, rewardRange: config.training?.methods?.weighted_kto?.reward_range })
 
-  // Validate the loaded registry once at boot — CLI/inference/training must
-  // agree on validity, so an invalid registry fails loudly here.
+  // Validate the registry FIRST — an invalid registry must fail loudly before any
+  // dependent plugin boots (CLI/inference/training agree on validity).
   const validation = (ctx as any).adapterRegistry.validate({ adapters: config.adapters, users: config.users })
   if (!validation.valid) {
     const codes = validation.errors.map((e: any) => `${e.code}@${e.path}`).join(', ')
     throw new Error(`invalid adapter registry: ${codes}`)
   }
+
+  await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  await ctx.plugin(AdapterCompilerService)
+  await ctx.plugin(GatewayStateService, { config, storage, vllm: opts.vllm })
+  await ctx.plugin(UserResolverService, { users: config.users })
+  await ctx.plugin(AuthService, { security: config.security, secrets: (ctx as any).secrets })
+  const authMiddleware = (ctx as any).auth.require()
+  await ctx.plugin(ApiCoreService, { modelBase: config.model.base, adapters: config.adapters })
+  await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion, authMiddleware })
+  await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion, authMiddleware })
+  await ctx.plugin(SessionCollectorService, { storage })
+  await ctx.plugin(DataDocumentsService, { storage })
+  await ctx.plugin(DataSessionsService, { storage })
+  await ctx.plugin(DataFeedbackService, { storage, rewardRange: config.training?.methods?.weighted_kto?.reward_range })
 
   // Compose all API sub-apps into one server (registered last so every route
   // plugin already exists on ctx).

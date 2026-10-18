@@ -20,8 +20,10 @@ class FakeVllm implements VllmBackend {
 }
 
 async function boot(vllm: VllmBackend) {
+  // These tests exercise chat behavior, not auth → run under explicit dev mode.
+  const base = (await import('../src/lib/config.js')).loadConfig(repoConfig)
   const ctx = (await createApp({
-    configPath: repoConfig,
+    config: { ...base, security: { dev_mode: true, api_tokens: [] } },
     vllm,
     latestVersion: (n) => ({ general: 42, coding: 18, 'default-agent': 3 }[n]),
   })) as any
