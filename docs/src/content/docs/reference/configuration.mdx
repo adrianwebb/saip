@@ -301,13 +301,49 @@ plugins: []
 
 ## Environment Variable Interpolation
 
-Fields marked with ✅ in the tables above support `${ENV_VAR}` syntax. At load time, each `${VAR}` token is replaced with the value of the corresponding environment variable. Missing variables cause a startup error.
+`saip.yaml` is interpolated **after parsing and before any consumer sees it**, over every
+string value in the document. Missing required variables fail startup, naming both the
+variable and the path where it appeared.
 
-Supported fields:
-- `storage.r2.bucket`
-- `storage.r2.endpoint`
+| Syntax | Behavior |
+|--------|----------|
+| `${VAR}` | Replaced with `VAR`'s value. **If unset or empty, startup fails**: `missing variable: VAR (at storage.r2.bucket)`. |
+| `${VAR:-default}` | `VAR` if set and non-empty, otherwise `default`. Never an error. |
+| `${VAR:?message}` | `VAR` if set and non-empty; otherwise startup fails printing `message`. |
 
-All other fields are literal values. Secret values (API keys, tokens) should be referenced by their env-var *name* (e.g. `token_env: "SAIP_HF_TOKEN"`) rather than interpolated directly.
+Rules that are part of the contract:
+
+- **Single pass, no nesting.** `${VAR_${OTHER}}` is not a feature. It is left as literal text,
+  so it fails the `${VAR}` check above instead of silently resolving to something surprising.
+- **Embedded and whole-string forms both work**: `bucket: "${SAIP_R2_BUCKET}"` and
+  `endpoint: "https://${SAIP_R2_ACCOUNT}.r2.cloudflarestorage.com"` interpolate identically.
+- **Non-string scalars are untouched.** Numbers, booleans, and nulls are never stringified.
+- **Secrets belong by name, not by value.** Interpolating a credential into `saip.yaml` puts it
+  in a file that gets read into memory and frequently logged. Reference the *name*
+  (`token_env: "SAIP_HF_TOKEN"`, `key_secret: SAIP_SSH_PRIVATE_KEY`) and let the secrets layer
+  resolve it — see [Managing Secrets](/saip/guides/manage-secrets/).
+
+### Where the values come from
+
+Resolution order, highest first:
+
+1. **The parent shell environment.** It always wins, so `SAIP_R2_BUCKET=x saip status`
+   overrides anything on disk, and CI or a secrets store can inject without touching files.
+2. **A `.env` file**, loaded with `override: false` so it only fills variables not already set.
+   This is what makes native CLI and gateway runs work without exporting anything by hand.
+   Resolved from `--env <path>`, then `$SAIP_ENV_FILE`, then `./.env`; absence is not an error.
+3. **Docker Compose**, which reads `env_file` for containerized runs and inherits the calling
+   shell. Compose performs its own `${VAR}` substitution on the compose file itself; SAIP
+   interpolates `saip.yaml` after the process starts, so the two never compete.
+
+`.env` is gitignored. Never commit one.
+
+:::note[Fail-closed, deliberately]
+An unset variable is a startup error, not an empty string. Empty-string credentials produce
+requests that fail later with an opaque `403 Forbidden` from the storage provider — far from
+the misconfiguration that caused them, and the exact class of quiet failure this file has had
+to be corrected for before.
+:::
 
 ## Inference Gateway → vLLM Engine
 
