@@ -9,7 +9,6 @@
 
 import { Service } from 'cordis'
 import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
 import type { AdapterDefinition } from './types.js'
 import {
   validateRegistry,
@@ -25,6 +24,7 @@ import {
   type HostValidationError,
   type SecretsProvider,
 } from './hosting.js'
+import { loadYamlConfig } from './config-source.js'
 import {
   validateProfiles,
   resolveProfile,
@@ -111,7 +111,9 @@ export class HostRegistryService extends Service {
     if (config.inline) {
       this.hosts = config.inline.hosts ?? []
     } else if (config.path && existsSync(config.path)) {
-      this.hosts = (parseYaml(readFileSync(config.path, 'utf8'))?.hosts ?? []) as HostConfig[]
+      // Same loader as saip.yaml: hosts.yaml may carry ${VAR} endpoints that must not be
+      // treated as literal hostnames.
+      this.hosts = ((loadYamlConfig<{ hosts?: unknown }>(config.path).hosts ?? []) as HostConfig[])
     }
   }
 
