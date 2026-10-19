@@ -25,6 +25,7 @@ import {
   type SecretsProvider,
 } from './hosting.js'
 import { loadYamlConfig } from './config-source.js'
+import { defaultSecretsProvider } from './secrets-store.js'
 import {
   validateProfiles,
   resolveProfile,
@@ -94,7 +95,7 @@ export class SecretsService extends Service {
 
   constructor(ctx: any, config: { provider?: SecretsProvider } = {}) {
     super(ctx, SECRETS_SERVICE)
-    this.provider = config.provider ?? new EnvSecrets()
+    this.provider = config.provider ?? defaultSecretsProvider()
   }
 
   get(name: string): Promise<string | undefined> { return this.provider.get(name) }
