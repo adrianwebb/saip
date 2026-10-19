@@ -21,8 +21,9 @@ import downPlugin from './commands/down.js'
 import statusPlugin from './commands/status.js'
 import deployPlugin from './commands/deploy.js'
 import profilesPlugin from './commands/profiles.js'
+import configPlugin from './commands/config.js'
 
-const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin, deployPlugin, profilesPlugin]
+const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin, deployPlugin, profilesPlugin, configPlugin]
 
 export async function buildProgram(): Promise<Command> {
   const ctx = new Context()
@@ -44,9 +45,26 @@ export async function buildProgram(): Promise<Command> {
   for (const spec of ctx.commandRegistry!.list()) {
     const cmd = new Command(spec.name).description(spec.description)
     for (const opt of spec.options ?? []) cmd.option(opt.flag, opt.description)
-    cmd.action(async (options: Record<string, unknown>) => {
+    // `.argument()` describes ONE parameter; a multi-word spec must go through `.arguments()`.
+    // Passing '<action> [name]' to .argument() registers a single argument and then rejects every
+    // two-word call — which only a real CLI invocation caught, not the unit suite.
+    if (spec.positional) {
+      const specs = spec.positional.trim().split(/\s+(?=[<\[])/)
+      if (specs.length === 1) cmd.argument(specs[0], spec.positionalDescription ?? '')
+      else cmd.arguments(specs.join(' '))
+    }
+    cmd.action(async (...argv: unknown[]) => {
+      // Commander's action signature is (…declaredArgs, options, command). Taking the last
+      // element yields the Command object, not the options — which silently made every flag
+      // read as falsy. Detect the trailing Command by its opts() method instead of counting
+      // from the end, so this holds whether or not a command declares positionals.
+      const last = argv[argv.length - 1]
+      const hasCommand = typeof (last as { opts?: unknown })?.opts === 'function'
+      const head = hasCommand ? argv.slice(0, -1) : argv
+      const options = (head[head.length - 1] ?? {}) as Record<string, unknown>
+      const positional = (spec.positional ? head.slice(0, -1) : []).map(String)
       try {
-        await spec.action(ctx, options)
+        await spec.action(ctx, options ?? {}, positional)
       } catch (err: any) {
         // Fail closed with a readable line instead of a raw stack trace.
         console.error(`[saip] error: ${err?.message ?? err}`)

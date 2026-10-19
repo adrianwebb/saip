@@ -11,7 +11,8 @@ const spec: CommandSpec = {
     { flag: '--target <name>', description: 'Destination host from hosts.yaml (required)' },
     { flag: '--source <name>', description: 'Source host (default: "default")' },
     { flag: '--dry-run', description: 'Print the plan without applying (default-safe)' },
-    { flag: '-p, --param <kv...>', description: 'Parameter as key=value (repeatable)' },
+    { flag: '-p, --param <kv...>', description: 'Parameter as key=value, or key=secret:NAME to reference a stored secret (repeatable)' },
+    { flag: '--reveal-params', description: 'Print parameter values in the plan (they are masked by default)' },
   ],
   action: async (ctx: Context, options) => {
     const targetName = options.target as string | undefined
@@ -22,7 +23,7 @@ const spec: CommandSpec = {
     const target = withHost(ctx, targetName)
     const params = parseParams(options.param as string[] | undefined)
 
-    const plan = renderDeployPlan(source, target, params)
+    const plan = renderDeployPlan(source, target, params, { revealParams: !!options.revealParams })
     console.log(`[saip] ${plan.detail}`)
 
     if (options.dryRun) { console.log('[saip] dry-run: nothing applied'); return }

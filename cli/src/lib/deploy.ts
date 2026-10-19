@@ -18,8 +18,27 @@ export function parseParams(list: string[] | undefined): Record<string, string> 
 }
 
 /** Build a human-readable plan describing what deploying would do. */
-export function renderDeployPlan(source: HostConfig, target: HostConfig, params: Record<string, string>): DeployResult {
-  const paramStr = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ')
+/**
+ * `secret:NAME` marks a reference to a secret rather than its value. Names are not secrets —
+ * printing them masked would make the plan unreadable without protecting anything.
+ */
+const isRef = (v: string): boolean => v.startsWith('secret:')
+
+/**
+ * The plan is a log surface: it is printed, pasted into issues, and captured by CI. Values are
+ * masked by default because anything passed as a process argument is already visible in `ps` and
+ * shell history, and a plan that echoes it widens the exposure. `revealParams` exists for
+ * non-secret parameters, and is opt-in rather than default so "safe by accident" holds.
+ */
+export function renderDeployPlan(
+  source: HostConfig,
+  target: HostConfig,
+  params: Record<string, string>,
+  opts: { revealParams?: boolean } = {},
+): DeployResult {
+  const paramStr = Object.entries(params)
+    .map(([k, v]) => `${k}=${isRef(v) || opts.revealParams ? v : '\u2022\u2022\u2022\u2022'}`)
+    .join(', ')
   const detail =
     `deploy plan: ${source.name} (${source.kind}) → ${target.name} (${target.kind})` +
     (paramStr ? ` · params: ${paramStr}` : '')
