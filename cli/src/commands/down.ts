@@ -1,12 +1,18 @@
-import { Command } from 'commander'
+import type { Context } from 'cordis'
+import type { CommandSpec } from '../lib/command-registry.js'
+import { runVerb } from '../lib/host-command.js'
 
-export const downCommand = new Command('down')
-  .description('Shut down all SAIP services')
-  .action(async () => {
+const spec: CommandSpec = {
+  name: 'down',
+  description: 'Shut down all SAIP services on a host',
+  options: [{ flag: '--host <name>', description: 'Target host from hosts.yaml (default: SAIP_HOST or "default")' }],
+  action: async (ctx: Context, options) => {
     console.log(`[saip] Shutting down all services...`)
-    console.log(`[saip] TODO: docker compose down for both services`)
-    // Future implementation:
-    // 1. docker compose -f inference/docker-compose.yml down
-    // 2. docker compose -f training/docker-compose.yml down
-    // 3. Report confirmation
-  })
+    await runVerb(ctx, 'down', options.host as string | undefined)
+  },
+}
+
+export default {
+  inject: ['commandRegistry'] as const,
+  apply(ctx: Context) { ctx.commandRegistry!.register(spec) },
+}

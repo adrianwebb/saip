@@ -125,6 +125,24 @@ users:
 
 Adrian's requests resolve transparently to the compiled `northstar-architect` artifact. His project experience flows into `treeseed-project` sessions/feedback; documents feed `coding`; each moves at its own pace; every composite promotion records exactly which component versions produced it.
 
+## Validation Contract
+
+The registry is validated by a single implementation in `@saip/shared` (`validateRegistry`), consumed identically by the CLI, inference gateway, and training gateway — so all three agree on what a valid registry is. Rules:
+
+| Rule | Error code |
+|------|-----------|
+| An entry must define **exactly one** of `training` or `composite` | `leaf_or_composite` |
+| Leaf entries require `training.strategy` and non-empty `training.data_scopes` | `missing_linkage` |
+| `scope: project` requires a `project` field | `missing_project` |
+| Every composite component must reference an existing adapter name | `unknown_component` |
+| A composite may not reference itself | `self_reference` |
+| Composite references must be acyclic (no transitive cycles) | `cycle` |
+| Component weights must be finite and ≥ 0 | `invalid_weight` |
+| A composite needs at least two components | `too_few_components` |
+| Users' `adapters.inference` / `adapters.training` must reference existing names | `unknown_adapter_ref` |
+
+Validation returns structured `{ path, code, message }` errors (not thrown exceptions), so callers can render them. It passes against the shipped example above. The service wrapper (`AdapterRegistryService`) exposes both raw validation and resolved views used by compilation and job linkage.
+
 ## Related
 
 - [Configure Adapters guide](/saip/guides/configure-adapters/) — authoring walkthrough

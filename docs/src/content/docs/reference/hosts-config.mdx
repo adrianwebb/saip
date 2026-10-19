@@ -1,0 +1,92 @@
+---
+title: Hosts Configuration
+description: Reference for hosts.yaml — the host registry that drives local and cloud deployment
+---
+
+`hosts.yaml` (repo root) declares every machine SAIP can deploy to or run on. It is loaded and validated by `@saip/shared`'s `HostRegistryService`, so the CLI, inference gateway, and training gateway all enforce identical rules. A committed template ships as [`hosts.example.yaml`](https://github.com/adrianwebb/saip/blob/staging/hosts.example.yaml).
+
+:::caution[Secrets by name only]
+Never put secret values in `hosts.yaml`. Fields like `key_secret` and entries under `secrets:` hold **secret names** resolved at runtime via the SecretsProvider (shell env / CI store). This is what makes the file safe to commit.
+:::
+
+## Top-level shape
+
+```yaml
+hosts:
+  - <HostConfig>...
+```
+
+At least one host must cover the `inference` role and one must cover the `training` role across the whole file (`both` counts as both).
+
+## HostConfig fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique host name; used by `--host <name>` and `deploy --target <name>` |
+| `kind` | `local` \| `hyperstack` | Yes | Selects the DeploymentProvider |
+| `role` | `inference` \| `training` \| `both` | Yes | Which stack(s) this host runs |
+| `gpu_node` | string | No | Free-form node label (e.g. `local`) |
+| `compose_dir` | string | No (local) | Repo/compose base directory on the host |
+| `ssh` | object | hyperstack | How to reach the host (see below) |
+| `tofu` | object | hyperstack | OpenTofu workspace + vars for provisioning |
+| `secrets` | `map<string, string>` | No | Reference-name → **secret name** mapping |
+
+### `ssh`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `host` | string | IP or hostname (often an OpenTofu output) |
+| `user` | string | SSH user (e.g. `ubuntu`) |
+| `key_secret` | string | Name of the secret holding the private key |
+
+### `tofu`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workspace` | string | Path to the OpenTofu module (e.g. `infra/tofu/hyperstack`) |
+| `vars` | `map<string, string>` | Default `-var` values passed on apply |
+
+## Validation rules
+
+`validateHostRegistry` returns structured `{path, code, message}` errors for:
+
+| Code | Trigger |
+|------|---------|
+| `duplicate_host` | two hosts share a name |
+| `invalid_kind` | kind not in `local\|hyperstack` |
+| `missing_role` | role absent or invalid (also used for missing name) |
+| `host_unreachable_config` | hyperstack host has neither `tofu.workspace` nor `ssh` |
+| `role_coverage` | file does not cover both inference and training roles |
+| `invalid_secret_ref` | a `secrets` entry is empty/non-string |
+
+The registry is validated once at boot in each consumer; an invalid registry fails loudly before dependent plugins start.
+
+## Example
+
+```yaml
+hosts:
+  - name: default
+    kind: local
+    role: both
+    compose_dir: .
+
+  - name: cloud-inference
+    kind: hyperstack
+    role: inference
+    tofu: { workspace: infra/tofu/hyperstack }
+    ssh: { host: "203.0.113.10", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
+
+  - name: cloud-training
+    kind: hyperstack
+    role: training
+    tofu: { workspace: infra/tofu/hyperstack }
+    ssh: { host: "203.0.113.11", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
+```
+
+## Related
+
+- [Hosting Model explanation](/saip/explanation/hosting/) — why the seams look like this
+- [Deploy to Hyperstack (cloud)](/saip/guides/deploy-hyperstack-cloud/) — walkthrough
+- [CLI Reference](/saip/guides/cli-reference/) — `--host` targeting

@@ -103,5 +103,18 @@ training:
         2: 1.0
         3: 1.5
 
+# Security — pluggable auth. Default fail-closed: with dev_mode false and no
+# api_tokens, HTTP API routes reject unauthenticated requests (401). Token VALUES
+# are never stored here; each entry names a secret resolved at runtime.
+security:
+  dev_mode: false
+  # Map callers to bearer-token secrets. Populate for real deployments; the
+  # shipped example is inert until SAIP_TOKEN_* secrets exist in the environment.
+  api_tokens: []
+  #  - caller: alice
+  #    token_secret: SAIP_TOKEN_ALICE
+  ui:
+    admin_secret: SAIP_UI_ADMIN   # SECRET NAME guarding any web UI
+
 # Cordis plugin loading
 plugins: []
