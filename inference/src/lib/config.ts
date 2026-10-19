@@ -10,6 +10,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { parse as parseYaml } from 'yaml'
 import type { AdapterDefinition, UserEntry, ApiTokenConfig } from '@saip/shared'
+import type { ProfileMap } from '@saip/shared'
 
 export interface Message {
   role: string
@@ -22,8 +23,22 @@ export interface SecurityConfig {
   ui?: { admin_secret?: string }
 }
 
+export interface ModelConfig {
+  base: string
+  quantization?: string
+  revision?: string
+  dtype?: string
+  max_model_len?: number
+  language_model_only?: boolean
+  kv_cache_dtype?: string
+}
+
 export interface SaipRuntimeConfig {
-  model: { base: string }
+  model: ModelConfig
+  /** Active service profile name; undefined means auto-resolve from the probed GPU. */
+  profile?: string
+  /** Declared service profiles (hardware contract) — validated by `ProfileService`. */
+  profiles: ProfileMap
   users: UserEntry[]
   adapters: AdapterDefinition[]
   inference: {
@@ -42,6 +57,7 @@ export interface SaipRuntimeConfig {
 
 const DEFAULTS: SaipRuntimeConfig = {
   model: { base: '' },
+  profiles: {},
   users: [],
   adapters: [],
   inference: { port: 8000, maxLoras: 4, systemone: { enabled: false } },
@@ -61,8 +77,21 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
 
   const inf = raw.inference ?? {}
   const kto = raw.training?.methods?.weighted_kto
+  const m = raw.model ?? {}
   return {
-    model: { base: raw.model?.base ?? '' },
+    model: {
+      base: m.base ?? '',
+      quantization: m.quantization,
+      revision: m.revision,
+      dtype: m.dtype,
+      max_model_len: m.max_model_len === undefined ? undefined : Number(m.max_model_len),
+      language_model_only: m.language_model_only === undefined ? undefined : !!m.language_model_only,
+      kv_cache_dtype: m.kv_cache_dtype,
+    },
+    profile: raw.profile === undefined ? undefined : String(raw.profile),
+    // Passed through unvalidated: ProfileService (shared) owns profile semantics, so the
+    // loader stays a parser and every package can validate the same way.
+    profiles: raw.profiles && typeof raw.profiles === 'object' ? (raw.profiles as ProfileMap) : {},
     users: Array.isArray(raw.users) ? raw.users : [],
     adapters: Array.isArray(raw.adapters) ? raw.adapters : [],
     inference: {

@@ -16,7 +16,7 @@ describe('ApiCoreService routes', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.status).toBe('ok')
-    expect(body.model).toBe('Qwen/Qwen3.5-4B')
+    expect(body.model).toBe('QuantTrio/Qwen3.5-4B-AWQ')
   })
 
   it('GET /v1/models lists registry adapters', async () => {

@@ -6,12 +6,62 @@ platform:
   name: saip
   version: "0.1.0"
 
-# Base model configuration
+# Base model configuration.
+# `base` must name a checkpoint ALREADY quantized in `quantization` — vLLM cannot AWQ-quantize
+# a BF16 repo at load time. There is no official Qwen AWQ build of this model, so the
+# reference checkpoint is the community QuantTrio build, pinned by revision.
+# Hardware-dependent knobs (max_model_len, kv dtype, eager/graphs) belong to the active
+# profile below, not here; see docs/src/content/docs/reference/hardware-profiles.mdx.
 model:
-  base: "Qwen/Qwen3.5-4B"
+  base: "QuantTrio/Qwen3.5-4B-AWQ"
+  revision: "32c292e3a73afe1138518180b1b6d2868c980ee2"
   quantization: "awq"
-  max_model_len: 65536
-  dtype: "float16"
+  dtype: "auto"
+  language_model_only: true
+  kv_cache_dtype: "auto"
+
+# Service profiles — the hardware contract. Omit `profile` to auto-resolve against the
+# probed GPU; resolution FAILS CLOSED (exit 2) when no tier fits rather than letting the
+# engine OOM later. `gpu_memory_utilization` is derived from vram_ceiling_gib over the
+# card's TOTAL memory and gated on measured FREE memory, so it is never set here.
+profile: inference-8gb
+
+profiles:
+  # Measured on an RTX 3080 Laptop (SM 8.6): 6,988 MiB peak, coherent generation,
+  # working tool calls, 4 LoRA slots loaded.
+  inference-8gb:
+    description: "Serve only; 8 GB consumer GPU. CUDA graphs unaffordable (~2.65 GiB)."
+    min_vram_gib: 8
+    min_capability: 7.5
+    vram_ceiling_gib: 7.0
+    engine:
+      max_model_len: 24576
+      kv_cache_dtype: auto
+      language_model_only: true
+      enforce_eager: true
+      enable_lora: true
+      max_loras: 4
+      max_lora_rank: 16
+  # Same card serves and trains, time-shared via awake/sleep — never concurrently.
+  # bf16 LoRA is the documented path: 4-bit QLoRA on Qwen3.5 is discouraged upstream.
+  full-loop-12gb:
+    description: "Serve and fine-tune locally; 12 GB card (Ampere or newer)."
+    min_vram_gib: 12
+    min_capability: 8.0
+    vram_ceiling_gib: 11.0
+    engine:
+      max_model_len: 65536
+      kv_cache_dtype: auto
+      language_model_only: true
+      enforce_eager: false
+      enable_lora: true
+      max_loras: 4
+      max_lora_rank: 16
+    training:
+      precision: bf16
+      sequence_len: 2048
+      gradient_checkpointing: true
+      optimizer: adamw_bnb_8bit
 
 # LoRA / adapter defaults
 adapter:
