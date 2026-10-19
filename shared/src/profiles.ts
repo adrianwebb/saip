@@ -37,6 +37,18 @@ export interface EngineArgs {
   max_loras?: number
   max_lora_rank?: number
   language_model_only?: boolean
+  /**
+   * Concurrent decode sequence ceiling. On hybrid gated-deltanet models every sequence
+   * reserves one fixed-size Mamba cache block (48 MiB here) regardless of its length, and
+   * when CUDA graphs are enabled vLLM refuses to start if the default 256 exceeds the
+   * blocks the memory budget can hold:
+   *
+   *   ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (236)
+   *
+   * Measured on the 12 GB tier at 65,536-token context. Set below the available blocks so
+   * the engine boots; it also caps practical concurrency, which is what costs memory here.
+   */
+  max_num_seqs?: number
 }
 
 export interface TrainingArgs {
@@ -74,6 +86,7 @@ export type ProfileErrorCode =
   | 'invalid_ceiling'
   | 'ceiling_exceeds_tier'
   | 'invalid_max_model_len'
+  | 'invalid_max_num_seqs'
   | 'training_capability_unsupported'
   | 'unknown_profile'
   | 'insufficient_vram'
@@ -114,24 +127,54 @@ export class FakeGpuProbe implements GpuProbe {
  * device name, because the name lies: this class was built against a card reporting
  * "NVIDIA GeForce RTX 3080 Laptop GPU" whose lspci string reads "8GB/16GB" — and the only
  * way to know which one you have is to ask.
+ *
+ * Memory here is what the driver reports (16384 MiB on that card = 16.0 GiB), which is a
+ * few percent above what CUDA itself hands out (torch reports 15.58 GiB usable). The
+ * ceiling arithmetic runs against the driver figure and the headroom term absorbs the
+ * difference; a card that cannot actually hold the ceiling fails the free-memory gate.
  */
 export class NvidiaSmiProbe implements GpuProbe {
   constructor(private readonly exec: (cmd: string, args: string[]) => Promise<string> = defaultExec) {}
 
   async probe(): Promise<GpuInfo> {
-    const out = await this.exec('nvidia-smi', [
-      '--query-gpu=name,memory.total,memory.free,compute_cap',
-      '--format=csv,noheader,nounits',
-      '--idx=0',
-    ])
-    const [name, totalMiB, freeMiB, cap] = out.split(',').map((s) => s.trim())
+    let out: string
+    try {
+      // `-i` selects the device. There is no `--idx` option; passing one makes nvidia-smi
+      // exit non-zero with "Option --idx=0 is not recognized".
+      out = await this.exec('nvidia-smi', [
+        '--query-gpu=name,memory.total,memory.free,compute_cap',
+        '--format=csv,noheader,nounits',
+        '-i',
+        '0',
+      ])
+    } catch (err) {
+      throw new GpuProbeError(
+        `nvidia-smi failed — is an NVIDIA driver and the GPU visible to this process? ` +
+        `(${(err as Error).message.split('\n')[0]})`,
+      )
+    }
+    const [name, totalMiB, freeMiB, cap] = out.trim().split(',').map((s) => s.trim())
     const gib = (miB: number) => Number((miB / 1024).toFixed(2))
+    const total = Number.parseFloat(totalMiB)
+    const capability = Number.parseFloat(cap)
+    if (!Number.isFinite(total) || !Number.isFinite(capability)) {
+      throw new GpuProbeError(`could not parse nvidia-smi output: ${JSON.stringify(out.trim().slice(0, 120))}`)
+    }
     return {
       name: name ?? 'unknown GPU',
-      total_gib: gib(Number.parseFloat(totalMiB)),
+      total_gib: gib(total),
       free_gib: gib(Number.parseFloat(freeMiB)),
-      capability: Number.parseFloat(cap),
+      capability,
     }
+  }
+}
+
+/** The GPU could not be read at all — distinct from "read it, and it is too small". */
+export class GpuProbeError extends Error {
+  readonly code = 'gpu_unavailable'
+  constructor(message: string) {
+    super(message)
+    this.name = 'GpuProbeError'
   }
 }
 
@@ -226,6 +269,11 @@ export function validateProfiles(profiles: ProfileMap): ProfileValidationError[]
     const mml = prof.engine?.max_model_len
     if (mml !== undefined && (!Number.isInteger(mml) || mml < 1024)) {
       errors.push({ path: `${p}.engine.max_model_len`, code: 'invalid_max_model_len', message: `max_model_len must be an integer >= 1024 (got ${mml})` })
+    }
+
+    const mns = prof.engine?.max_num_seqs
+    if (mns !== undefined && (!Number.isInteger(mns) || mns < 1)) {
+      errors.push({ path: `${p}.engine.max_num_seqs`, code: 'invalid_max_num_seqs', message: `max_num_seqs must be a positive integer (got ${mns})` })
     }
 
     // bf16 training requires Ampere (compute capability 8.0); transformers refuses below it.
@@ -369,6 +417,7 @@ export function renderVllmArgs(profile: ServiceProfile, opts: RenderOptions): st
   if (dtype !== 'auto') argv.push('--kv-cache-dtype', dtype)
   argv.push('--gpu-memory-utilization', opts.utilization.toFixed(4))
   if (e.language_model_only) argv.push('--language-model-only')
+  if (e.max_num_seqs !== undefined) argv.push('--max-num-seqs', String(e.max_num_seqs))
   if (e.enforce_eager) argv.push('--enforce-eager')
   if (e.enable_lora) {
     argv.push('--enable-lora')

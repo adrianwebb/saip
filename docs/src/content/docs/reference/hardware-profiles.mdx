@@ -34,9 +34,54 @@ different vLLM version — see [Version drift](#version-drift).
 | **`kv_cache_dtype`** | `auto` (16-bit) | `auto` (16-bit) |
 | **`language_model_only`** | `true` | `true` |
 | **`enforce_eager`** | `true` | `false` |
+| **`max_num_seqs`** | unset (engine default) | **128** — see [Mamba cache blocks](#mamba-cache-blocks-the-concurrency-ceiling) |
 | **`enable_lora` / `max_loras` / `max_lora_rank`** | `true` / 4 / 16 | `true` / 4 / 16 |
-| **Measured peak** | 6,988 MiB | not yet measured (see [Open items](#open-items)) |
+| **Measured peak** | 6,988 MiB (6.82 GiB) | 10,150 MiB (9.91 GiB) |
+| **Measured KV capacity** | 25,967 tokens | 104,057 tokens |
+| **Verified on** | RTX 3080 Laptop, vLLM 0.31.0 | RTX 3080 Laptop, vLLM 0.31.0 |
 | **Training** | not supported | bf16 LoRA, `sequence_len` 2048 |
+
+Both tiers were booted through the shipped compose stack and checked for coherent
+generation, a working `tool_calls` round-trip, and loaded adapter slots — not merely for a
+successful startup.
+
+### Mamba cache blocks: the concurrency ceiling
+
+`full-loop-12gb` requires `max_num_seqs: 128`, and that is not a tuning preference. With
+CUDA graphs enabled at 65,536-token context the engine refuses to start:
+
+```
+ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (236). Each decode
+sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please
+lower max_num_seqs to at most 236 or increase gpu_memory_utilization.
+```
+
+This is the fixed per-sequence delta-net state (~48 MiB, see
+[Why this model fits at all](#why-this-model-fits-at-all)) asserting itself: every
+concurrent sequence pins one block *whatever its length*, so the block count is fixed by the
+memory budget and can fall below vLLM's default of 256. Two consequences worth
+internalizing:
+
+- **Concurrency, not context length, is the scarce resource on this architecture.** A
+  hundred short requests cost about what a hundred long ones do.
+- The limit moves with the ceiling, context length, and LoRA slots. 128 is the measured
+  value for this tier; lower it further if you shrink the ceiling.
+
+### Utilization has to be derived, or the tier thrashes
+
+Because vLLM gates on *free* memory, starting a stack while another engine holds the card
+fails with a named deficit instead of launching a crash loop:
+
+```
+[engine-args] insufficient_free_vram: profile ceiling is 11 GiB but only 2.67 GiB is free
+(needs 11 GiB + 0.5 GiB headroom on a 16 GiB card). Close other GPU users, or select a
+smaller profile.
+```
+
+Observed directly: a container started with a profile the card could not hold restarted
+three times in minutes while continuing to reserve VRAM. Rendering the arguments at deploy
+time from a live probe — rather than committing a utilization constant — is what converts
+that failure into a message you can act on before anything starts.
 
 A profile is selected by name, or resolved automatically from a GPU probe:
 
@@ -146,7 +191,6 @@ Rendered argv for `inference-8gb` (the shape the compose stack passes to vLLM):
 vllm serve QuantTrio/Qwen3.5-4B-AWQ \
   --served-model-name saip-instruct saip-systemone \
   --max-model-len 24576 \
-  --kv-cache-dtype auto \
   --gpu-memory-utilization <derived> \
   --language-model-only \
   --enforce-eager \
@@ -154,6 +198,9 @@ vllm serve QuantTrio/Qwen3.5-4B-AWQ \
   --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --trust-remote-code --host 0.0.0.0 --port 8000
 ```
+
+(`--kv-cache-dtype` is omitted when it is `auto`, vLLM's own default. `full-loop-12gb`
+drops `--enforce-eager`, adds `--max-num-seqs 128`, and raises the ceiling to 11 GiB.)
 
 Implementation constraints that have broken boots before:
 
@@ -313,10 +360,16 @@ unreviewed bump cannot silently re-enable a corrupting configuration.
 
 ## Open items
 
-- `full-loop-12gb` peak VRAM is **not yet measured on a 12 GB-class card**; the ceiling is
-  set from the 8 GB decomposition plus graph headroom. First measurement should replace
-  this bullet.
+- **Both tiers were measured on one card** (RTX 3080 Laptop, 16 GiB, SM 8.6) by setting the
+  ceiling below what the card holds. `full-loop-12gb` has not been run on an actual 12 GB
+  card, where ~11 GiB of *free* memory at launch leaves less slack than the reference run
+  had. Re-measure before citing it as qualified.
 - 32,768-token context with four LoRA slots active exceeds a 7.0 GiB ceiling (needs 1.11
   GiB of KV against 0.94 GiB available) — the reason `inference-8gb` specifies 24,576.
 - Whether widening `target_modules` to the delta-net projections is worth its VRAM and
   adapter-size cost is unmeasured.
+- The `max_num_seqs` ceiling is derived from one (ceiling, context, slots) combination; the
+  general formula for available Mamba blocks is not documented by vLLM.
+- Training on the 12 GB tier is **specified, not yet executed**: bf16 LoRA on Qwen3.5-4B has
+  not been run here, so its VRAM figure comes from Unsloth's published ~10 GB at 2048
+  tokens rather than from this stack.

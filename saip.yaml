@@ -54,6 +54,12 @@ profiles:
       kv_cache_dtype: auto
       language_model_only: true
       enforce_eager: false
+      # Measured on an RTX 3080 Laptop: with CUDA graphs on and 65,536 context, the memory
+      # budget holds 236 Mamba cache blocks, and vLLM refuses to start when its default
+      # max_num_seqs (256) exceeds that. Every sequence pins one fixed-size delta-net block
+      # (48 MiB here) regardless of length — this is the concurrency cost of hybrid
+      # attention, enforced at boot.
+      max_num_seqs: 128
       enable_lora: true
       max_loras: 4
       max_lora_rank: 16

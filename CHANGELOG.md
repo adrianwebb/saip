@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- shared: service profile seam — `profiles.ts` (tier validation, `GpuProbe` interface with `NvidiaSmiProbe`/`FakeGpuProbe`, profile resolution, derived `gpu_memory_utilization`, vLLM argv rendering) and the `ProfileService` Cordis service, so CLI, inference, and training resolve identical hardware contracts from one probe; capability-gates KV dtypes and fails closed with a named deficit instead of an OOM (#53)
+- inference: profile-driven engine launch — `vllm.Dockerfile` (pinned vLLM 0.31.0, overridable base, shell-interpolated args) and `scripts/generate-engine-args.ts`, which probes the host GPU and renders `.engine-args.env` for compose; documented both service tiers and booted each on real hardware (#53)
+
 ### Fixed
+- inference: the compose stack could not start — it passed `--quantization awq` to a BF16 base checkpoint, omitted `--gpu-memory-utilization` entirely, requested 65,536 context on any card, included a malformed `--lora-modules ""`, used the unpinned `latest` image, and claimed host port 8080 which collides with an existing local model server. Replaced with profile-rendered arguments (#53)
+- inference/config: `loadConfig` read only `model.base`, so quantization, revision, dtype, KV dtype, `language_model_only`, and the whole `profiles` block never reached the gateway; now carried through (#53)
 - docs: hardware requirements corrected against measured evidence. The previous "~7 GB VRAM" figure appeared in nine places and was unachievable with the shipped configuration; tiers are now 8 GB (inference) and 12 GB (local fine-tuning), with compute-capability floors (7.5 inference, 8.0 for bf16 training) (#53)
 - docs: removed the instruction to set `SAIP_GPU_MEMORY_UTILIZATION=0.85` (a variable no code read) and the claim that vLLM defaults to 0.90 (it is 0.92); utilization is documented as derived from measured free VRAM, never a constant (#53)
 - docs: `saip.schema.yaml` header no longer claims whole-file runtime validation by a nonexistent `shared/src/config-schema.ts`; it names the per-section validators that actually exist (#53)

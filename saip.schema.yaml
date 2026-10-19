@@ -125,6 +125,13 @@ properties:
               minimum: 1
             language_model_only:
               type: boolean
+            max_num_seqs:
+              type: integer
+              minimum: 1
+              description: >-
+                Concurrency ceiling. On hybrid gated-deltanet models each decode sequence
+                pins one fixed-size Mamba cache block; with CUDA graphs enabled vLLM aborts
+                if its default (256) exceeds the blocks the memory budget can hold.
         training:
           type: object
           description: Present only on tiers that can fine-tune locally.

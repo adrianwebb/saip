@@ -5,6 +5,8 @@ import {
   deriveGpuMemoryUtilization,
   kvCacheConstraint,
   renderVllmArgs,
+  NvidiaSmiProbe,
+  GpuProbeError,
   type GpuInfo,
   type ProfileMap,
   type ProfileName,
@@ -64,6 +66,11 @@ describe('validateProfiles', () => {
   it('requires a positive max_model_len when present', () => {
     const bad = { ...PROFILES, 'inference-8gb': { ...PROFILES['inference-8gb'], engine: { ...PROFILES['inference-8gb'].engine, max_model_len: 0 } } }
     expect(validateProfiles(bad).map((e) => e.code)).toContain('invalid_max_model_len')
+  })
+
+  it('rejects a non-positive max_num_seqs', () => {
+    const bad = { ...PROFILES, 'inference-8gb': { ...PROFILES['inference-8gb'], engine: { ...PROFILES['inference-8gb'].engine, max_num_seqs: 0 } } }
+    expect(validateProfiles(bad).map((e) => e.code)).toContain('invalid_max_num_seqs')
   })
 
   it('rejects training settings on a tier below Ampere', () => {
@@ -194,6 +201,36 @@ describe('deriveGpuMemoryUtilization', () => {
   })
 })
 
+describe('NvidiaSmiProbe', () => {
+  it('queries with -i and parses the driver CSV', async () => {
+    let seen: string[] = []
+    const probe = new NvidiaSmiProbe(async (_cmd, args) => {
+      seen = args
+      return 'NVIDIA GeForce RTX 3080 Laptop GPU, 16384, 14011, 8.6\n'
+    })
+    const info = await probe.probe()
+    expect(seen).toContain('-i')
+    // `--idx=0` is not a real nvidia-smi option — it exits non-zero with "not recognized".
+    expect(seen.join(' ')).not.toContain('--idx')
+    expect(info).toEqual({
+      name: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+      total_gib: 16,
+      free_gib: 13.68,
+      capability: 8.6,
+    })
+  })
+
+  it('raises GpuProbeError when the driver is unreachable', async () => {
+    const probe = new NvidiaSmiProbe(async () => { throw new Error('command failed') })
+    await expect(probe.probe()).rejects.toBeInstanceOf(GpuProbeError)
+  })
+
+  it('raises GpuProbeError on unparseable output rather than yielding NaN capability', async () => {
+    const probe = new NvidiaSmiProbe(async () => '[N/A], [Not Supported], [N/A], [N/A]\n')
+    await expect(probe.probe()).rejects.toBeInstanceOf(GpuProbeError)
+  })
+})
+
 describe('renderVllmArgs', () => {
   const base = {
     model: 'QuantTrio/Qwen3.5-4B-AWQ',
@@ -238,6 +275,24 @@ describe('renderVllmArgs', () => {
     expect(() => renderVllmArgs(poisoned['x'], { ...base, capability: 8.6 } as any)).toThrow(/8\.9/)
     // Same profile is legal on Ada — it is the card, not the flag, that decides.
     expect(() => renderVllmArgs(poisoned['x'], { ...base, capability: 8.9 } as any)).not.toThrow()
+  })
+
+  it('renders max_num_seqs — the Mamba cache block ceiling on hybrid models', () => {
+    // Measured failure on the 12 GB tier with CUDA graphs enabled:
+    //   ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (236)
+    // Each decode sequence pins one fixed-size delta-net block, so this is a boot-time
+    // constraint, not a tuning preference.
+    const withSeqs: ProfileMap = {
+      't': { ...PROFILES['full-loop-12gb'], engine: { ...PROFILES['full-loop-12gb'].engine, max_num_seqs: 128 } },
+    }
+    const argv = renderVllmArgs(withSeqs['t'], { ...base, capability: 8.6 })
+    const i = argv.indexOf('--max-num-seqs')
+    expect(i).toBeGreaterThan(-1)
+    expect(argv[i + 1]).toBe('128')
+  })
+
+  it('omits max_num_seqs when the profile does not constrain concurrency', () => {
+    expect(renderVllmArgs(PROFILES['inference-8gb'], { ...base, capability: 8.6 })).not.toContain('--max-num-seqs')
   })
 
   it('renders the derived utilization with enough precision to be reproducible', () => {
