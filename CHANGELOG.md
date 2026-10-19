@@ -5,11 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-19
+
+> First release cut under closing-at-release: the RC for this version carries the `Closes #N`
+> lines derived from merged PR titles, since `Closes` in a `staging` PR never fires.
+
+### Added
+- shared: service profile seam — `profiles.ts` (tier validation, `GpuProbe` interface with `NvidiaSmiProbe`/`FakeGpuProbe`, profile resolution, derived `gpu_memory_utilization`, vLLM argv rendering) and the `ProfileService` Cordis service, so CLI, inference, and training resolve identical hardware contracts from one probe; capability-gates KV dtypes and fails closed with a named deficit instead of an OOM (#53)
+- inference: profile-driven engine launch — `vllm.Dockerfile` (pinned vLLM 0.31.0, overridable base, shell-interpolated args) and `scripts/generate-engine-args.ts`, which probes the host GPU and renders `.engine-args.env` for compose; documented both service tiers and booted each on real hardware (#53)
+- cli: `saip profiles` — probes the GPU and prints every tier, whether this card satisfies it and why not, the resolved selection, the derived `gpu-memory-utilization`, and the engine arguments it would run. `--json` for scripting; exit 0 resolved, 1 configuration error, 2 no profile fits or GPU unreadable. Shares `@saip/shared` resolution with both gateways, so the CLI cannot promise a tier the server then fails to boot (#53)
+- cli: `saip awake --profile <name>` plus pre-flight hardware validation — the host resolves first (an unknown host is a mistake regardless of hardware) and the profile is checked only for local targets, refusing to start compose when the card cannot hold the tier instead of crash-looping vLLM (#53)
+- cli: `saip status` now reports the GPU (name, total/free VRAM, compute capability) and the active profile with derived utilization and context length, replacing the `GPU: TODO` line; an unaffordable ceiling prints `NOT STARTABLE: insufficient_free_vram: …` (#53)
+- inference: `HttpVllmBackend` — the real vLLM/OpenAI client behind the `VllmBackend` seam, configured by `SAIP_VLLM_BASE_URL` (plus optional API key, timeout, retries). Per-user adapters are addressed through the standard `model` field, so the engine stays a plain OpenAI server. Auto-wired by `createApp()` from the environment; **no default endpoint** — unset means routes answer `503 backend_unavailable` while `/health` keeps reporting, so an orchestrator can tell "gateway up, engine missing" from "gateway down" (#53)
+- inference: typed engine-failure mapping shared by chat and systemone — `502 backend_error` (engine answered with an error), `503 backend_unavailable` (unreachable), `504 backend_timeout` (no answer in time), with `500 internal_error` reserved for SAIP's own bugs (#53)
+- docs: **Hardware Profiles** reference (`/saip/reference/hardware-profiles/`) — the measured VRAM ceilings and GPU capability matrix behind SAIP's two service tiers (8 GB inference-only, 12 GB full serve-and-train loop), including the memory decomposition, per-tier engine arguments, LoRA/adapter targeting rules for hybrid gated-deltanet models, and repro commands. Schema `profile`/`profiles` blocks documented ahead of implementation (#53)
+
 ### Fixed
-- XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
-- Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
-- Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
+- cli/config: the shipped `saip.yaml` pinned `profile: inference-8gb`, which would cap every capable dev machine at the 8 GB tier permanently; the pin is removed so resolution follows the probed card, and pinning is documented as a deliberate override for CI or shared GPUs (#53)
+- docs: the `saip status` reference documented output that does not exist — nested service/PID/temperature/utilization fields, `--json` support, an adapter `last_sync` timestamp, a rolling request rate, and stale `Qwen2.5-7B` model names. Replaced with the real output plus an explicit list of fields still TODO (#53)
+- inference: `VllmBackend.stream()` was declared `AsyncIterable<string>` while `api-chat` JSON-stringified each yielded value — a contract no implementation could satisfy without double-encoding. Yielded values are now typed `VllmStreamChunk` objects and the route owns SSE framing. The in-test fake had never implemented `stream()` at all, so the only streaming path CI exercised was the synthesized single-chunk fallback; real SSE parsing is now tested against an actual HTTP server, including frames split across packet boundaries (#53)
+- inference: a streaming request that failed **before** the first chunk returned `200` with a truncated body, which clients read as a successful empty generation. The route now primes one chunk before committing headers, so early failures return a real status; mid-stream failures after headers are sent emit an explicit SSE error frame instead of closing silently (#53)
+- inference: engine errors were unhandled in both chat and systemone — an OOMing or wedged engine escaped to the framework handler as an opaque `500`, indistinguishable from a gateway bug (#53)
+- inference: the compose stack could not start — it passed `--quantization awq` to a BF16 base checkpoint, omitted `--gpu-memory-utilization` entirely, requested 65,536 context on any card, included a malformed `--lora-modules ""`, used the unpinned `latest` image, and claimed host port 8080 which collides with an existing local model server. Replaced with profile-rendered arguments (#53)
+- inference/config: `loadConfig` read only `model.base`, so quantization, revision, dtype, KV dtype, `language_model_only`, and the whole `profiles` block never reached the gateway; now carried through (#53)
+- docs: hardware requirements corrected against measured evidence. The previous "~7 GB VRAM" figure appeared in nine places and was unachievable with the shipped configuration; tiers are now 8 GB (inference) and 12 GB (local fine-tuning), with compute-capability floors (7.5 inference, 8.0 for bf16 training) (#53)
+- docs: removed the instruction to set `SAIP_GPU_MEMORY_UTILIZATION=0.85` (a variable no code read) and the claim that vLLM defaults to 0.90 (it is 0.92); utilization is documented as derived from measured free VRAM, never a constant (#53)
+- docs: `saip.schema.yaml` header no longer claims whole-file runtime validation by a nonexistent `shared/src/config-schema.ts`; it names the per-section validators that actually exist (#53)
+- docs: quantization guidance fixed — an AWQ checkpoint is required (vLLM cannot AWQ-quantize a BF16 base at load time), the reference checkpoint is the community `QuantTrio/Qwen3.5-4B-AWQ` as no official Qwen AWQ build exists, and bitsandbytes is ruled out as a multi-LoRA serving path; QLoRA is no longer presented as SAIP's training method for Qwen3.5 (#53)
+- docs: getting-started no longer describes Qwen3.5-4B as gated access-only, and the CLI/hyperstack examples reference the actual model and profile resolution rather than a stale 7B/4096-token config (#53)
+- docs: added a warning that 8-bit KV cache (`int8_per_token_head`, `fp8*`) is forbidden below compute capability 8.9 — fp8 is rejected outright, while int8 is accepted, reports a larger cache, and silently corrupts output on Ampere (measured) (#53)
+
+### Changed
+- workflow: issue closure moves to the release candidate. GitHub executes `Closes #N` only on merges into the default branch, and every development PR here targets `staging` — so the keyword never fired for any feature or fix PR, and 19 finished issues sat open. Staging PRs now use `Part of #<issue>`; the `staging`→`main` RC carries the `Closes` lines derived mechanically from merged PR titles since the previous tag, with a hard guard holding back any issue that still has an unchecked acceptance criterion. Hotfixes keep `Closes #N` because they land on `main` (#59)
+- workflow: `release-workflow` skill and `AGENTS.md` now mandate post-merge branch cleanup — delete the branch (remote + local) as the last action of every merge, with the four traps documented: squash merges defeat `git branch --merged` and `git branch -d`, `git branch -r` is stale until `--prune`, a bulk delete can silently skip refs, and open PRs must be excluded before deleting (#57)
+
+## [Unreleased]
 
 ### Added
 - infra/cli/docs: gated Hyperstack deployment provider (SSH+compose; OpenTofu provisioning behind `SAIP_ALLOW_INFRA`), the `infra/tofu/hyperstack` 2-GPU OpenTofu module (scaffolded, not applied), and full hosting documentation — Hosting Model explanation, Hosts Configuration reference, cloud-deploy guide (#51)
@@ -37,3 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Issue templates and GitHub labels (#1)
 - Agent loop guard and HTTPS remote protocol in workflow (#1)
 - Changelog convention and monorepo guidance (#1)
+
+### Fixed
+- XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
+- Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
+- Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
+
+> **Backfill owed:** the entries above shipped under tags 0.1.x–0.4.0 but were never filed
+> into version sections (releases were cut without touching this file). Back-file them per tag
+> rather than letting a later version claim them.

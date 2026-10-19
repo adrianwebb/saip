@@ -59,7 +59,7 @@ A numerical score (-3 to +3) indicating how good or bad a model response was. Re
 
 ### VRAM (Video RAM)
 
-Memory on your GPU dedicated to model computation. More VRAM = larger models or longer contexts. SAIP targets 7+ GB VRAM for Qwen3.5-4B with QLoRA.
+Memory on your GPU dedicated to model computation. More VRAM = larger models or longer contexts. SAIP defines two hardware tiers: **8 GB** serves Qwen3.5-4B (AWQ, text-only) with LoRA adapters live, and **12 GB** is the floor for fine-tuning locally as well. These are the ceilings enforced by [service profiles](/saip/reference/hardware-profiles/), not suggestions.
 
 ## Training Methods
 
@@ -85,7 +85,7 @@ A technique that adds small trainable matrices alongside frozen model weights, e
 
 ### QLoRA (Quantized LoRA)
 
-LoRA applied to a 4-bit quantized base model. This dramatically reduces VRAM requirements, enabling fine-tuning on consumer GPUs with 7+ GB VRAM.
+LoRA applied to a 4-bit quantized base model. This reduces VRAM requirements for fine-tuning, but SAIP does **not** use it for Qwen3.5: 4-bit training on this model family is discouraged by its maintainers due to unusually large quantization differences, and bitsandbytes is no longer a supported multi-LoRA serving path in vLLM. SAIP's documented local path is **bf16 LoRA on a 12 GB card**, training on the BF16 base and serving the adapter on the AWQ base.
 
 ### SFT (Supervised Fine-Tuning)
 

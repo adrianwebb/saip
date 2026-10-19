@@ -23,6 +23,7 @@ import { DataFeedbackService } from './plugins/data-feedback.js'
 import { ServerService } from './plugins/server.js'
 import { loadConfig, type SaipRuntimeConfig } from './lib/config.js'
 import { MemoryStorage, type StorageProvider, type VllmBackend } from './lib/backends.js'
+import { HttpVllmBackend } from './lib/vllm-http.js'
 import type { MonitoringProvider } from '@saip/shared'
 
 export interface CreateAppOptions {
@@ -58,11 +59,28 @@ async function makeLatestVersion(
   }
 }
 
+/**
+ * Build the engine client from the environment when the caller did not inject one.
+ *
+ * Deliberately NO default host: silently connecting to whatever answers on :8000 would let
+ * a request be served by the wrong model. Unset means no engine — the routes answer
+ * 503 backend_unavailable and `/health` still reports, so an orchestrator can tell
+ * "gateway up, engine missing" apart from "gateway down".
+ */
+function backendFromEnv(): VllmBackend | undefined {
+  const baseUrl = process.env.SAIP_VLLM_BASE_URL?.trim()
+  if (!baseUrl) return undefined
+  const timeoutMs = Number(process.env.SAIP_VLLM_TIMEOUT_MS ?? '') || undefined
+  const retries = process.env.SAIP_VLLM_MAX_RETRIES === undefined ? undefined : Number(process.env.SAIP_VLLM_MAX_RETRIES)
+  return new HttpVllmBackend({ baseUrl, apiKey: process.env.SAIP_VLLM_API_KEY?.trim() || undefined, timeoutMs, retries })
+}
+
 export async function createApp(opts: CreateAppOptions = {}) {
   const loaded = opts.config ?? loadConfig(opts.configPath)
   // Defensive: a hand-built config may omit newer optional sections.
   const config: SaipRuntimeConfig = { ...loaded, security: loaded.security ?? { dev_mode: false, api_tokens: [] } }
   const storage = opts.storage ?? new MemoryStorage()
+  const vllm = opts.vllm ?? backendFromEnv()
 
   const ctx = new Context()
   const latestVersion = await makeLatestVersion(storage, opts.latestVersion)
@@ -81,13 +99,13 @@ export async function createApp(opts: CreateAppOptions = {}) {
   await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
   await ctx.plugin(MetricsService, { provider: opts.monitoring })
   await ctx.plugin(AdapterCompilerService)
-  await ctx.plugin(GatewayStateService, { config, storage, vllm: opts.vllm })
+  await ctx.plugin(GatewayStateService, { config, storage, vllm })
   await ctx.plugin(UserResolverService, { users: config.users })
   await ctx.plugin(AuthService, { security: config.security, secrets: (ctx as any).secrets })
   const authMiddleware = (ctx as any).auth.require()
   await ctx.plugin(ApiCoreService, { modelBase: config.model.base, adapters: config.adapters })
-  await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion, authMiddleware })
-  await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm: opts.vllm, latestVersion, authMiddleware })
+  await ctx.plugin(ApiChatService, { users: config.users, adapters: config.adapters, vllm, latestVersion, authMiddleware })
+  await ctx.plugin(ApiSystemOneService, { enabled: config.inference.systemone.enabled, users: config.users, adapters: config.adapters, vllm, latestVersion, authMiddleware })
   await ctx.plugin(SessionCollectorService, { storage })
   await ctx.plugin(DataDocumentsService, { storage })
   await ctx.plugin(DataSessionsService, { storage })

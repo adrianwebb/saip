@@ -45,6 +45,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'Configuration (saip.yaml)', slug: 'reference/configuration' },
+            { label: 'Hardware Profiles', slug: 'reference/hardware-profiles' },
             { label: 'R2 Bucket Layout', slug: 'reference/r2-bucket-layout' },
             { label: 'Inference & Data API', slug: 'reference/api-inference' },
             { label: 'Learning API', slug: 'reference/api-training' },

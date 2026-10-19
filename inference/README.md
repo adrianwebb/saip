@@ -12,7 +12,7 @@ The inference gateway is a Cordis application composed of focused plugins. Statu
 | Plugin | Status | Responsibility |
 |--------|--------|---------------|
 | `gateway-state` | ✅ | Holds resolved config + injected storage/vLLM backends for other plugins |
-| `vllm-manager` | 🔌 | Start/stop vLLM process, load/unload adapters, health checks (behind `VllmBackend`; fake in tests, HTTP adapter pending) |
+| `vllm-manager` | ✅ | Talks to the vLLM engine behind `VllmBackend` (`HttpVllmBackend` in production, fake in tests): health, model listing, per-request adapter selection. Starting/stopping the engine container itself remains the deployment layer's job (`saip awake`, compose) |
 | `adapter-registry` | ✅ | Sync adapter index from R2, resolve versions (behind `StorageProvider`; MemoryStorage now, R2 later) |
 | `adapter-compiler` | ✅ | Compile composite adapters (weighted merge × gain) into single vLLM artifacts; recompile on component promote / spec change (Python merge behind swappable backend) |
 | `user-resolver` | ✅ | Map caller identity → adapter using file-based manifests (unknown/no-auth → default) |
@@ -125,7 +125,15 @@ without a GPU or network:
   R2 client (`@saip/shared` `r2-client`) is not yet implemented; it will drop in behind this same
   interface without touching any plugin. Adapter/knowledge/session/feedback indices live under
   the documented R2 key layout regardless of backend.
-- **`VllmBackend`** — tests use a fake; the HTTP adapter to a running vLLM container is pending.
+- **`VllmBackend`** — two implementations. `HttpVllmBackend` (production) talks to a running
+  vLLM / OpenAI-compatible engine at `SAIP_VLLM_BASE_URL`; the in-test fake keeps every route
+  deterministic without a GPU or network. Per-user adapters are selected by passing the
+  resolved `name@version` as the OpenAI `model` field — vLLM's multi-LoRA serving exposes a
+  loaded adapter as a model name, so switching users never restarts the engine.
+  `stream()` yields **parsed chunk objects** (`chat.completion.chunk`), which `api-chat`
+  serializes to SSE frames. The interface previously declared `AsyncIterable<string>` while
+  the consumer stringified each value — a contract no implementation could satisfy without
+  double-encoding; it is now typed as `AsyncIterable<VllmStreamChunk>`.
 - **Marker OCR** — the `pdf-processor` returns a typed "backend required" error until a Marker
   service is wired; other processors are functional now.
 

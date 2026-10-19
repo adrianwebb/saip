@@ -13,6 +13,7 @@ import type { Message } from '../lib/config.js'
 import type { VllmBackend } from '../lib/backends.js'
 import { resolveAdapterForCaller } from '../lib/user-resolver.js'
 import { serveVersionFor } from '../lib/serve-resolver.js'
+import { mapBackendError } from '../lib/backend-error.js'
 
 export interface ApiSystemOneConfig {
   enabled: boolean
@@ -54,7 +55,15 @@ export class ApiSystemOneService extends Service {
       } catch (e: any) {
         return c.json({ error: { message: e.message, code: 'resolution_failed' } }, 404)
       }
-      const resp = await this.cfg.vllm.chat({ model: serveId, messages: body.messages as Message[], temperature: 0 })
+      // Engine failures map to 502/503/504 exactly as in chat, so one outage looks the same
+      // on both endpoints.
+      let resp: Awaited<ReturnType<NonNullable<VllmBackend['chat']>>>
+      try {
+        resp = await this.cfg.vllm.chat({ model: serveId, messages: body.messages as Message[], temperature: 0 })
+      } catch (err) {
+        const mapped = mapBackendError(err)!
+        return c.json(mapped.body, mapped.status as 502)
+      }
       const raw = resp.choices[0]?.message.content ?? ''
       let output: unknown = null
       let valid = false

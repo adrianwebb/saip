@@ -25,6 +25,22 @@ import {
   type HostValidationError,
   type SecretsProvider,
 } from './hosting.js'
+import {
+  validateProfiles,
+  resolveProfile,
+  deriveGpuMemoryUtilization,
+  kvCacheConstraint,
+  NvidiaSmiProbe,
+  type GpuProbe,
+  type ProfileMap,
+  type ProfileName,
+  type ProfileResolution,
+  type ProfileValidationError,
+  type UtilizationResult,
+} from './profiles.js'
+
+/** Namespaced service key used across all SAIP packages. */
+export const PROFILE_SERVICE = 'profiles'
 
 /** Namespaced service key used across all SAIP packages. */
 export const ADAPTER_REGISTRY_SERVICE = 'adapterRegistry'
@@ -105,4 +121,65 @@ export class HostRegistryService extends Service {
 
   /** Structured validation errors for the loaded registry (empty = valid). */
   assertValid(): HostValidationError[] { return validateHostRegistry({ hosts: this.hosts }) }
+}
+
+/**
+ * Resolves the service profile for the card this process runs on.
+ *
+ * Wraps the pure logic in `profiles.ts` and puts it on the reflect surface so the CLI,
+ * inference gateway, and training gateway derive the same ceiling, engine arguments, and
+ * derived `gpu_memory_utilization` from the same probe — the profile is never a constant,
+ * because vLLM budgets against total VRAM and gates on free VRAM at launch.
+ */
+export class ProfileService extends Service {
+  static readonly provide = PROFILE_SERVICE
+  private readonly profiles: ProfileMap
+  private readonly requested?: ProfileName
+  private readonly probe: GpuProbe
+  private resolved?: ProfileResolution
+
+  constructor(ctx: any, config: { profiles?: ProfileMap; profile?: ProfileName; probe?: GpuProbe } = {}) {
+    super(ctx, PROFILE_SERVICE)
+    this.profiles = config.profiles ?? {}
+    this.requested = config.profile
+    this.probe = config.probe ?? new NvidiaSmiProbe()
+  }
+
+  /** Structured validation errors for the declared profiles (empty = valid). */
+  assertValid(): ProfileValidationError[] { return validateProfiles(this.profiles) }
+
+  /**
+   * Probe the card and resolve the active profile. Cached per service instance so the
+   * probe happens once per boot. Rejects with a named deficit — never a silent OOM later.
+   */
+  async resolve(): Promise<ProfileResolution> {
+    if (this.resolved) return this.resolved
+    const errors = this.assertValid()
+    if (errors.length) {
+      this.resolved = { ok: false, error: { code: errors[0].code, message: `${errors[0].path}: ${errors[0].message}` } }
+      return this.resolved
+    }
+    const gpu = await this.probe.probe()
+    const resolution = resolveProfile(this.profiles, this.requested, gpu)
+    if (resolution.ok) {
+      // A dtype the card cannot use must not boot: refuse rather than serve garbage.
+      const dtype = resolution.args.engine?.kv_cache_dtype ?? 'auto'
+      const constraint = kvCacheConstraint(dtype, gpu.capability)
+      if (!constraint.allowed) {
+        this.resolved = { ok: false, error: { code: 'forbidden_kv_cache_dtype', message: constraint.reason ?? '' } }
+        return this.resolved
+      }
+    }
+    this.resolved = resolution
+    return resolution
+  }
+
+  /** Ceiling + measured memory → the utilization fraction vLLM should be given. */
+  async utilization(): Promise<UtilizationResult> {
+    const r = await this.resolve()
+    if (!r.ok) return { ok: false, error: r.error }
+    return deriveGpuMemoryUtilization(r.args.vram_ceiling_gib, r.gpu.total_gib, r.gpu.free_gib)
+  }
+
+  list(): ProfileMap { return this.profiles }
 }

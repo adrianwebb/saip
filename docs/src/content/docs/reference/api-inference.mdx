@@ -442,12 +442,22 @@ All endpoints return standard HTTP error codes with a JSON body:
 }
 ```
 
-| Status | Meaning                                                        |
-|--------|----------------------------------------------------------------|
-| `400`  | Malformed request or invalid parameters.                       |
-| `401`  | Missing or invalid authorization.                              |
-| `404`  | Requested adapter, document, session, or resource not found.   |
-| `422`  | Reward outside configured `reward_range`.                      |
-| `429`  | Rate limit exceeded.                                           |
-| `500`  | Internal error (vLLM failure, adapter load failure, R2 write failure). |
-| `503`  | Service unavailable (model not loaded, GPU offline).           |
+| Status | Code                  | Meaning                                                        |
+|--------|-----------------------|----------------------------------------------------------------|
+| `400`  | `invalid_request`     | Malformed request or invalid parameters.                       |
+| `401`  | `unauthorized`        | Missing or invalid authorization.                              |
+| `404`  | `adapter_not_found`   | Requested adapter, document, session, or resource not found.   |
+| `422`  | `reward_out_of_range` | Reward outside configured `reward_range`.                      |
+| `429`  | `rate_limited`        | Rate limit exceeded.                                           |
+| `500`  | `internal_error`      | Bug inside SAIP (adapter load failure, R2 write failure).      |
+| `502`  | `backend_error`       | The inference engine is unreachable or returned an error status. The engine's own message is forwarded; this is not retried. |
+| `503`  | `backend_unavailable` | No engine is attached (`SAIP_VLLM_BASE_URL` unset) or GPU offline. |
+| `504`  | `backend_timeout`     | The engine did not answer within `SAIP_VLLM_TIMEOUT_MS`.       |
+
+:::note[Why 502 and 504 are separated from 500]
+A slow prefill on an 8 GB card, a crashed engine container, and a defect in the gateway all
+look identical from a `500`. Distinguishing them matters operationally: `502`/`504` mean the
+model server needs attention (`docker compose logs vllm`), while `500` means SAIP itself does.
+Requests are **not** retried on a backend error, because resending a generation can duplicate
+recorded sessions.
+:::
