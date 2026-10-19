@@ -24,11 +24,13 @@ describe('loadConfig', () => {
     expect(cfg.model.kv_cache_dtype).toBe('auto')
   })
 
-  it('exposes the active profile and the declared profile map', () => {
+  it('exposes the declared profile map and leaves the tier unpinned', () => {
     const cfg = loadConfig(repoConfig)
-    expect(cfg.profile).toBe('inference-8gb')
     expect(Object.keys(cfg.profiles).sort()).toEqual(['full-loop-12gb', 'inference-8gb'])
     expect(cfg.profiles['inference-8gb'].vram_ceiling_gib).toBe(7.0)
+    // Unpinned on purpose: a pin in the shipped config would cap a 16 GB dev machine at the
+    // 8 GB tier forever. Resolution picks the highest tier the probed card satisfies.
+    expect(cfg.profile).toBeUndefined()
   })
 
   it('exposes training method reward_range for feedback validation', () => {

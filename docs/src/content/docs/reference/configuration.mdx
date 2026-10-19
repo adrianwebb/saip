@@ -56,7 +56,7 @@ ceilings and the capability matrix.
 | `profiles.<name>` | `object` | — | A named profile. Requires `min_vram_gib` and `min_capability`; carries `vram_ceiling_gib` and the engine arguments for that tier. |
 
 ```yaml
-profile: inference-8gb
+# profile: inference-8gb        # unset = resolve from the probed GPU; set = pin a tier
 
 profiles:
   inference-8gb:

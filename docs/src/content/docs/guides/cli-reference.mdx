@@ -169,7 +169,7 @@ $ saip down
   ├─ saip-inference ... stopped and removed
   └─ saip-worker ... stopped and removed
 [down] Removing model cache (~/.cache/saip/)...
-  ├─ Qwen/Qwen2.5-7B-Instruct-AWQ ... 4.2 GB removed
+  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB removed
   ├─ adapters/general@000042 ... 128 MB removed
   └─ adapters/coding@000018 ... 96 MB removed
 [down] Total freed: 4.4 GB
@@ -210,93 +210,39 @@ saip status [--json] [--adapter-resolution <user>]
 
 ```
 $ saip status
-SAIP Status
-─────────────────────────────────────────────
-Services:
-  inference:    running (pid 48291, uptime 2h 14m)
-  worker:       stopped
-
-GPU:
-  device:       0 (NVIDIA RTX A4000)
-  capability:   8.6
-  vram:         12.1 / 16.0 GB used (75.6%), 3.9 GB free
-  temperature:  62°C
-  utilization:  34%
-
-Profile:
-  active:       inference-8gb
-  ceiling:      7.0 GiB
-  gpu_memory_utilization: 0.44 (derived from free VRAM)
-  kv_cache_dtype: auto (fp8/int8 unavailable below capability 8.9)
-
-Model:
-  base:         QuantTrio/Qwen3.5-4B-AWQ
-  max_context:  24576 tokens
-  loaded:       yes
-
-Adapters:
-  loaded:       general@000042, coding@000018
-  default:      general@latest → general@000042
-  last_sync:    2024-03-15T14:22:00Z (12m ago)
-
-Storage:
-  bucket:       saip-production
-  endpoint:     https://abc123.r2.cloudflarestorage.com
-  connected:    yes
-
-API:
-  endpoint:     http://localhost:8000/v1
-  health:       healthy
-  requests/min: 47
+[saip] Platform Status
+─────────────────────
+[sip] default (local): reachable=true mode=?
+Mode:       TODO (awake / asleep / down)
+Adapters:   3 defined (1 composite), registry valid
+GPU:        NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.07 GiB free, cc 8.6
+Profile:    full-loop-12gb (auto-resolved), ceiling 11 GiB
+            gpu_memory_utilization=0.6875 (derived), context 65536 tokens
+Bucket:     saip-local
+Uptime:     TODO
 ```
 
-### Field Descriptions
+The `GPU` and `Profile` lines come from the same `ProfileService` resolution
+`saip profiles` performs, so status and the tier report cannot disagree. When the card
+cannot hold the resolved ceiling, the profile line is followed by
+`NOT STARTABLE: insufficient_free_vram: …` naming the deficit.
 
-| Section | Field | Description |
-|---------|-------|-------------|
-| Services | status | `running`, `stopped`, `starting`, `error` |
-| Services | pid | Process ID of the container's main process |
-| Services | uptime | Duration since last start |
-| GPU | vram | Used / total VRAM with percentage |
-| GPU | utilization | Current GPU compute utilization percentage |
-| Model | loaded | Whether model weights are in GPU memory |
-| Adapters | loaded | Currently loaded adapter versions |
-| Adapters | default | Default adapter with `@latest` resolution shown |
-| Adapters | last_sync | Last R2 poll timestamp |
-| Storage | connected | Whether R2 is reachable with current credentials |
-| API | health | Result of last `/health` check |
-| API | requests/min | Rolling 1-minute request rate |
+:::caution[Not yet implemented]
+These fields are still `TODO` in the shipped CLI and are shown as such rather than invented:
+service mode (awake/asleep/down), uptime, GPU temperature and per-process utilization,
+loaded-adapter names with their `@latest` resolution, and the last R2 sync timestamp. The
+richer layout previously documented here was a design sketch, not output — it is why
+`saip status` is the command to compare against `saip profiles` when the two look wrong.
+:::
 
-### JSON Output
-
-```bash
-$ saip status --json
-{
-  "services": {
-    "inference": {"status": "running", "pid": 48291, "uptime_seconds": 8040}
-  },
-  "gpu": {
-    "device": 0,
-    "name": "NVIDIA RTX A4000",
-    "vram_used_gb": 12.1,
-    "vram_total_gb": 16.0,
-    "temperature_c": 62,
-    "utilization_pct": 34
-  },
-  "model": {
-    "base": "Qwen/Qwen2.5-7B-Instruct-AWQ",
-    "max_context": 4096,
-    "loaded": true
-  },
-  "adapters": {
-    "loaded": ["general@000042", "coding@000018"],
-    "default": "general@000042",
-    "last_sync": "2024-03-15T14:22:00Z"
-  },
-  "storage": {"bucket": "saip-production", "connected": true},
-  "api": {"endpoint": "http://localhost:8000/v1", "healthy": true, "rpm": 47}
-}
-```
+:::caution[Fields still TODO]
+`saip status` prints host reachability, adapter registry validity, GPU + profile
+resolution, and the configured bucket. It does **not** yet report: service mode
+(awake/asleep/down), uptime, GPU temperature or per-process utilization, the adapters
+currently loaded in the engine, the last R2 sync, or a rolling request rate — and there is
+no `--json` output for status yet. `saip profiles --json` is the one command that does emit
+machine-readable output today.
+:::
 
 ### Adapter Resolution Check
 
@@ -318,4 +264,81 @@ Adapter resolution for 'alice':
 
 :::note[Status Is Read-Only]
 `saip status` never modifies state. It's safe to run at any time, including during `awake` or `sleep` transitions.
+:::
+
+---
+
+## `saip profiles`
+
+Show the hardware service profiles, which one this machine resolves to, and the engine
+arguments that follow. Read-only: it probes the GPU and prints. It starts nothing.
+
+### Synopsis
+
+```bash
+saip profiles [--profile <name>] [--json]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile <name>` | auto-resolved | Resolve as if this tier were selected, to check whether the card can hold it and what it would run. |
+| `--json` | false | Machine-readable output for scripting and CI. |
+
+### What It Does
+
+1. **Loads and validates the `profiles:` block** from `saip.yaml` through the same
+   `ProfileService` the gateways use, so the CLI cannot disagree with the server about what a
+   tier means.
+2. **Probes the GPU** for name, total and free VRAM, and compute capability.
+3. **Resolves the tier** — explicitly when `--profile` is given, otherwise the highest tier
+   the card satisfies.
+4. **Derives `gpu_memory_utilization`** from the tier ceiling over total VRAM and checks it
+   against measured free memory, reporting the deficit rather than a start that would crash.
+5. **Renders the implied engine arguments**, refusing to emit a KV-cache dtype this card
+   cannot safely use.
+
+### Example Output
+
+```
+$ saip profiles
+[saip] GPU: NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6
+
+  profile           min VRAM   min cc    ceiling  fits
+  inference-8gb        8 GiB      7.5     7.0 GiB  yes
+  full-loop-12gb      12 GiB      8.0    11.0 GiB  yes
+
+[saip] Resolved: full-loop-12gb (auto)
+[saip] Derived --gpu-memory-utilization=0.6875 (11 GiB ceiling / 16 GiB total)
+[saip] Engine: --model QuantTrio/Qwen3.5-4B-AWQ --max-model-len 65536 --language-model-only
+        --max-num-seqs 128 --enable-lora --max-loras 4 --max-lora-rank 16
+```
+
+When the card cannot hold the requested tier:
+
+```
+$ saip profiles --profile full-loop-12gb
+[saip] GPU: NVIDIA GeForce RTX 2060 — 6 GiB total, 5.1 GiB free, cc 7.5
+[saip] insufficient_vram: profile "full-loop-12gb" needs 12 GiB VRAM; this card has 6 GiB total
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | A profile resolved for this GPU |
+| 1 | Configuration error (no `profiles:` block, invalid tier declaration) |
+| 2 | No profile fits this GPU, or the GPU could not be read |
+
+:::tip[Use it before buying hardware or booting]
+`saip profiles` is the cheapest answer to "will this run here" — it reads the card and does
+the arithmetic without pulling an image or loading weights. Run it on a candidate machine
+before installing, and in CI to assert a target card satisfies a tier.
+:::
+
+:::note[Relationship to `awake`]
+`saip awake` performs the same resolution and writes the derived engine arguments before
+starting compose. `saip profiles` exists so that decision can be inspected — and tested
+against a card — without changing anything.
 :::
