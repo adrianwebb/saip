@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- shared: encrypted local secret store (`secrets-store.ts`) behind the existing `SecretsProvider` seam — AES-256-GCM at `~/.saip/secrets.enc.json`, key from the OS keychain when `secret-tool` is present and a scrypt-derived passphrase otherwise, with `rotateKey` for re-encrypting under a new key. `SecretsService` now defaults to a chain of shell environment then store, so credentials no longer have to be exported into a shell or written into `saip.yaml` (#67)
 - shared: one real config loader — `loadYamlConfig` / `interpolate` / `loadEnvFile`. `${VAR}`, `${VAR:-default}` and `${VAR:?message}` now actually resolve (interpolation was documented in every release so far and implemented nowhere, so `storage.r2.bucket` reached callers as the literal string), and `.env` is loaded by native `saip` and the gateways instead of only by Docker Compose, with the parent shell always winning (#65)
 - infra/cli/docs: gated Hyperstack deployment provider (SSH+compose; OpenTofu provisioning behind `SAIP_ALLOW_INFRA`), the `infra/tofu/hyperstack` 2-GPU OpenTofu module (scaffolded, not applied), and full hosting documentation — Hosting Model explanation, Hosts Configuration reference, cloud-deploy guide (#51)
 - cli: `saip deploy --target <host>` — parameterized copy-to-host reusing the DeploymentProvider abstraction; renders a safe plan (`--dry-run` default), applies only via providers that implement `deploy()`, refuses unknown/unregistered targets (#49)
@@ -44,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > **Backfill owed:** the entries above shipped under tags 0.1.x–0.4.0 but were never filed
 > into version sections (releases were cut without touching this file). Back-file them per tag
 > rather than letting a later version claim them.
+
+- security: key sources declare `mode: raw | passphrase` rather than being matched by name string — name matching mis-keyed any implementation with a different label, which a test double hit immediately (#67)
 
 ### Changed
 - config: the shipped `saip.yaml` uses `${VAR:-}` for the R2 bucket/endpoint so platform config stays readable without cloud credentials — strict `${VAR}` would make offline hardware inspection demand credentials just to load a file. An unset value loads as empty and the storage provider is responsible for refusing it (#65)
