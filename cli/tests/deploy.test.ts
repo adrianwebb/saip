@@ -23,7 +23,11 @@ describe('renderDeployPlan (pure)', () => {
     expect(plan.planned).toBe(true)
     expect(plan.applied).toBe(false)
     expect(plan.detail).toMatch(/default.*staging-box/)
-    expect(plan.detail).toMatch(/flavor=big/)
+    // Contract changed in this PR: values are masked in the plan because the plan is a log
+    // surface and anything passed as a process argument is already visible in `ps`. Names stay
+    // visible so a plan is still reviewable.
+    expect(plan.detail).toMatch(/flavor=/)
+    expect(plan.detail).not.toMatch(/flavor=big/)
   })
 })
 
