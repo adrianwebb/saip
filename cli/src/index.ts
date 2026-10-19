@@ -39,7 +39,7 @@ export async function buildProgram(): Promise<Command> {
   const program = new Command()
     .name('saip')
     .description('Simple AI Platform — manage inference and training services')
-    .version('0.4.0')
+    .version('0.5.0')
 
   for (const spec of ctx.commandRegistry!.list()) {
     const cmd = new Command(spec.name).description(spec.description)
