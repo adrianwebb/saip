@@ -308,3 +308,28 @@ Supported fields:
 - `storage.r2.endpoint`
 
 All other fields are literal values. Secret values (API keys, tokens) should be referenced by their env-var *name* (e.g. `token_env: "SAIP_HF_TOKEN"`) rather than interpolated directly.
+
+## Inference Gateway → vLLM Engine
+
+How the gateway reaches the engine is **deployment configuration, not platform
+configuration**: it changes per host, per network namespace, and per container restart, so it
+lives in environment variables rather than `saip.yaml`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAIP_VLLM_BASE_URL` | — | OpenAI-compatible base URL of the engine, including the `/v1` path segment (e.g. `http://vllm:8000/v1` in-network, `http://localhost:8081/v1` from the host). **Unset means no engine is attached**: the gateway boots, serves `/health` and `/v1/models`, and answers `/v1/chat/completions` with `503 backend_unavailable`. It never guesses a localhost port, because silently connecting to whatever happens to be listening is how a request gets served by the wrong model. |
+| `SAIP_VLLM_API_KEY` | — | Optional bearer token, for engines fronted by a gateway. SAIP does not authenticate to vLLM itself. |
+| `SAIP_VLLM_TIMEOUT_MS` | `180000` | Per-request ceiling. Prefill on an 8 GB card can run minutes; a short value surfaces as an opaque gateway error rather than a slow response. |
+| `SAIP_VLLM_MAX_RETRIES` | `1` | Retries for connection failures only. A 4xx/5xx from the engine is a real answer and is **not** retried — resending a generation request risks duplicate work and duplicate recorded sessions. |
+
+Adapters are addressed through the standard OpenAI `model` field rather than a SAIP-specific
+parameter: vLLM exposes each loaded LoRA adapter as a model name, so the gateway resolves a
+caller to `name@version` and passes it as `model`. Switching users therefore requires no
+engine restart, and the engine stays a plain OpenAI server that SAIP can be swapped away
+from.
+
+Engine **arguments** — model, context length, KV dtype, VRAM ceiling — come from the active
+[service profile](../hardware-profiles/), rendered per host into `inference/.engine-args.env`
+by `inference/scripts/generate-engine-args.ts`. They are deliberately not read from these
+variables, because `--gpu-memory-utilization` must be derived from the card that actually runs
+the container.

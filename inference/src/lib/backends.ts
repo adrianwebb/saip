@@ -55,8 +55,28 @@ export interface VllmChatResponse {
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }
 
+/** One parsed `chat.completion.chunk` from the engine. */
+export interface VllmStreamChunk {
+  id?: string
+  object?: string
+  created?: number
+  model?: string
+  choices: Array<{
+    index: number
+    delta?: { role?: string; content?: string; tool_calls?: unknown }
+    message?: Message
+    finish_reason?: string | null
+  }>
+  usage?: VllmChatResponse['usage'] | null
+}
+
 export interface VllmBackend {
   chat(req: VllmChatRequest): Promise<VllmChatResponse>
-  /** Optional streaming; each yielded string is one SSE `data:` payload. */
-  stream?(req: VllmChatRequest): AsyncIterable<string>
+  /**
+   * Optional streaming. Yields parsed chunk OBJECTS; the route serializes them into SSE
+   * frames, so an implementation must not pre-format `data:` lines — that would
+   * double-encode. The engine's `[DONE]` sentinel ends the iteration and is never yielded;
+   * the caller emits it.
+   */
+  stream?(req: VllmChatRequest): AsyncIterable<VllmStreamChunk>
 }
