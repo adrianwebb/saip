@@ -342,3 +342,47 @@ before installing, and in CI to assert a target card satisfies a tier.
 starting compose. `saip profiles` exists so that decision can be inspected — and tested
 against a card — without changing anything.
 :::
+
+---
+
+## `saip config`
+
+Manage the encrypted local secret store. Values are written to `~/.saip/secrets.enc.json` —
+outside the workspace — and resolved at runtime by the same provider chain the gateways use.
+
+### Synopsis
+
+```bash
+saip config <list|get|set|unset|doctor> [name] [value] [--value <v>] [--reveal]
+```
+
+### Subcommands
+
+| Form | Behavior |
+|------|----------|
+| `saip config list` | Names only, one per line. Never prints values. |
+| `saip config get <name>` | Prints the value masked (`••••` plus length). `--reveal` prints it. |
+| `saip config set <name>` | Prompts with echo disabled — keeps the secret out of shell history and `ps`. |
+| `saip config set <name> --value <v>` | Non-interactive. Prefer piping: `printf %s "$V" \| saip config set NAME --stdin`. |
+| `saip config unset <name>` | Removes it; reports whether it was present. |
+| `saip config doctor` | Which key source resolved, where the store lives, and its file mode. |
+
+:::caution[Why `--value` is second choice]
+A command-line argument is visible to every process on the machine via `ps` and lands in shell
+history. `--stdin` and the interactive prompt exist so a secret never crosses the process
+boundary as an argument. `--value` remains for scripting where the caller has already solved
+that problem.
+:::
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Operation succeeded |
+| 1 | Usage error, no key source available, or the store could not be decrypted |
+
+:::note[Shell variables still win]
+`saip config` writes the store, which sits **below** the parent environment in resolution order.
+A variable you `export` in the same shell shadows the stored value, and `saip config doctor`
+says so rather than leaving you to discover it.
+:::

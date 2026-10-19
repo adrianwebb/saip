@@ -25,7 +25,7 @@ The CLI resolves `--host <name>` through the shared `HostRegistryService` (ident
 Both entry points reuse the same providers:
 
 - **Target mode** — `saip awake|sleep|down|status --host <name>` operates an existing host.
-- **Deploy mode** — `saip deploy --target <name> -p key=value` provisions/copies a parameterized stack onto a host whose provider implements `deploy()`. Planning is pure and safe; applying is opt-in.
+- **Deploy mode** — `saip deploy --target <name> -p key=value` provisions/copies a parameterized stack onto a host whose provider implements `deploy()`. Planning is pure and safe; applying is opt-in. **Plan output masks every parameter value**, because a value passed on a command line is already exposed to `ps` and shell history and the plan is a log surface; use `--reveal-params` only when you have confirmed the values are not secrets. Prefer `secret:NAME` indirection (`-p SAIP_R2_BUCKET=secret:SAIP_R2_BUCKET`) so no plaintext crosses the process boundary at all.
 
 They share resolution, provider selection, and secret handling, so there is no second implementation to drift.
 
