@@ -10,8 +10,8 @@
  * cannot claim a tier fits that the server then fails to boot.
  */
 import type { Context } from 'cordis'
-import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
+import { existsSync } from 'node:fs'
+import { loadYamlConfig } from '@saip/shared'
 import {
   validateProfiles,
   resolveProfile,
@@ -136,14 +136,19 @@ export async function profileReport(input: ReportInput): Promise<ProfileReport> 
   return { exitCode: 0, text: lines.join('\n'), tiers, resolution, utilization: util, engineArgs }
 }
 
-/** Read the profiles block out of saip.yaml. */
+/**
+ * Read the profiles block out of saip.yaml through the shared loader. Interpolation failures
+ * surface as the report's own configuration error (exit 1) rather than a stack trace, so a
+ * missing variable names itself instead of looking like a broken profile.
+ */
 export function loadProfiles(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): { profiles?: ProfileMap; profile?: string; model?: string; error?: string } {
   if (!existsSync(path)) return { error: `no configuration file at ${path}` }
   try {
-    const doc = parseYaml(readFileSync(path, 'utf8'))
-    return { profiles: doc?.profiles, profile: doc?.profile, model: doc?.model?.base }
+    const doc: any = existsSync(path) ? loadYamlConfig(path) : undefined
+    if (!doc) return { error: `no configuration file at ${path}` }
+    return { profiles: doc.profiles, profile: doc.profile, model: doc.model?.base }
   } catch (err) {
-    return { error: `cannot parse ${path}: ${(err as Error).message}` }
+    return { error: `cannot load ${path}: ${(err as Error).message}` }
   }
 }
 

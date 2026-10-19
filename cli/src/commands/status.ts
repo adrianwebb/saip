@@ -1,15 +1,20 @@
 import type { Context } from 'cordis'
-import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
+import { existsSync } from 'node:fs'
+import { loadYamlConfig } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { runVerb } from '../lib/host-command.js'
 import { resolveForHost } from './profiles.js'
 
-/** Minimal saip.yaml reader (path overridable for tests). */
+/**
+ * Read saip.yaml through the shared loader so `${VAR}` tokens interpolate here exactly as they
+ * do in the gateways — a status line that shows a literal `${SAIP_R2_BUCKET}` while the server
+ * resolved it would be worse than showing nothing. Unreadable or unconfigured stays non-fatal:
+ * status is read-only and must still report what it can.
+ */
 function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): any | undefined {
   try {
     if (!existsSync(path)) return undefined
-    return parseYaml(readFileSync(path, 'utf8'))
+    return loadYamlConfig(path)
   } catch {
     return undefined
   }

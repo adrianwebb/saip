@@ -88,10 +88,15 @@ adapter:
 
 # Remote storage
 storage:
+  # `:-` with an empty default means "supplied at deploy time; unset loads as empty".
+  # Config therefore stays readable offline (`saip profiles`, `status`, tests), while the R2
+  # storage provider refuses to initialise on an empty value and names the variable. Strict
+  # `${VAR}` here would make every command demand cloud credentials just to load a file.
   r2:
-    bucket: "${SAIP_R2_BUCKET}"
-    endpoint: "${SAIP_R2_ENDPOINT}"
-    # Credentials loaded from .env: SAIP_R2_ACCESS_KEY_ID, SAIP_R2_SECRET_ACCESS_KEY
+    bucket: "${SAIP_R2_BUCKET:-}"
+    endpoint: "${SAIP_R2_ENDPOINT:-}"
+    # Credentials are referenced by NAME only and resolved by the secrets layer, never
+    # interpolated into this file: SAIP_R2_ACCESS_KEY_ID, SAIP_R2_SECRET_ACCESS_KEY
   huggingface:
     token_env: "SAIP_HF_TOKEN"
 

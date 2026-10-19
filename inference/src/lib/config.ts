@@ -7,8 +7,8 @@
  * partial configs never crash the boot path.
  */
 
-import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
+import { existsSync } from 'node:fs'
+import { loadYamlConfig } from '@saip/shared'
 import type { AdapterDefinition, UserEntry, ApiTokenConfig } from '@saip/shared'
 import type { ProfileMap } from '@saip/shared'
 
@@ -69,8 +69,17 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
 
   let raw: any
   try {
-    raw = parseYaml(readFileSync(path, 'utf8'))
-  } catch {
+    // Shared loader: YAML parse then ${VAR} interpolation, shell winning over .env.
+    raw = loadYamlConfig(path)
+  } catch (e) {
+    // A missing required variable is a real configuration error and must propagate with the
+    // variable name — swallowing it reproduces the silent-failure class this loader exists to
+    // end. Only unreadable/corrupt YAML keeps the previous lenient behavior.
+    //
+    // Matched by name, not `instanceof`: this package consumes @saip/shared from dist/ while
+    // tests load it from src/, and a dual-identity class makes instanceof fail — which would
+    // silently downgrade a real config error to defaults, the exact failure mode being removed.
+    if ((e as { name?: string })?.name === 'ConfigInterpolationError') throw e
     return structuredClone(DEFAULTS)
   }
   if (!raw || typeof raw !== 'object') return structuredClone(DEFAULTS)

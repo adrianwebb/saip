@@ -4,6 +4,7 @@
 
 export * from './types.js'
 export * from './adapter-registry.js'
+export * from './config-source.js'
 export * from './hosting.js'
 export * from './profiles.js'
 export * from './auth.js'
