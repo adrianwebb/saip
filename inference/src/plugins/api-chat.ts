@@ -11,9 +11,10 @@ import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
 import type { AdapterDefinition, UserEntry } from '@saip/shared'
 import type { Message } from '../lib/config.js'
-import type { VllmBackend } from '../lib/backends.js'
+import type { VllmBackend, VllmStreamChunk } from '../lib/backends.js'
 import { resolveAdapterForCaller } from '../lib/user-resolver.js'
 import { serveVersionFor } from '../lib/serve-resolver.js'
+import { mapBackendError } from '../lib/backend-error.js'
 
 export interface ApiChatConfig {
   users: UserEntry[]
@@ -106,20 +107,47 @@ export class ApiChatService extends Service {
     }
 
     if (body.stream && this.cfg.vllm.stream) {
+      const iterator = this.cfg.vllm.stream(req)[Symbol.asyncIterator]()
+      // Pull the first chunk BEFORE committing to an event-stream response. Once headers are
+      // sent, an engine failure can only surface as a truncated body a client reads as a
+      // successful empty generation; priming turns it into a real 502/504.
+      let first: IteratorResult<VllmStreamChunk | undefined>
+      try {
+        first = await iterator.next()
+      } catch (err) {
+        const mapped = mapBackendError(err)!
+        return c.json(mapped.body, mapped.status as 502)
+      }
       c.header('Content-Type', 'text/event-stream')
       c.header('Cache-Control', 'no-cache')
       const encoder = new TextEncoder()
-      const iterator = this.cfg.vllm.stream(req)[Symbol.asyncIterator]()
+      let primed: IteratorResult<VllmStreamChunk | undefined> | undefined = first
       return c.body(new ReadableStream({
         async pull(controller) {
-          const next = await iterator.next()
-          if (next.done) { controller.enqueue(encoder.encode('data: [DONE]\n\n')); controller.close(); return }
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`))
+          try {
+            const next = primed ?? await iterator.next()
+            primed = undefined
+            if (next.done || !next.value) { controller.enqueue(encoder.encode('data: [DONE]\n\n')); controller.close(); return }
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`))
+          } catch (err) {
+            // Mid-stream failure: headers are already out, so the best honest signal is an
+            // explicit SSE error frame rather than a silent close.
+            const mapped = mapBackendError(err)!
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(mapped.body)}\n\n`))
+            controller.close()
+          }
         },
+        async cancel() { await iterator.return?.() },
       }))
     }
 
-    const resp = await this.cfg.vllm.chat(req)
+    let resp
+    try {
+      resp = await this.cfg.vllm.chat(req)
+    } catch (err) {
+      const mapped = mapBackendError(err)!
+      return c.json(mapped.body, mapped.status as 502)
+    }
     if (body.stream) {
       // Backend without streaming: synthesize one chunk + [DONE].
       c.header('Content-Type', 'text/event-stream'); c.header('Cache-Control', 'no-cache')
