@@ -23,13 +23,61 @@ The mandatory Git/GitHub development and release workflow for any software proje
    ```
 4. **Commit incrementally.** After each logical segment of work (a fix, a sub-feature, a test suite), commit and push to the feature branch. Do not accumulate uncommitted changes across sessions.
 5. **Open a PR when complete**, targeting `staging`, with `Closes #<issue>` in the body. Wait for CI green before merging.
-6. **Reload this skill before completion.** Re-read it before opening the PR to verify branch naming, commit messages, PR template, and cross-linking are correct.
+6. **Delete the branch immediately after the merge** — remote and local, then prune stale remote-tracking refs. A merged branch is dead weight: it cannot receive more work, it clutters every future `git branch -a`, and left-over branches accumulate into a state nobody dares delete. See [Post-Merge Branch Cleanup](#-mandatory-post-merge-branch-cleanup).
+7. **Reload this skill before completion.** Re-read it before opening the PR to verify branch naming, commit messages, PR template, cross-linking, and that every branch you merged has been deleted, are correct.
 
 **Agents may merge PRs to `staging` after all acceptance tests pass. Agents may NOT approve or merge PRs to `main`.** Only the project maintainer approves releases to production. This permission boundary is part of the workflow and is never relaxed by convenience, deadline, or green CI.
 
 **What "may merge to staging" requires.** Merging your own PR to `staging` needs all four: green CI, every acceptance criterion checked against reality, the PR's testing boxes checked from an actual CI run, and review addressed. An agent cannot supply a human approval, so where the project requires a reviewer other than the author, the agent opens the PR and stops; where the project gates only on the four conditions above, the agent merges. If you cannot tell which the project wants, open the PR and ask the maintainer — never assume the merge is yours to take. You may NEVER approve a PR at all, on any branch.
 
 If you find uncommitted work on `staging` or `main`, stop: create the issue and branch NOW, then move the changes onto the proper branch.
+
+## ⚠️ MANDATORY: Post-Merge Branch Cleanup
+
+**The merge is not finished when the PR says MERGED. It is finished when the branch is gone.**
+Delete the branch as the last action of every merge — remote, local, and stale
+remote-tracking refs. Do not batch this up later: later is never, and a pile of
+half-remembered branches is how a repository ends up with 20 refs nobody will touch.
+
+**Never delete a branch that has an open PR, an unmerged PR, or work that is not on the
+integration branch.** Check first; do not infer from branch names.
+
+```bash
+# 1. Which merged PRs still have a live branch? (merged ∩ remote, minus open)
+gh pr list --state merged --limit 100 --json headRefName --jq '.[].headRefName' | LC_ALL=C sort -u > /tmp/merged
+gh pr list --state open   --limit 100 --json headRefName --jq '.[].headRefName' | LC_ALL=C sort -u > /tmp/open
+git ls-remote --heads origin | awk '{print $2}' | sed 's|refs/heads/||' | grep -vxE 'main|staging' | LC_ALL=C sort -u > /tmp/live
+LC_ALL=C comm -12 /tmp/live /tmp/merged | LC_ALL=C comm -23 - /tmp/open    # deletable list
+
+# 2. Delete remote + local, then prune the tracking refs
+git push origin --delete <branch> [<branch> ...]
+git branch -D <branch> [<branch> ...]      # -D, not -d: see the squash caveat below
+git fetch origin --prune
+
+# 3. Prove it: both lists should show only the long-lived branches
+git ls-remote --heads origin && git branch
+```
+
+Four traps that make this go wrong:
+
+1. **`git branch --merged` does not work after a squash merge.** Squashing rewrites history, so
+   the branch tip is not an ancestor of `staging` and `--merged` will not list it — and
+   `git branch -d` will *refuse* to delete a branch whose work is fully landed. Trust the PR
+   state (`gh pr list --state merged --head <branch>`), not ancestry, and use `-D` once you
+   have confirmed the merge commit exists on the integration branch.
+2. **Your local view of the remote lies until you prune.** `git branch -r` keeps showing
+   branches GitHub already deleted (auto-delete-on-merge, or someone else's cleanup), so
+   `git push --delete` fails with `remote ref does not exist` for refs you swore were there.
+   Confirm with `git ls-remote --heads origin` before believing any inventory.
+3. **Deleting in bulk can silently skip some.** A single `git push --delete a b c` that errors
+   on one ref reports the rest as deleted; verify with `ls-remote` afterwards rather than
+   reading the success lines.
+4. **Check for open PRs on the same branch name.** If a branch is reused across stacked PRs,
+   deleting it strands the open one. `comm -23` against the open-PR list is not optional.
+
+**Do not delete the integration branches** (`staging`, `main`, or the project's equivalents),
+and do not delete a branch the maintainer asked to keep. If a branch has no merged PR at all,
+it is not yours to remove — report it and ask.
 
 ## ⚠️ MANDATORY: Documentation-First Development Cycle
 
@@ -83,6 +131,7 @@ Some projects name these differently (`master`/`develop`, `release/*`). Map the 
 4. **`staging` is never behind `main`** except during a hotfix window. After a hotfix merges to `main`, the next release candidate PR must merge `main` back into `staging` to catch up.
 5. **Every feature/fix branch tracks an Issue.** Adopt or create one before starting work; reference it in the branch name, commits, and PR.
 6. **Merge `staging` INTO your feature branch before merging TO `staging`.** Resolve conflicts on the feature branch, never on `staging`.
+7. **A merge is not complete until the branch is deleted** — remote and local, on the same day it merged. Check open PRs first, and remember `git branch --merged` cannot see squash-merged work. See [Post-Merge Branch Cleanup](#-mandatory-post-merge-branch-cleanup).
 
 ## Per-Project Configuration
 
@@ -405,6 +454,12 @@ Traceability. These are REQUIRED, not optional:
 
 7. Address review, then merge to staging (or stop for the maintainer if a non-author approval is required)
    gh pr merge <number> --squash   # only after: green CI + all boxes checked from real results + review addressed
+
+8. Delete the branch you just merged — remote, local, and stale tracking refs
+   git push origin --delete feature/<issue-number>-short-description
+   git branch -D feature/<issue-number>-short-description   # -D: squash merges break -d's ancestry check
+   git fetch origin --prune
+   git ls-remote --heads origin    # verify it is actually gone; trust this, not `git branch -r`
 ```
 
 ### Pre-PR Verification Checklist
@@ -638,6 +693,8 @@ These mean you have left the workflow; fix it before continuing:
 - Approving or merging a PR to `main` as an agent
 - Tagging anything other than `main`, or reusing an existing tag
 - Long-lived branch that has not synced `staging` recently
+- A PR merged whose branch still exists — locally or on the remote (see Post-Merge Branch Cleanup)
+- Deleting a branch because its name looks stale, without confirming a merged PR and no open PR
 - Hotfix that skipped the `main` → `staging` sync
 - Same tool call or command repeated 3+ times without progress (see Agent Loop Guard)
 
@@ -651,6 +708,9 @@ These mean you have left the workflow; fix it before continuing:
 | Check CI status | `gh pr checks <N> --watch` |
 | View failed CI logs | `gh run view <id> --log-failed` |
 | Merge PR (squash) | `gh pr merge <N> --squash` |
+| Delete merged branch (remote + local) | `git push origin --delete <branch> && git branch -D <branch> && git fetch --prune` |
+| List branches that are safe to delete | merged ∩ remote − open, via `gh pr list --state merged/open` + `git ls-remote --heads` |
+| Confirm what actually exists remotely | `git ls-remote --heads origin` *(not `git branch -r`, which is stale until pruned)* |
 | Open release candidate | `gh pr create --base main --head staging --title "RC: <version>"` |
 | Merge RC to main | `gh pr merge <N> --merge` *(maintainer)* |
 | Tag a release | `git tag -a <version> -m "msg" && git push origin main --tags` *(maintainer)* |

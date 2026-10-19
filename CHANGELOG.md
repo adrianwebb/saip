@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+- workflow: `release-workflow` skill and `AGENTS.md` now mandate post-merge branch cleanup — delete the branch (remote + local) as the last action of every merge, with the four traps documented: squash merges defeat `git branch --merged` and `git branch -d`, `git branch -r` is stale until `--prune`, a bulk delete can silently skip refs, and open PRs must be excluded before deleting (#57)
 ### Added
 - shared: service profile seam — `profiles.ts` (tier validation, `GpuProbe` interface with `NvidiaSmiProbe`/`FakeGpuProbe`, profile resolution, derived `gpu_memory_utilization`, vLLM argv rendering) and the `ProfileService` Cordis service, so CLI, inference, and training resolve identical hardware contracts from one probe; capability-gates KV dtypes and fails closed with a named deficit instead of an OOM (#53)
 - inference: profile-driven engine launch — `vllm.Dockerfile` (pinned vLLM 0.31.0, overridable base, shell-interpolated args) and `scripts/generate-engine-args.ts`, which probes the host GPU and renders `.engine-args.env` for compose; documented both service tiers and booted each on real hardware (#53)

@@ -14,6 +14,11 @@ work without an issue and a branch. Never work directly on `staging` or `main`.
 commit messages, PR template, and cross-linking are correct before opening the PR. Agents may merge
 PRs to `staging` after acceptance tests pass. Agents may NOT approve or merge to `main`.
 
+**After every merge:** delete the branch — remote and local — then `git fetch --prune` and confirm
+with `git ls-remote --heads origin`. A merge is not finished until the branch is gone. Check for an
+open PR on that name before deleting, and note that `git branch --merged` cannot see squash-merged
+work, so use `git branch -D` once the merge commit is confirmed on the integration branch.
+
 This gate is non-negotiable. If you find uncommitted work on the wrong branch, stop and fix it now.
 
 ## Documentation-First Development Cycle (MANDATORY)
