@@ -19,6 +19,13 @@ with `git ls-remote --heads origin`. A merge is not finished until the branch is
 open PR on that name before deleting, and note that `git branch --merged` cannot see squash-merged
 work, so use `git branch -D` once the merge commit is confirmed on the integration branch.
 
+**Issue closure happens at release, not at PR merge.** GitHub only executes `Closes #N` when a PR
+merges into the repository's **default** branch, and development PRs here merge to `staging` — so a
+staging PR uses `Part of #<issue>` and its issue stays open by design, not by oversight. The
+`staging` → `main` release candidate carries the `Closes #N` lines, derived mechanically from the
+merged PRs shipping in that release rather than written from memory. Any issue with an unchecked
+acceptance criterion is held out of the closing list and its deficit named in the RC body.
+
 This gate is non-negotiable. If you find uncommitted work on the wrong branch, stop and fix it now.
 
 ## Documentation-First Development Cycle (MANDATORY)
