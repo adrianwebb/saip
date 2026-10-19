@@ -11,7 +11,7 @@
  */
 import type { Context } from 'cordis'
 import { existsSync } from 'node:fs'
-import { loadYamlConfig } from '@saip/shared'
+import { loadYamlConfig, resolveConfigFile } from '@saip/shared'
 import {
   validateProfiles,
   resolveProfile,
@@ -141,12 +141,18 @@ export async function profileReport(input: ReportInput): Promise<ProfileReport> 
  * surface as the report's own configuration error (exit 1) rather than a stack trace, so a
  * missing variable names itself instead of looking like a broken profile.
  */
-export function loadProfiles(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): { profiles?: ProfileMap; profile?: string; model?: string; error?: string } {
-  if (!existsSync(path)) return { error: `no configuration file at ${path}` }
+export function loadProfiles(path?: string): { profiles?: ProfileMap; profile?: string; model?: string; error?: string; loadedFrom?: string } {
+  // Explicit path wins; otherwise search upward from cwd so an installed CLI works from any
+  // directory. loadedFrom is reported so a global install cannot silently read another
+  // project's configuration.
+  const resolved = resolveConfigFile('saip.yaml', { explicit: path, envVar: 'SAIP_CONFIG' })
+  if (resolved.error) return { error: resolved.error }
+  const at = resolved.path
+  if (!at || !existsSync(at)) return { error: 'no saip.yaml found (set SAIP_CONFIG or run from a project directory)' }
+  path = at
   try {
-    const doc: any = existsSync(path) ? loadYamlConfig(path) : undefined
-    if (!doc) return { error: `no configuration file at ${path}` }
-    return { profiles: doc.profiles, profile: doc.profile, model: doc.model?.base }
+    const doc: any = loadYamlConfig(path!)
+    return { profiles: doc.profiles, profile: doc.profile, model: doc.model?.base, loadedFrom: path }
   } catch (err) {
     return { error: `cannot load ${path}: ${(err as Error).message}` }
   }
@@ -200,6 +206,12 @@ export default {
       ...spec,
       action: async (c: Context, options: Record<string, unknown>) => {
         const report = await resolveForHost(options, config)
+        // Which file produced this answer. With a globally installed CLI and several
+        // checkouts on one machine, a silent wrong-config read is the dangerous case.
+        if (!config.profiles) {
+          const from = resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' }).path
+          if (from) console.log(`[saip] config: ${from}`)
+        }
         console.log(report.text)
         process.exitCode = report.exitCode
       },

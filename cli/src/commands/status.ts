@@ -1,5 +1,6 @@
 import type { Context } from 'cordis'
 import { existsSync } from 'node:fs'
+import { resolveConfigFile } from '@saip/shared'
 import { loadYamlConfig } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { runVerb } from '../lib/host-command.js'
@@ -11,9 +12,11 @@ import { resolveForHost } from './profiles.js'
  * resolved it would be worse than showing nothing. Unreadable or unconfigured stays non-fatal:
  * status is read-only and must still report what it can.
  */
-function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): any | undefined {
+function loadConfig(path?: string): any | undefined {
+  const r = resolveConfigFile('saip.yaml', { explicit: path, envVar: 'SAIP_CONFIG' })
+  path = r.path
   try {
-    if (!existsSync(path)) return undefined
+    if (!path || !existsSync(path)) return undefined
     return loadYamlConfig(path)
   } catch {
     return undefined

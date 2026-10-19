@@ -8,10 +8,11 @@
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/mark-bin-executable.mjs",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "install:local": "node scripts/install-link.mjs"
   },
   "dependencies": {
     "@saip/shared": "workspace:*",
@@ -26,5 +27,12 @@
     "tsx": "^4.19.0",
     "vitest": "^3.0.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "scripts"
+  ]
 }

@@ -8,7 +8,8 @@
  */
 
 import { Service } from 'cordis'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import type { AdapterDefinition } from './types.js'
 import {
   validateRegistry,
@@ -24,7 +25,7 @@ import {
   type HostValidationError,
   type SecretsProvider,
 } from './hosting.js'
-import { loadYamlConfig } from './config-source.js'
+import { loadYamlConfig, resolveConfigFile } from './config-source.js'
 import { defaultSecretsProvider } from './secrets-store.js'
 import {
   validateProfiles,
@@ -107,16 +108,28 @@ export class HostRegistryService extends Service {
   static readonly provide = HOST_REGISTRY_SERVICE
   private hosts: HostConfig[] = []
 
-  constructor(ctx: any, config: { path?: string; inline?: HostRegistryFile } = {}) {
+  constructor(ctx: any, config: { path?: string; inline?: HostRegistryFile; env?: NodeJS.ProcessEnv } = {}) {
     super(ctx, HOST_REGISTRY_SERVICE)
     if (config.inline) {
       this.hosts = config.inline.hosts ?? []
-    } else if (config.path && existsSync(config.path)) {
-      // Same loader as saip.yaml: hosts.yaml may carry ${VAR} endpoints that must not be
-      // treated as literal hostnames.
-      this.hosts = ((loadYamlConfig<{ hosts?: unknown }>(config.path).hosts ?? []) as HostConfig[])
+      return
+    }
+    // Explicit path (or SAIP_HOSTS_FILE) wins; otherwise search upward from cwd, so an
+    // installed CLI reads the registry of the project it was pointed at instead of the
+    // directory it happens to be standing in. A directory may be given and hosts.yaml is
+    // then looked for inside it. Same loader as saip.yaml, because hosts.yaml may carry
+    // ${VAR} endpoints that must not be treated as literal hostnames.
+    let explicit = config.path ?? config.env?.SAIP_HOSTS_FILE ?? process.env.SAIP_HOSTS_FILE
+    if (explicit && existsSync(explicit) && statSync(explicit).isDirectory()) explicit = join(explicit, 'hosts.yaml')
+    const found = resolveConfigFile('hosts.yaml', { explicit }).path
+    this.source = found
+    if (found && existsSync(found)) {
+      this.hosts = ((loadYamlConfig<{ hosts?: unknown }>(found).hosts ?? []) as HostConfig[])
     }
   }
+
+  /** Which hosts.yaml was loaded, for `saip status` to print. Undefined when none was. */
+  source?: string
 
   list(): HostConfig[] { return this.hosts }
 
