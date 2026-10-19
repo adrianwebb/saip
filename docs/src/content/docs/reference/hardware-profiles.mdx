@@ -83,16 +83,18 @@ three times in minutes while continuing to reserve VRAM. Rendering the arguments
 time from a live probe — rather than committing a utilization constant — is what converts
 that failure into a message you can act on before anything starts.
 
-A profile is selected by name, or resolved automatically from a GPU probe:
+A profile is resolved automatically from a GPU probe, or pinned by name:
 
 ```yaml
-# saip.yaml
-profile: inference-8gb
+# saip.yaml — intentionally NOT pinned, so a 16 GB dev machine is not capped at the 8 GB
+# tier. Pin only to hold a machine down on purpose (CI, a shared GPU, reproducing a report).
+# profile: inference-8gb
 ```
 
 With `profile` omitted, SAIP picks the highest tier the detected card satisfies and
 **fails closed** if none fits, naming the measured deficit instead of letting the engine
-OOM minutes later.
+OOM minutes later. `saip awake --profile <name>` pins a single run; `saip profiles` prints
+what resolved, what it would run, and why anything was ruled out.
 
 ## Why this model fits at all
 

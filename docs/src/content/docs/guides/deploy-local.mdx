@@ -117,12 +117,16 @@ For local deployments, use a dedicated R2 bucket (e.g., `saip-local`) to avoid c
 
 ### Select a Service Profile
 
-The active profile is declared in `saip.yaml` and selects the engine arguments, the VRAM
-ceiling, and the KV-cache dtype your GPU can safely use:
+The profile selects the engine arguments, the VRAM ceiling, and the KV-cache dtype your GPU
+can safely use. It is resolved automatically from the card, so `saip.yaml` leaves it unset:
 
 ```yaml
-profile: inference-8gb     # or: full-loop-12gb
+# profile: inference-8gb   # uncomment to pin a tier (or: full-loop-12gb)
 ```
+
+Pinning is for holding a machine down on purpose — CI, a GPU shared with other workloads, or
+reproducing a report. On a 16 GB dev machine a pinned `inference-8gb` will quietly cap you at
+the smaller tier, so check what resolved before concluding a tier is slow.
 
 If `profile` is omitted, SAIP probes the GPU (`nvidia-smi`) and picks the highest tier the
 card satisfies, then **fails closed** with a named error if none fits — rather than

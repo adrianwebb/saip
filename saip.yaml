@@ -24,7 +24,11 @@ model:
 # probed GPU; resolution FAILS CLOSED (exit 2) when no tier fits rather than letting the
 # engine OOM later. `gpu_memory_utilization` is derived from vram_ceiling_gib over the
 # card's TOTAL memory and gated on measured FREE memory, so it is never set here.
-profile: inference-8gb
+#
+# Deliberately NOT pinned: hard-coding a tier here would cap a 16 GB dev machine at the
+# 8 GB tier forever. Pin it only to hold a machine down on purpose (CI, a shared GPU, or
+# reproducing a report), or pass `--profile` for a single run.
+# profile: inference-8gb
 
 profiles:
   # Measured on an RTX 3080 Laptop (SM 8.6): 6,988 MiB peak, coherent generation,
