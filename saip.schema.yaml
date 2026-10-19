@@ -1,5 +1,16 @@
 # JSON Schema for saip.yaml
-# Used by shared/src/config-schema.ts for runtime validation
+#
+# NORMATIVE SHAPE of the platform config. It is NOT enforced as a whole document: the
+# runtime validators live in @saip/shared and cover specific sections —
+#   - adapters/users   -> AdapterRegistryService (shared/src/services.ts)
+#   - hosts.yaml       -> HostRegistryService   (shared/src/services.ts)
+#   - profile/profiles -> ProfileService        (added by #53)
+# A whole-document JSON-Schema validator (shared/src/config-schema.ts) does not exist;
+# earlier revisions of this header claimed it did. Do not restate that claim.
+#
+# NOTE: additionalProperties is false below, so any new top-level key (e.g. `profiles`)
+# must be added to `properties` at the same time it is implemented, or the file will
+# describe a config that the schema rejects.
 
 $schema: "https://json-schema.org/draft/2020-12/schema"
 title: SAIP Platform Configuration
@@ -25,19 +36,118 @@ properties:
     properties:
       base:
         type: string
-        description: HuggingFace model ID
+        description: HuggingFace model ID (reference: QuantTrio/Qwen3.5-4B-AWQ)
+      revision:
+        type: string
+        description: Commit hash pinning the checkpoint (recorded in the adapter manifest)
       quantization:
         type: string
         enum: [awq, gptq, bitsandbytes, none]
         default: awq
+        description: >-
+          Must match a checkpoint already quantized in this format; vLLM cannot AWQ-quantize
+          a BF16 checkpoint at load time. bitsandbytes is not a supported multi-LoRA path.
       max_model_len:
         type: integer
         minimum: 1024
-        default: 65536
+        description: >-
+          Optional override. Normally owned by the active profile, since the safe ceiling
+          depends on the card (24576 at the 8 GB tier, 65536 at 12 GB).
       dtype:
         type: string
-        enum: [float16, bfloat16, float32]
-        default: float16
+        enum: [float16, bfloat16, float32, auto]
+        default: auto
+        description: bfloat16 requires compute capability 8.0 or newer
+      language_model_only:
+        type: boolean
+        default: true
+        description: Skip the vision encoder (~0.6 GiB). Disables image/video inputs.
+      kv_cache_dtype:
+        type: string
+        enum: [auto, float16, bfloat16, fp8, fp8_e4m3, fp8_e5m2, int8_per_token_head]
+        default: auto
+        description: >-
+          fp8* and int8_per_token_head require compute capability 8.9+; below that
+          ProfileService rejects them (int8 is accepted by vLLM but silently corrupts
+          output on Ampere).
+
+  # --- Service profiles (hardware contract; enforced by ProfileService) ---
+  profile:
+    type: string
+    description: >-
+      Name of the active entry in `profiles`. Omit to auto-resolve from a GPU probe to the
+      highest tier the card satisfies; fails with exit code 2 if none fits.
+
+  profiles:
+    type: object
+    description: Named service profiles, one per supported hardware tier.
+    minProperties: 1
+    additionalProperties:
+      type: object
+      required: [min_vram_gib, min_capability, vram_ceiling_gib, engine]
+      additionalProperties: false
+      properties:
+        description:
+          type: string
+        min_vram_gib:
+          type: integer
+          minimum: 4
+          description: Total VRAM the card must have
+        min_capability:
+          type: number
+          description: Minimum NVIDIA compute capability (7.5 / 8.0 / 8.9)
+        vram_ceiling_gib:
+          type: number
+          exclusiveMinimum: 0
+          description: >-
+            Hard budget for the vLLM process. gpu_memory_utilization is DERIVED from this
+            (ceiling / total VRAM) and checked against measured free memory at launch.
+            Never a constant.
+        engine:
+          type: object
+          additionalProperties: false
+          properties:
+            max_model_len:
+              type: integer
+              minimum: 1024
+            kv_cache_dtype:
+              type: string
+              enum: [auto, float16, bfloat16, fp8, fp8_e4m3, fp8_e5m2, int8_per_token_head]
+            enforce_eager:
+              type: boolean
+            enable_lora:
+              type: boolean
+            max_loras:
+              type: integer
+              minimum: 1
+            max_lora_rank:
+              type: integer
+              minimum: 1
+            language_model_only:
+              type: boolean
+            max_num_seqs:
+              type: integer
+              minimum: 1
+              description: >-
+                Concurrency ceiling. On hybrid gated-deltanet models each decode sequence
+                pins one fixed-size Mamba cache block; with CUDA graphs enabled vLLM aborts
+                if its default (256) exceeds the blocks the memory budget can hold.
+        training:
+          type: object
+          description: Present only on tiers that can fine-tune locally.
+          additionalProperties: false
+          properties:
+            precision:
+              type: string
+              enum: [bf16, fp16]
+            sequence_len:
+              type: integer
+              minimum: 256
+            gradient_checkpointing:
+              type: boolean
+            optimizer:
+              type: string
+              enum: [adamw_bnb_8bit, adamw_torch_4bit, adamw_torch]
 
   adapter:
     type: object
@@ -55,6 +165,10 @@ properties:
         items:
           type: string
         default: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+        description: >-
+          Default covers the 8 full-attention layers and all MLPs. Qwen3.5 additionally
+          exposes gated-deltanet projections (in_proj_qkvz, in_proj_ba — 24 of 32 layers)
+          as LoRA-addressable; targeting them is opt-in, not the default.
 
   storage:
     type: object

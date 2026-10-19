@@ -11,9 +11,9 @@ Before you begin, make sure you have the following:
 
 1. **Node.js ≥22** — SAIP's CLI and tooling require Node.js 22 or later. Verify with `node --version`.
 2. **Docker Compose v2** — The inference and training stacks run as Docker Compose services. Verify with `docker compose version`.
-3. **NVIDIA GPU with ≥7GB VRAM** — vLLM requires a CUDA-capable GPU. A minimum of 7GB VRAM is needed for Qwen3.5-4B with AWQ quantization. Verify with `nvidia-smi`.
+3. **NVIDIA GPU with ≥8 GB VRAM** — vLLM requires a CUDA-capable GPU. 8 GB VRAM is the floor for serving Qwen3.5-4B (AWQ, text-only) with adapters; **12 GB** is the floor if you also intend to fine-tune locally. Compute capability 7.5 or newer is required, and 8.0 (Ampere) or newer for bf16 training. Verify with `nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader`. See [Hardware Profiles](/saip/reference/hardware-profiles/).
 4. **Cloudflare R2 bucket** — SAIP stores trained adapters in object storage. Create an R2 bucket in your Cloudflare dashboard and generate an API token with read/write access.
-5. **HuggingFace account with Qwen3.5-4B access** — The base model is gated. Request access at [Qwen/Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) and generate an access token in your HuggingFace settings.
+5. **HuggingFace token (optional)** — The reference checkpoint, `QuantTrio/Qwen3.5-4B-AWQ`, is public Apache-2.0 and downloads without a token; supplying one only lifts rate limits on large pulls. Set `SAIP_HF_TOKEN` if your environment requires it.
 
 :::note
 SAIP currently supports NVIDIA GPUs only. AMD ROCm and Apple Silicon support are planned for future releases.

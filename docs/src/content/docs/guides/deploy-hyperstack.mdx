@@ -40,9 +40,17 @@ Choose a GPU that meets your model's VRAM requirements:
 
 | Model Size | Recommended GPU | VRAM | Hourly Cost (approx.) |
 |------------|----------------|------|-----------------------|
+| Qwen3.5-4B AWQ (SAIP reference) | RTX A4000 / L4 | 16 GB / 24 GB | $0.35 |
 | 7B AWQ | RTX A4000 | 16 GB | $0.35 |
 | 13B AWQ | RTX A5000 | 24 GB | $0.55 |
 | 70B GPTQ | A100 80GB | 80 GB | $2.10 |
+
+The SAIP reference model runs the `inference-8gb` profile on an 8 GB card, so any cloud GPU
+at 12 GB or above serves it on `full-loop-12gb` with room to keep CUDA graphs enabled —
+which is not affordable locally and is worth paying for at high concurrency. Prefer compute
+capability 8.9 or newer (L4, RTX 40-series, H100) if you want 8-bit KV cache: below that,
+fp8 is rejected and int8 corrupts output. See
+[Hardware Profiles](/saip/reference/hardware-profiles/).
 
 Create via the Hyperstack dashboard or CLI:
 
@@ -197,8 +205,9 @@ Spot instances can be reclaimed with 2-minute notice. SAIP checkpoints every 100
 
 ### Right-Sizing
 
-- **Inference:** Match GPU VRAM to model size + KV cache. A 7B AWQ model needs ~5 GB for weights; allocate 12–16 GB total for comfortable KV cache headroom.
-- **Training:** LoRA/QLoRA fine-tuning of 7B models fits in 24 GB. Full fine-tuning requires 80 GB. Don't over-provision.
+- **Inference:** Match GPU VRAM to weights + KV cache + fixed per-sequence state. The SAIP reference model (Qwen3.5-4B AWQ, text-only) measures **5.35 GB of weights**; add ~0.9 GB of KV cache at 24,576 tokens, ~0.5 GB for four LoRA slots, and ~2.65 GB more if CUDA graphs stay enabled. A 12 GB card covers that comfortably; 8 GB covers it only with `enforce_eager`. A 7B AWQ model needs ~5 GB for weights; allocate 12–16 GB total for comfortable KV cache headroom.
+- **Training:** bf16 LoRA on the 4B reference model measures ~10 GB at 2048-token sequences, so 12 GB is the practical minimum and 24 GB removes the compromises. LoRA/QLoRA fine-tuning of 7B models fits in 24 GB. Full fine-tuning requires 80 GB. Don't over-provision.
+- **Renting for training only:** the common hybrid — inference stays on a local 8 GB card while a burst training node runs `full-loop-12gb` or larger. Both gateways reach the same R2 bucket, so nothing changes but `hosts.yaml`.
 
 ### Idle Shutdown
 

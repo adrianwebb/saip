@@ -1,5 +1,20 @@
-# SAIP Inference Gateway
-# Usage: docker compose -f inference/docker-compose.yml up -d
+# SAIP Inference Gateway stack
+#
+# Usage:
+#   1. Render engine args for THIS host's GPU (required — see note below):
+#        npx tsx inference/scripts/generate-engine-args.ts
+#      or: saip awake  (the CLI runs this for you)
+#   2. Start the stack:
+#        docker compose -f inference/docker-compose.yml up -d
+#   3. Watch the engine come up (cold model load is ~2 min):
+#        docker compose -f inference/docker-compose.yml logs -f vllm
+#
+# Why the args are generated rather than written here:
+#   --gpu-memory-utilization is a fraction of the card's TOTAL memory, and startup aborts if
+#   FREE memory at launch is below that product. A constant committed to this file is wrong
+#   on every card except the one it was tuned for, and unusable on a desktop-shared GPU.
+#   It is derived from the active service profile against measured memory — see
+#   docs/src/content/docs/reference/hardware-profiles.mdx.
 
 services:
   inference-api:
@@ -13,36 +28,51 @@ services:
     volumes:
       - ../saip.yaml:/app/saip.yaml:ro
       - adapter-cache:/app/adapters
+    environment:
+      # Reach the engine by service name on the compose network.
+      SAIP_VLLM_BASE_URL: http://vllm:8000/v1
     depends_on:
       vllm:
         condition: service_healthy
     restart: unless-stopped
-
-  vllm:
-    image: vllm/vllm-openai:latest
-    runtime: nvidia
-    ports:
-      - "8080:8000"
-    env_file:
-      - ../.env
-    volumes:
-      - model-cache:/root/.cache/huggingface
-      - adapter-cache:/adapters
-    command: >
-      --model ${SAIP_MODEL_BASE:-Qwen/Qwen3.5-4B}
-      --quantization ${SAIP_MODEL_QUANTIZATION:-awq}
-      --max-model-len ${SAIP_MAX_MODEL_LEN:-65536}
-      --dtype ${SAIP_MODEL_DTYPE:-float16}
-      --enable-lora
-      --max-loras ${SAIP_MAX_LORAS:-4}
-      --max-cpu-loras ${SAIP_MAX_CPU_LORAS:-32}
-      --lora-modules ""
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 20s
+
+  vllm:
+    build:
+      context: ..
+      dockerfile: inference/vllm.Dockerfile
+    image: saip-vllm:v0.31.0
+    # Host port is configurable: 8080 is already claimed on machines that also run the
+    # dsh-chapters model server, and the gateway itself listens on 8000.
+    ports:
+      - "${SAIP_VLLM_PORT:-8081}:8000"
+    env_file:
+      - ../.env
+      - ./.engine-args.env
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - adapter-cache:/adapters
+    environment:
+      # Runtime LoRA loading lets the gateway swap adapters without a restart. The engine
+      # only accepts adapters whose contents it supports: no DoRA vectors, no
+      # embed_tokens / lm_head modules — the compiler must not emit those.
+      VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
+      HF_HUB_OFFLINE: "${SAIP_HF_OFFLINE:-0}"
+    shm_size: "2gb"
+    healthcheck:
+      # Cold load includes torch.compile plus CUDA-graph capture; 120s is too short for a
+      # first boot on a laptop GPU.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 60
+      start_period: 300s
+    restart: unless-stopped
     deploy:
       resources:
         reservations:
@@ -53,4 +83,6 @@ services:
 
 volumes:
   model-cache:
+    name: saip-model-cache
   adapter-cache:
+    name: saip-adapter-cache

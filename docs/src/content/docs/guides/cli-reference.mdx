@@ -24,7 +24,7 @@ Start SAIP services and load the model into GPU memory.
 ### Synopsis
 
 ```bash
-saip awake [--bucket <name>] [--model <identifier>] [--gpu <device>]
+saip awake [--bucket <name>] [--profile <name>] [--model <identifier>] [--gpu <device>]
 ```
 
 ### Options
@@ -32,6 +32,7 @@ saip awake [--bucket <name>] [--model <identifier>] [--gpu <device>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--bucket <name>` | `$R2_BUCKET_NAME` | R2 bucket to sync models and adapters from |
+| `--profile <name>` | auto-resolved | Service profile to run (`inference-8gb` or `full-loop-12gb`). Overrides `saip.yaml`; without it, the GPU is probed and the highest tier the card satisfies is chosen. Fails with exit 2 if no profile fits. |
 | `--model <identifier>` | `$SAIP_MODEL` | Model to load (overrides `.env`) |
 | `--gpu <device>` | `$SAIP_GPU_DEVICE` | GPU device index (overrides `.env`) |
 | `--no-sync` | false | Skip R2 model sync; use local cache only |
@@ -40,9 +41,10 @@ saip awake [--bucket <name>] [--model <identifier>] [--gpu <device>]
 ### What It Does
 
 1. **Validates configuration** — checks `.env` for required variables and verifies GPU availability.
-2. **Pulls Docker images** — pulls the inference container image if not cached locally.
-3. **Syncs model from R2** — downloads model weights and adapter files from the specified bucket (skipped with `--no-sync`).
-4. **Starts inference container** — launches the vLLM server with GPU passthrough.
+2. **Resolves the service profile** — probes the GPU for name, total/free VRAM, and compute capability; selects the tier; rejects any `kv_cache_dtype` the card cannot use; derives `gpu_memory_utilization` from measured free memory.
+3. **Pulls Docker images** — pulls the inference container image if not cached locally.
+4. **Syncs model from R2** — downloads model weights and adapter files from the specified bucket (skipped with `--no-sync`).
+5. **Starts inference container** — launches the vLLM server with GPU passthrough.
 5. **Runs health check** — polls `/health` until the server responds or times out (60s default).
 6. **Reports readiness** — prints the API endpoint and loaded model info.
 
@@ -51,18 +53,22 @@ saip awake [--bucket <name>] [--model <identifier>] [--gpu <device>]
 ```
 $ saip awake --bucket saip-production
 [awake] Validating configuration... OK
-[awake] GPU 0: NVIDIA RTX A4000 (16 GB VRAM, 4.2 GB free)
+[awake] GPU 0: NVIDIA RTX A4000 (16 GB VRAM, 4.2 GB free, compute capability 8.6)
+[awake] Resolving profile... full-loop-12gb (ceiling 11.0 GiB; free 4.2 GiB is below it)
+[awake] Deriving gpu_memory_utilization... 0.26 (free VRAM minus headroom, over total)
 [awake] Pulling saip-inference:v0.3.1... done (cached)
 [awake] Syncing model from R2 (saip-production)...
-  ├─ Qwen/Qwen2.5-7B-Instruct-AWQ ... 4.2 GB ✓
+  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB ✓
   ├─ adapters/general@000042 ... 128 MB ✓
   └─ adapters/coding@000018 ... 96 MB ✓
 [awake] Starting inference container... running (pid 48291)
 [awake] Waiting for health check... ✓ (8.3s)
 [awake] Ready — http://localhost:8000/v1
-  Model: Qwen/Qwen2.5-7B-Instruct-AWQ
-  Adapters: general@000042, coding@000018
-  Max context: 4096 tokens
+  Model: QuantTrio/Qwen3.5-4B-AWQ
+  Profile: full-loop-12gb
+  Adapters: general@000042, coding@000018 (4 slots, rank 16)
+  Max context: 65536 tokens
+  KV cache: auto (16-bit — fp8/int8 forbidden below compute capability 8.9)
 ```
 
 ### Exit Codes
@@ -70,8 +76,8 @@ $ saip awake --bucket saip-production
 | Code | Meaning |
 |------|---------|
 | 0 | Services started successfully |
-| 1 | Configuration error (missing env var, invalid YAML) |
-| 2 | GPU unavailable or insufficient VRAM |
+| 1 | Configuration error (missing env var, invalid YAML, invalid profile) |
+| 2 | GPU unavailable or insufficient VRAM (names the measured deficit and the tier's ceiling) |
 | 3 | R2 sync failed (network, auth, or missing bucket) |
 | 4 | Health check timeout (container started but API unresponsive) |
 
@@ -212,13 +218,20 @@ Services:
 
 GPU:
   device:       0 (NVIDIA RTX A4000)
-  vram:         12.1 / 16.0 GB used (75.6%)
+  capability:   8.6
+  vram:         12.1 / 16.0 GB used (75.6%), 3.9 GB free
   temperature:  62°C
   utilization:  34%
 
+Profile:
+  active:       inference-8gb
+  ceiling:      7.0 GiB
+  gpu_memory_utilization: 0.44 (derived from free VRAM)
+  kv_cache_dtype: auto (fp8/int8 unavailable below capability 8.9)
+
 Model:
-  base:         Qwen/Qwen2.5-7B-Instruct-AWQ
-  max_context:  4096 tokens
+  base:         QuantTrio/Qwen3.5-4B-AWQ
+  max_context:  24576 tokens
   loaded:       yes
 
 Adapters:

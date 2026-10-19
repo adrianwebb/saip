@@ -1,0 +1,375 @@
+---
+title: Hardware Profiles
+description: Reference for SAIP service profiles — the measured VRAM ceilings, GPU capability tiers, and engine arguments each profile implies
+---
+
+A **service profile** is a declared hardware contract: the model and engine arguments
+SAIP serves with, the VRAM ceiling it will not exceed, and the GPU capabilities the
+configuration requires. Profiles exist because the same model has very different
+footprints on different silicon, and because two configurations in this document
+**produce corrupted output silently** rather than failing loudly.
+
+Profiles are declared in [`saip.yaml`](/saip/reference/configuration/) and resolved by
+`ProfileService` in `@saip/shared`, which probes the GPU through the `GpuProbe` seam. The
+CLI, inference gateway, and training gateway all enforce identical rules, the same way
+[`hosts.yaml`](/saip/reference/hosts-config/) is validated by `HostRegistryService`.
+
+:::note[These numbers are measured, not modeled]
+Every figure below was taken on a single NVIDIA **RTX 3080 Laptop GPU** (compute
+capability **8.6**, 15.58 GiB total) running **vLLM 0.31.0** with
+`QuantTrio/Qwen3.5-4B-AWQ`. Repro commands are in
+[Measuring your own card](#measuring-your-own-card). Re-measure before citing these on a
+different vLLM version — see [Version drift](#version-drift).
+:::
+
+## The profiles
+
+| | `inference-8gb` | `full-loop-12gb` |
+|---|---|---|
+| **Purpose** | Serve the model; collect learning data | Serve *and* fine-tune, time-shared |
+| **Minimum VRAM** | 8 GB | 12 GB |
+| **Minimum compute capability** | 7.5 | 8.0 (Ampere — bf16 training) |
+| **VRAM ceiling (vLLM)** | 7.0 GiB | 11.0 GiB |
+| **`max_model_len`** | 24,576 | 65,536 |
+| **`kv_cache_dtype`** | `auto` (16-bit) | `auto` (16-bit) |
+| **`language_model_only`** | `true` | `true` |
+| **`enforce_eager`** | `true` | `false` |
+| **`max_num_seqs`** | unset (engine default) | **128** — see [Mamba cache blocks](#mamba-cache-blocks-the-concurrency-ceiling) |
+| **`enable_lora` / `max_loras` / `max_lora_rank`** | `true` / 4 / 16 | `true` / 4 / 16 |
+| **Measured peak** | 6,988 MiB (6.82 GiB) | 10,150 MiB (9.91 GiB) |
+| **Measured KV capacity** | 25,967 tokens | 104,057 tokens |
+| **Verified on** | RTX 3080 Laptop, vLLM 0.31.0 | RTX 3080 Laptop, vLLM 0.31.0 |
+| **Training** | not supported | bf16 LoRA, `sequence_len` 2048 |
+
+Both tiers were booted through the shipped compose stack and checked for coherent
+generation, a working `tool_calls` round-trip, and loaded adapter slots — not merely for a
+successful startup.
+
+### Mamba cache blocks: the concurrency ceiling
+
+`full-loop-12gb` requires `max_num_seqs: 128`, and that is not a tuning preference. With
+CUDA graphs enabled at 65,536-token context the engine refuses to start:
+
+```
+ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (236). Each decode
+sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please
+lower max_num_seqs to at most 236 or increase gpu_memory_utilization.
+```
+
+This is the fixed per-sequence delta-net state (~48 MiB, see
+[Why this model fits at all](#why-this-model-fits-at-all)) asserting itself: every
+concurrent sequence pins one block *whatever its length*, so the block count is fixed by the
+memory budget and can fall below vLLM's default of 256. Two consequences worth
+internalizing:
+
+- **Concurrency, not context length, is the scarce resource on this architecture.** A
+  hundred short requests cost about what a hundred long ones do.
+- The limit moves with the ceiling, context length, and LoRA slots. 128 is the measured
+  value for this tier; lower it further if you shrink the ceiling.
+
+### Utilization has to be derived, or the tier thrashes
+
+Because vLLM gates on *free* memory, starting a stack while another engine holds the card
+fails with a named deficit instead of launching a crash loop:
+
+```
+[engine-args] insufficient_free_vram: profile ceiling is 11 GiB but only 2.67 GiB is free
+(needs 11 GiB + 0.5 GiB headroom on a 16 GiB card). Close other GPU users, or select a
+smaller profile.
+```
+
+Observed directly: a container started with a profile the card could not hold restarted
+three times in minutes while continuing to reserve VRAM. Rendering the arguments at deploy
+time from a live probe — rather than committing a utilization constant — is what converts
+that failure into a message you can act on before anything starts.
+
+A profile is selected by name, or resolved automatically from a GPU probe:
+
+```yaml
+# saip.yaml
+profile: inference-8gb
+```
+
+With `profile` omitted, SAIP picks the highest tier the detected card satisfies and
+**fails closed** if none fits, naming the measured deficit instead of letting the engine
+OOM minutes later.
+
+## Why this model fits at all
+
+The VRAM story is dominated by the **architecture**, not by quantization tricks.
+`Qwen/Qwen3.5-4B` declares 32 layers with `full_attention_interval: 4`:
+
+```json
+"layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention", ...]
+```
+
+Only **8 of 32 layers hold a KV cache**. The other 24 are gated-deltanet (linear)
+attention carrying a *fixed-size* recurrent state that does not grow with context.
+
+| Quantity | Formula | Value |
+|---|---|---|
+| KV cache per token, 16-bit | `2 × 8 layers × 4 KV heads × 256 head_dim × 2 B` | 32 KiB (measured 34.6 KiB with block alignment) |
+| KV cache per token, 8-bit | halved | 16 KiB (measured 20.3 KiB — per-token-head scales + padding) |
+| Gated-deltanet state | `32 v-heads × 128 × 128 × 4 B × 24 layers` | **48 MiB per sequence, independent of context** |
+
+The practical consequences:
+
+- Long context is comparatively cheap. 24,576 tokens of KV cache costs ~0.9 GiB, not the
+  ~4.6 GiB a dense 4B model would need.
+- **Concurrency** is what costs memory here: every additional sequence adds its own 48 MiB
+  of delta state, regardless of how short it is.
+- 8-bit KV cache buys far less than its reputation, because KV is already a small slice of
+  the footprint. The measured gain was ~1.6× cache *capacity*, against a known
+  [hybrid-model caveat](https://github.com/vllm-project/vllm/issues/55196) of ~1.84× at
+  32k and none at short context — and as shown next, it is unusable below SM 8.9 anyway.
+
+### Memory budget, `inference-8gb`
+
+| Component | Measured |
+|---|---|
+| Model weights (AWQ, text-only via `language_model_only`) | 5.35 GiB |
+| LoRA, 4 active slots at rank 16 | 0.53 GiB |
+| KV cache pool | 0.91 GiB |
+| Runtime/activations (eager) | ~0.55 GiB |
+| **Total** | **6,988 MiB (6.82 GiB)** |
+| *Optional, not affordable at 8 GB:* CUDA graph capture | *+2.65 GiB* |
+
+Two budget notes that are easy to get wrong:
+
+- **`language_model_only` is not optional on this tier.** The checkpoint is a
+  vision-language model; skipping the encoder reclaims ~0.6 GiB. The trade-off is real:
+  image and video inputs are unavailable, so Data API document processing that relies on
+  the model's vision cannot run on a text-only server.
+- **The checkpoint is only 4-bit in its MLP.** `QuantTrio/Qwen3.5-4B-AWQ` sets
+  `modules_to_not_convert: [visual, linear_attn, self_attn, mtp]`, leaving attention,
+  delta-net, embeddings, and the MTP layer at 16-bit. That is why a "4-bit 4B" checkpoint
+  occupies 5.67 GiB rather than the ~2.5 GiB an all-linear AWQ build would.
+
+## GPU capability tiers
+
+The `kv_cache_dtype` you may use is a function of compute capability, and the failure
+mode of getting it wrong is **silent corruption**.
+
+| Capability | Cards | 16-bit KV | 8-bit KV | fp8 KV | bf16 compute | Notes |
+|---|---|---|---|---|---|---|
+| **7.5** | RTX 20-series, T4, Quadro RTX | `float16` only | none | none | **no** | Triton rejects `bfloat16` below SM 80; FlashInfer floor raised to SM 80 ([broken on SM 75](https://github.com/vllm-project/vllm/issues/47549)); FA2 needs a separate [Turing build](https://github.com/Dao-AILab/flash-attention#installing-and-using-transformers-flash-attention) |
+| **8.0 / 8.6** | RTX 30-series, A10, A100 | `bfloat16` | **forbidden** (corrupts) | rejected below SM 89 | yes | Triton's runtime guard tests only `startswith("fp8")`, so `int8_per_token_head` passes validation and then corrupts |
+| **8.9** | RTX 40-series, L4, Ada | yes | yes | `fp8_e4m3` (storage only) | yes | Native `fp8e4nv` from SM 89; attention is *not* computed in fp8 here |
+| **9.0** | H100/H200, Hopper | yes | yes | **first-class** | yes | FlashAttention-3 runs QK and ScoreV matmuls in fp8 |
+| **10.x** | B200/GB200, Blackwell | yes | yes | yes (FA4) | yes | |
+
+`SAIP_GPU_MEMORY_UTILIZATION` and `kv_cache_dtype` interact: see
+[Utilization semantics](#utilization-semantics).
+
+### Forbidden: 8-bit KV on compute capability below 8.9
+
+Measured on SM 8.6, same weights, same context, same `gpu_memory_utilization`:
+
+| `kv_cache_dtype` | Peak VRAM | Reported cache | Output |
+|---|---|---|---|
+| `int8_per_token_head` | 6,988 MiB | 68,985 tokens | `'Thinking式erson当然zil directions零八inter…'` |
+| `auto` (bf16) | 7,170 MiB | 43,215 tokens | coherent, correctly formatted |
+
+`int8_per_token_head` is *accepted*, logs `Using int8_per_token_head data type to store kv
+cache. It reduces the GPU memory footprint and boosts the performance`, reports **more**
+cache capacity than the 16-bit run, and returns garbage with no error and no warning. The
+result was identical with LoRA disabled, which isolates the KV path rather than the
+adapter path as the cause. It is the same failure family as the known
+[`fp8_e5m2`-on-Triton mis-storage bug](https://github.com/vllm-project/vllm/pull/54341),
+where the writer stores `e4m3` bits that the reader interprets as `e5m2`.
+
+**Rule enforced by `ProfileService`:** any `kv_cache_dtype` beginning `fp8`, and
+`int8_per_token_head` / `int4_per_token_head` / `turboquant*`, require compute capability
+≥ 8.9. On older cards the only permitted values are `auto`, `bfloat16` (SM ≥ 8.0), and
+`float16`.
+
+## Engine arguments per profile
+
+Rendered argv for `inference-8gb` (the shape the compose stack passes to vLLM):
+
+```bash
+vllm serve QuantTrio/Qwen3.5-4B-AWQ \
+  --served-model-name saip-instruct saip-systemone \
+  --max-model-len 24576 \
+  --gpu-memory-utilization <derived> \
+  --language-model-only \
+  --enforce-eager \
+  --enable-lora --max-loras 4 --max-lora-rank 16 \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --trust-remote-code --host 0.0.0.0 --port 8000
+```
+
+(`--kv-cache-dtype` is omitted when it is `auto`, vLLM's own default. `full-loop-12gb`
+drops `--enforce-eager`, adds `--max-num-seqs 128`, and raises the ceiling to 11 GiB.)
+
+Implementation constraints that have broken boots before:
+
+- **`--served-model-name` is variadic, not append.** One flag with space-separated
+  aliases. Repeating the flag keeps only the last value; passing a comma-joined string
+  creates a single alias literally named `"a,b"`. Both make the other name 404.
+- **Use shell-form command construction.** Docker does not interpolate `${VAR}` inside an
+  exec-form JSON array `CMD`, which hands vLLM the literal string `"${MAX_MODEL_LEN}"` and
+  argparse kills every boot.
+- **Pin the vLLM image by tag.** `latest` moved 0.31.0 → 0.32.0 during the measurements
+  behind this page; every number here is 0.31.0.
+- **AWQ + multi-LoRA is the supported combination.** It is in vLLM's own CI
+  ([`test_quant_model.py`](https://github.com/vllm-project/vllm/blob/main/tests/lora/test_quant_model.py)
+  serves a Qwen3-AWQ base with two adapters). **Do not** substitute bitsandbytes: it moved
+  to the out-of-tree `vllm-bnb-plugin` and is marked LoRA ❌.
+
+## Reference checkpoint
+
+SAIP serves `QuantTrio/Qwen3.5-4B-AWQ`, a community AWQ build of
+`Qwen/Qwen3.5-4B` (Apache-2.0). There is **no official Qwen AWQ checkpoint** for this
+model — `Qwen/Qwen3.5-4B-AWQ` does not exist. Pin by revision in `saip.yaml`; record the
+origin in the [adapter manifest](/saip/reference/adapter-manifest/) so a trained adapter names the base
+it was validated against.
+
+Model shape facts (`config.json`): `Qwen3_5ForConditionalGeneration`, 32 layers,
+hidden 2560, 16 attention heads / 4 KV heads, `head_dim` 256, `max_position_embeddings`
+262,144, tied embeddings, one MTP layer, `mamba_ssm_dtype: float32`, and a 24-layer vision
+tower. The 4B variant is **dense** — its checkpoint contains no `experts` tensors — which
+places it on vLLM's long-supported dense AWQ+LoRA path rather than the AWQ-MoE path that
+only worked after [PR #30442](https://github.com/vllm-project/vllm/pull/30442).
+
+## Adapter targeting and the delta-net layers
+
+vLLM reports the LoRA-addressable modules for this architecture as:
+
+```
+qkv_proj (← q,k,v)   gate_up_proj (← gate,up)   in_proj_qkvz (← in_proj_qkv,in_proj_z)   in_proj_ba (← in_proj_b,in_proj_a)   qkv
+```
+
+`in_proj_qkvz` and `in_proj_ba` are the **gated-deltanet projections — 24 of the 32
+layers**. The default `adapter.target_modules` list
+([`saip.yaml`](/saip/reference/configuration/)) covers `q/k/v/o/gate/up/down_proj`, which lands on the
+8 attention layers and every MLP, and **leaves the delta-net layers untrained**. That is a
+deliberate tier-one default (fewer trainable modules, smaller adapters, less VRAM), not an
+oversight; widening targets is a documented option, and Axolotl exposes the same modules
+via `linear_attn.in_proj_qkv` / `in_proj_z` / `out_proj`.
+
+Constraints that fail at load time rather than degrading quietly:
+
+- **`max_lora_rank` must equal the highest rank among your adapters.** Setting it far
+  above what you use wastes VRAM; rank 16 matches `adapter.default_rank`.
+- **DoRA adapters are rejected** (`lora_magnitude_vector is unsupported LoRA weight`).
+- **`embed_tokens` / `lm_head` modules in an adapter are rejected** (`unsupported LoRA
+  weight`). The compiler must not emit them.
+- Rank math for capacity planning: per adapter ≈ `rank × (in + out) × 2 B` per targeted
+  module — tens of MB at rank 16 on this model, and the 4-slot cost is measured at 0.53 GiB.
+
+## Training on a 12 GB card
+
+The `full-loop-12gb` tier trains on the same GPU it serves, time-shared through
+[awake/sleep mode](/saip/explanation/architecture/#awake-sleep-mode-single-gpu-time-sharing),
+never concurrently.
+
+- **bf16 LoRA, not QLoRA, is the documented default.** [Unsloth's Qwen3.5
+  guide](https://unsloth.ai/docs/models/qwen3.5/fine-tune) states *"It is not recommended
+  to do QLoRA (4-bit) training on the Qwen3.5 models, no matter MoE or dense, due to
+  higher than normal quantization differences."* Their published figure for bf16 LoRA on
+  the 4B model is ~10 GB at 2048-token sequences, which is why 12 GB is the floor.
+- **Required levers:** `micro_batch_size: 1`, gradient checkpointing, an 8-bit or 4-bit
+  optimizer, and short sequences. Layer offloading and Cut Cross Entropy are documented
+  options for tighter cards.
+- **Train on the BF16 base, serve the adapter on the AWQ base.** This direction is proven
+  by vLLM's own CI. The reverse — training a 4-bit-bitsandbytes base and serving that
+  adapter on an AWQ engine — has **no authoritative source** confirming output quality, and
+  Axolotl's guidance is *"Fine-tune the base model instead and quantize afterwards."*
+- **Freeze the vision tower** for text-only adapters; target `model.language_model.*`.
+- **Watch the toolchain version.** Qwen3.5 training in Axolotl has a history of
+  silent-corruption bugs on exactly this model: a first-forward crash
+  ([#3972](https://github.com/axolotl-ai-cloud/axolotl/issues/3972)), and a chat template
+  that *"silently drops the reasoning trace and duplicates the final answer"*
+  ([#3724](https://github.com/axolotl-ai-cloud/axolotl/issues/3724)). The second is a data
+  hazard for a loop that trains on its own transcripts — pin Axolotl and verify templates
+  on a sample before a long run.
+
+:::note[When 12 GB is not enough]
+Rent GPU hours for training and keep inference local. The data path is unchanged: the
+inference gateway writes sessions, documents, and feedback to R2; a remote training gateway
+reads them, produces an adapter, and writes it back. Because state lives in R2, there is no
+handoff protocol — see [Deploy on Hyperstack](/saip/guides/deploy-hyperstack/).
+:::
+
+## Utilization semantics
+
+`--gpu-memory-utilization` is a **fraction of total device memory**, and startup is gated
+on *free* memory at launch:
+
+```
+requested = ceil(total_memory × utilization)
+if free_memory < requested: abort
+```
+
+Two consequences:
+
+1. The same number means different absolute budgets on different cards, so SAIP **derives**
+   it from the profile ceiling divided by total memory rather than shipping a constant.
+   On the 15.58 GiB reference card, the 7.0 GiB ceiling resolves to ≈ 0.45.
+2. A shared GPU lowers the achievable ceiling without changing the card. The reference run
+   succeeded with ~2.2 GiB already consumed by the desktop session; a restored
+   second model server can make an otherwise-compliant tier fail.
+
+Since vLLM 0.21, CUDA graph memory is included in that budget by default, and the startup
+log reports the equivalences — a `0.45` run may be described as `0.3887` without graph
+profiling. `enforce_eager` sidesteps the whole term, which is what makes the 8 GB tier fit.
+For an explicit cap, `--kv-cache-memory-bytes` overrides the utilization calculation
+entirely and ignores it.
+
+## Measuring your own card
+
+Confirm the hardware before selecting a tier:
+
+```bash
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
+docker run --rm --gpus all --entrypoint python3 vllm/vllm-openai:v0.31.0 -c \
+  "import torch; from vllm.platforms import current_platform as p; \
+   print(torch.cuda.get_device_capability(0), p.supports_fp8())"
+```
+
+Then boot the profile and watch the three lines vLLM prints during load — they are the
+ground truth for the budget:
+
+```
+Model loading took 5.35 GiB memory
+Available KV cache memory: 0.91 GiB
+GPU KV cache size: 25,967 tokens
+```
+
+and confirm the resident footprint from the host:
+
+```bash
+nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv,noheader
+```
+
+A profile that fails to start tells you which term is over budget. If it reports
+`To serve at least one request with the model's max seq len (N), X GiB KV cache is needed,
+which is larger than the available KV cache memory (Y GiB) ... estimated maximum model
+length is Z`, lower `max_model_len` to Z or reduce `max_loras`.
+
+## Version drift
+
+Everything here is vLLM 0.31.0-specific: the capability gates, the graph-memory accounting,
+and the int8 corruption are all code paths that have changed before and will again. When
+bumping the pinned image, re-run the four boots in
+[Measuring your own card](#measuring-your-own-card) — including the `int8_per_token_head`
+case — and update the tables from observation. The regression test
+`inference/tests/hardware-profiles.test.ts` pins the forbidden-dtype matrix so an
+unreviewed bump cannot silently re-enable a corrupting configuration.
+
+## Open items
+
+- **Both tiers were measured on one card** (RTX 3080 Laptop, 16 GiB, SM 8.6) by setting the
+  ceiling below what the card holds. `full-loop-12gb` has not been run on an actual 12 GB
+  card, where ~11 GiB of *free* memory at launch leaves less slack than the reference run
+  had. Re-measure before citing it as qualified.
+- 32,768-token context with four LoRA slots active exceeds a 7.0 GiB ceiling (needs 1.11
+  GiB of KV against 0.94 GiB available) — the reason `inference-8gb` specifies 24,576.
+- Whether widening `target_modules` to the delta-net projections is worth its VRAM and
+  adapter-size cost is unmeasured.
+- The `max_num_seqs` ceiling is derived from one (ceiling, context, slots) combination; the
+  general formula for available Mamba blocks is not documented by vLLM.
+- Training on the 12 GB tier is **specified, not yet executed**: bf16 LoRA on Qwen3.5-4B has
+  not been run here, so its VRAM figure comes from Unsloth's published ~10 GB at 2048
+  tokens rather than from this stack.

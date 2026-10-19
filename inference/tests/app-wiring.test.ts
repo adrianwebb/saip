@@ -23,7 +23,7 @@ describe('createApp wiring', () => {
     process.env.SAIP_CONFIG = repoConfig
     try {
       const ctx = (await createApp()) as any
-      expect(ctx.gatewayState.config.model.base).toBe('Qwen/Qwen3.5-4B')
+      expect(ctx.gatewayState.config.model.base).toBe('QuantTrio/Qwen3.5-4B-AWQ')
       expect(typeof ctx.gatewayState.storage.list).toBe('function')
     } finally {
       if (prev === undefined) delete process.env.SAIP_CONFIG

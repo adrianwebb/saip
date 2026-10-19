@@ -69,9 +69,9 @@ R2 is S3-compatible, so any tool that speaks S3 can inspect SAIP's state directl
 
 vLLM was chosen over alternatives (TGI, llama.cpp, Ollama) because it uniquely supports the combination SAIP requires:
 
-- **Multi-LoRA serving**: load dozens of adapters into GPU memory simultaneously, select per-request via API parameter. No reload between users.
-- **AWQ quantization**: run Qwen3.5-4B at 4-bit precision, fitting base model + multiple adapters in ~7 GB VRAM.
-- **PagedAttention**: efficient KV cache management enables high concurrency without OOM on long contexts.
+- **Multi-LoRA serving**: load adapters into GPU memory simultaneously and select per-request via the API parameter — no reload between users. Slots are resident, so the count is a VRAM decision: 4 slots at rank 16 measure 0.53 GiB on the 8 GB tier, with inactive adapters kept in CPU RAM (`max_cpu_loras`) and uploaded on activation.
+- **AWQ quantization**: serve Qwen3.5-4B with the MLP at 4-bit. Measured at 6,988 MiB for base model + 4 adapter slots + 24,576-token context on the `inference-8gb` profile. Note the checkpoint keeps attention, delta-net, and vision layers at 16-bit, so "4-bit" weights occupy 5.35 GiB rather than ~2.5 GiB; and the fit is owed mainly to the model's hybrid attention (only 8 of 32 layers hold a KV cache), not to KV quantization. See [Hardware Profiles](/saip/reference/hardware-profiles/).
+- **PagedAttention**: efficient KV cache management enables concurrency without OOM on long contexts.
 - **OpenAI-compatible API**: drop-in replacement for any client expecting `/v1/chat/completions`.
 
 The tradeoff is that vLLM is Python-based and heavyweight. SAIP wraps it in a Docker container and manages it as a Cordis plugin — the TypeScript gateway handles routing, user resolution, and session collection while vLLM handles the actual token generation.

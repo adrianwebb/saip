@@ -46,7 +46,7 @@ SAIP is a two-service platform that closes the loop between serving AI responses
 - **Inference Gateway** serves OpenAI-compatible chat completions via vLLM (a high-performance inference engine) with dynamic per-request LoRA adapter (a small behavioral overlay) selection
 - **Training Gateway** runs Axolotl (an open-source fine-tuning framework) jobs using three methods: knowledge embedding (teaching domain facts), corrective SFT (learning from corrected mistakes), and weighted KTO (learning from scored feedback)
 
-Both services share a Cloudflare R2 object store (S3-compatible cloud storage) for adapters, knowledge documents, session histories, and feedback. They can run on a single 7 GB VRAM GPU or scale to remote GPU nodes.
+Both services share a Cloudflare R2 object store (S3-compatible cloud storage) for adapters, knowledge documents, session histories, and feedback. They can run on a single GPU — 8 GB VRAM serves inference, 12 GB covers the full serve-and-train loop — or scale to remote GPU nodes. See [Hardware Profiles](/saip/reference/hardware-profiles/).
 
 Both services are built from interchangeable plugins — extend anything without forking. Every capability, from API endpoints to adapter management to session collection, is a [Cordis](/saip/reference/glossary/#cordis) plugin that can be added, removed, or replaced independently.
 
