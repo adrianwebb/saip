@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Fixed
+- docs: hardware requirements corrected against measured evidence. The previous "~7 GB VRAM" figure appeared in nine places and was unachievable with the shipped configuration; tiers are now 8 GB (inference) and 12 GB (local fine-tuning), with compute-capability floors (7.5 inference, 8.0 for bf16 training) (#53)
+- docs: removed the instruction to set `SAIP_GPU_MEMORY_UTILIZATION=0.85` (a variable no code read) and the claim that vLLM defaults to 0.90 (it is 0.92); utilization is documented as derived from measured free VRAM, never a constant (#53)
+- docs: `saip.schema.yaml` header no longer claims whole-file runtime validation by a nonexistent `shared/src/config-schema.ts`; it names the per-section validators that actually exist (#53)
+- docs: quantization guidance fixed — an AWQ checkpoint is required (vLLM cannot AWQ-quantize a BF16 base at load time), the reference checkpoint is the community `QuantTrio/Qwen3.5-4B-AWQ` as no official Qwen AWQ build exists, and bitsandbytes is ruled out as a multi-LoRA serving path; QLoRA is no longer presented as SAIP's training method for Qwen3.5 (#53)
+- docs: getting-started no longer describes Qwen3.5-4B as gated access-only, and the CLI/hyperstack examples reference the actual model and profile resolution rather than a stale 7B/4096-token config (#53)
+- docs: added a warning that 8-bit KV cache (`int8_per_token_head`, `fp8*`) is forbidden below compute capability 8.9 — fp8 is rejected outright, while int8 is accepted, reports a larger cache, and silently corrupts output on Ampere (measured) (#53)
 - XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
 - Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)
 
 ### Added
+- docs: **Hardware Profiles** reference (`/saip/reference/hardware-profiles/`) — the measured VRAM ceilings and GPU capability matrix behind SAIP's two service tiers (8 GB inference-only, 12 GB full serve-and-train loop), including the memory decomposition, per-tier engine arguments, LoRA/adapter targeting rules for hybrid gated-deltanet models, and repro commands. Schema `profile`/`profiles` blocks documented ahead of implementation (#53)
 - infra/cli/docs: gated Hyperstack deployment provider (SSH+compose; OpenTofu provisioning behind `SAIP_ALLOW_INFRA`), the `infra/tofu/hyperstack` 2-GPU OpenTofu module (scaffolded, not applied), and full hosting documentation — Hosting Model explanation, Hosts Configuration reference, cloud-deploy guide (#51)
 - cli: `saip deploy --target <host>` — parameterized copy-to-host reusing the DeploymentProvider abstraction; renders a safe plan (`--dry-run` default), applies only via providers that implement `deploy()`, refuses unknown/unregistered targets (#49)
 - monitoring: pluggable `MonitoringProvider` seam + `MetricsService` (noop default, Prometheus later) wired into both gateways via an event bridge; emission is observe-only and never blocks serving/training (#47)

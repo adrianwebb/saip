@@ -20,20 +20,85 @@ platform:
 
 ## model
 
+Base-model settings. Each field is a **default that the active [service profile](/saip/reference/hardware-profiles/)
+may override** — the profile owns the values that are hardware-dependent, because a single
+constant cannot be correct across cards.
+
 | Field            | Type     | Default | Description                                                        |
 |------------------|----------|---------|--------------------------------------------------------------------|
-| `base`           | `string` | —       | HuggingFace model ID for the base model.                           |
-| `quantization`   | `string` | —       | Quantization method (`awq`, `gptq`, `fp8`, or omitted for none).  |
-| `max_model_len`  | `number` | —       | Maximum context length passed to vLLM.                             |
-| `dtype`          | `string` | —       | Torch dtype (`float16`, `bfloat16`, `auto`).                      |
+| `base`           | `string` | —       | HuggingFace model ID. Reference checkpoint: `QuantTrio/Qwen3.5-4B-AWQ` (community AWQ build; no official Qwen AWQ exists for this model). |
+| `revision`       | `string` | —       | Pin the checkpoint by commit hash. Recorded in the adapter manifest so an adapter names the base it was validated against. |
+| `quantization`   | `string` | `awq`   | Quantization method: `awq`, `gptq`, `bitsandbytes`, or `none`. Must match a checkpoint that is *already* quantized in that format — vLLM cannot AWQ-quantize a BF16 checkpoint at load time. `bitsandbytes` is not a supported multi-LoRA serving path. |
+| `max_model_len`  | `number` | profile | Maximum context length passed to vLLM. Ceiling is profile-dependent: 24,576 on `inference-8gb`, 65,536 on `full-loop-12gb`. |
+| `dtype`          | `string` | `auto`  | Torch dtype (`float16`, `bfloat16`, `auto`). `bfloat16` needs compute capability ≥ 8.0. |
+| `language_model_only` | `boolean` | `true` | Skip the vision encoder (~0.6 GiB saved). Required on the 8 GB tier; disables image/video inputs. |
+| `kv_cache_dtype` | `string` | `auto`  | KV cache storage dtype. **Do not set `fp8*` or `int8_per_token_head` below compute capability 8.9** — validation rejects it, because the accepted-but-corrupting case produces garbage output with no error. |
 
 ```yaml
 model:
-  base: "Qwen/Qwen3.5-4B"
+  base: "QuantTrio/Qwen3.5-4B-AWQ"
+  revision: "32c292e3a73afe1138518180b1b6d2868c980ee2"
   quantization: "awq"
-  max_model_len: 65536
-  dtype: "float16"
+  dtype: "auto"
+  language_model_only: true
+  kv_cache_dtype: "auto"
 ```
+
+## profile / profiles
+
+`profile` names the active service profile; `profiles` declares them. Profiles are the
+hardware contract — see [Hardware Profiles](/saip/reference/hardware-profiles/) for the measured
+ceilings and the capability matrix.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `profile` | `string` | auto-resolved | Which entry in `profiles` to run. Omit to probe the GPU and select the highest tier it satisfies. |
+| `profiles.<name>` | `object` | — | A named profile. Requires `min_vram_gib` and `min_capability`; carries `vram_ceiling_gib` and the engine arguments for that tier. |
+
+```yaml
+profile: inference-8gb
+
+profiles:
+  inference-8gb:
+    description: Serve only; 8 GB consumer card
+    min_vram_gib: 8
+    min_capability: 7.5
+    vram_ceiling_gib: 7.0
+    engine:
+      max_model_len: 24576
+      kv_cache_dtype: auto
+      enforce_eager: true
+      enable_lora: true
+      max_loras: 4
+      max_lora_rank: 16
+  full-loop-12gb:
+    description: Serve and fine-tune, time-shared via awake/sleep
+    min_vram_gib: 12
+    min_capability: 8.0
+    vram_ceiling_gib: 11.0
+    engine:
+      max_model_len: 65536
+      kv_cache_dtype: auto
+      enforce_eager: false
+      enable_lora: true
+      max_loras: 4
+      max_lora_rank: 16
+    training:
+      precision: bf16
+      sequence_len: 2048
+      gradient_checkpointing: true
+      optimizer: adamw_bnb_8bit
+```
+
+`gpu_memory_utilization` is **not settable as a constant** — it is derived from the
+profile ceiling divided by total VRAM and validated against measured free memory at
+launch. `SAIP_GPU_MEMORY_UTILIZATION` may override it downward on a shared GPU.
+
+:::note[Validation]
+`profiles` is validated by `ProfileService` in `@saip/shared` at boot, identically for the
+CLI, inference gateway, and training gateway. A profile whose card requirements are not
+met fails startup with exit code 2 naming the deficit — it is never allowed to OOM later.
+:::
 
 ## adapter
 

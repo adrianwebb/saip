@@ -7,19 +7,46 @@ This guide walks you through running SAIP on a single local machine with a consu
 
 ## Hardware Requirements
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| GPU VRAM | 7 GB | 12 GB+ |
-| System RAM | 16 GB | 32 GB |
-| Disk | 50 GB free | 100 GB SSD |
-| CUDA | 12.1+ | 12.4+ |
+SAIP ships two **service profiles**, chosen by the VRAM and compute capability of the
+GPU in the machine. Each profile declares a ceiling for one service stack, backed by
+measurements — see [Hardware Profiles](/saip/reference/hardware-profiles/) for the numbers
+and the repro commands.
+
+| Component | Minimum (inference only) | Minimum (full loop) | Recommended |
+|-----------|--------------------------|---------------------|-------------|
+| GPU VRAM | 8 GB (`inference-8gb`) | 12 GB (`full-loop-12gb`) | 16 GB+ |
+| Compute capability | 7.5 (inference) | 8.0 (Ampere — bf16 training) | 8.9+ (Ada) |
+| System RAM | 16 GB | 32 GB | 32 GB |
+| Disk | 50 GB free | 80 GB free | 100 GB SSD |
+| CUDA | 12.1+ | 12.4+ | 12.4+ |
+
+- **8 GB — inference only.** The gateway serves Qwen3.5-4B (AWQ 4-bit, text-only) with
+  four LoRA adapter slots live. The learning loop still *collects* data on this tier; it
+  does not train.
+- **12 GB — the full loop.** Both the inference and training profiles fit the same card,
+  time-shared through
+  [awake/sleep mode](/saip/explanation/architecture/#awake-sleep-mode-single-gpu-time-sharing).
 
 :::caution[VRAM Warning]
-Models loaded by SAIP require at least **7 GB of available VRAM**. Integrated GPUs and older cards with less than 7 GB will fail during model loading with an OOM error. Check your available VRAM before proceeding:
+SAIP requires at least **8 GB of VRAM** to serve and **12 GB** to fine-tune locally.
+Integrated GPUs and older cards below those floors fail during model loading with an OOM
+error. Note that `--gpu-memory-utilization` is computed against the card's **total**
+memory and startup aborts if *free* memory at launch falls below that product — so a
+desktop compositor or browser holding VRAM lowers the ceiling you can actually use, and
+the flag must be derived rather than fixed. Check what you have before proceeding:
 
 ```bash
-nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
 ```
+:::
+
+:::note[Training on a 12 GB card]
+12 GB is the floor for local fine-tuning, not a comfortable margin. QLoRA (4-bit)
+training on the Qwen3.5 family is discouraged by its maintainers because of unusually
+large quantization differences, and bf16 LoRA on the 4B model measures roughly 10 GB at
+2048-token sequences before optimizer state. Short sequences, gradient checkpointing, and
+8-bit optimizers keep it inside 12 GB. If you need longer contexts, rent GPU hours and
+train remotely — see [Deploy on Hyperstack](/saip/guides/deploy-hyperstack/).
 :::
 
 ## Prerequisites
@@ -88,6 +115,34 @@ SAIP_HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 For local deployments, use a dedicated R2 bucket (e.g., `saip-local`) to avoid conflicts with remote training nodes that may write to the same storage.
 :::
 
+### Select a Service Profile
+
+The active profile is declared in `saip.yaml` and selects the engine arguments, the VRAM
+ceiling, and the KV-cache dtype your GPU can safely use:
+
+```yaml
+profile: inference-8gb     # or: full-loop-12gb
+```
+
+If `profile` is omitted, SAIP probes the GPU (`nvidia-smi`) and picks the highest tier the
+card satisfies, then **fails closed** with a named error if none fits — rather than
+letting the engine OOM minutes later. Override per invocation with
+`saip awake --profile <name>`, and inspect what was resolved with `saip profiles`.
+
+The profile, not the user, owns these settings; the values below are shown for clarity:
+
+| Setting | `inference-8gb` | `full-loop-12gb` |
+|---------|-----------------|------------------|
+| `max_model_len` | 24,576 | 65,536 |
+| `kv_cache_dtype` | `auto` (16-bit) | `auto` (16-bit) |
+| `language_model_only` | `true` | `true` |
+| `enforce_eager` | `true` | `false` |
+| `max_loras` / `max_lora_rank` | 4 / 16 | 4 / 16 |
+| VRAM ceiling | 7.0 GiB | 11.0 GiB |
+
+`gpu_memory_utilization` is **derived**, not configured: the profile divides its ceiling
+by the card's total memory and checks the result against measured free memory at launch.
+
 ### Verify R2 Connectivity
 
 Before starting services, confirm your R2 credentials work:
@@ -115,7 +170,8 @@ Expected output:
 
 ```
 [awake] Pulling inference image... done
-[awake] Syncing model from R2 (Qwen/Qwen3.5-4B)... done (4.2 GB)
+[awake] Profile: inference-8gb (RTX 3080 Laptop, 15.58 GiB total, 13.4 GiB free)
+[awake] Syncing model from R2 (QuantTrio/Qwen3.5-4B-AWQ)... done (5.7 GB)
 [awake] Starting inference container on GPU 0... running
 [awake] Health check passed — API available at http://localhost:8000/v1
 ```
@@ -168,13 +224,35 @@ SAIP exposes Prometheus metrics at `http://localhost:8000/metrics`. Key metrics 
 
 ### Out of Memory (OOM)
 
-**Symptoms:** Container exits with `CUDA out of memory` or `torch.cuda.OutOfMemoryError`.
+**Symptoms:** Container exits with `CUDA out of memory`, `torch.cuda.OutOfMemoryError`, or
+vLLM refuses to start with `Free memory on device ... is less than desired GPU memory
+utilization`, or `No available memory for the cache blocks`.
 
 **Solutions:**
-1. Reduce `SAIP_MAX_MODEL_LEN` in `.env` (e.g., from 4096 to 2048).
-2. Use a more quantized model variant (AWQ/GPTQ over FP16).
-3. Close other GPU-consuming processes: `nvidia-smi` shows PIDs using VRAM.
-4. Set `SAIP_GPU_MEMORY_UTILIZATION=0.85` to reserve headroom (default is 0.90).
+1. Confirm the card meets the tier you selected: 8 GB for `inference-8gb`, 12 GB for
+   `full-loop-12gb` (see [Hardware Profiles](/saip/reference/hardware-profiles/)).
+2. Close other GPU-consuming processes — `nvidia-smi` lists PIDs holding VRAM. Because
+   utilization is computed against **total** memory but must fit inside **free** memory,
+   a browser or compositor alone can make a compliant card fail.
+3. Lower `SAIP_MAX_MODEL_LEN`. On this model only 8 of 32 layers hold a KV cache, so
+   context is comparatively cheap (~35 KiB/token at bf16) — but it is still the main
+   dial: 24,576 tokens costs roughly 0.9 GiB.
+4. Override the derived ceiling with `SAIP_GPU_MEMORY_UTILIZATION` (a fraction of *total*
+   VRAM). Normally you should not need to: the active profile derives this value from
+   measured free memory. Set it only to go **down**, e.g. `0.40` on a shared 16 GB card.
+5. On an 8 GB card, keep `enforce_eager: true` in the profile. CUDA graph capture costs
+   about 2.6 GiB on this model — the single largest optional item in the budget.
+6. Fewer adapter slots cost less: each LoRA slot is resident VRAM. Drop
+   `max_loras` from 4 to 2 to reclaim roughly 0.25 GiB.
+
+:::danger[Do not enable 8-bit KV cache on Ampere or older]
+It is tempting to buy back VRAM with `kv_cache_dtype: int8_per_token_head` or `fp8`. On
+compute capability below 8.9 these are either rejected outright (fp8: *"native FP8
+(fp8e4nv) requires SM89+"*) or, in the case of `int8_per_token_head`, **accepted, report
+a larger cache, and produce corrupted output with no error**. SAIP's profile validator
+forbids both below SM 8.9. Use `kv_cache_dtype: auto` (16-bit) there. See
+[Hardware Profiles → KV cache dtype by capability](/saip/reference/hardware-profiles/).
+:::
 
 ### CUDA Errors
 
