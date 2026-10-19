@@ -22,7 +22,7 @@ The mandatory Git/GitHub development and release workflow for any software proje
    git checkout -b feature/<issue-number>-short-description
    ```
 4. **Commit incrementally.** After each logical segment of work (a fix, a sub-feature, a test suite), commit and push to the feature branch. Do not accumulate uncommitted changes across sessions.
-5. **Open a PR when complete**, targeting `staging`, with `Closes #<issue>` in the body. Wait for CI green before merging.
+5. **Open a PR when complete**, targeting `staging`, with `Part of #<issue>` in the body — **not** `Closes #<issue>`. Closing happens at release; see [Closing Issues at Release](#-mandatory-closing-issues-at-release). Wait for CI green before merging.
 6. **Delete the branch immediately after the merge** — remote and local, then prune stale remote-tracking refs. A merged branch is dead weight: it cannot receive more work, it clutters every future `git branch -a`, and left-over branches accumulate into a state nobody dares delete. See [Post-Merge Branch Cleanup](#-mandatory-post-merge-branch-cleanup).
 7. **Reload this skill before completion.** Re-read it before opening the PR to verify branch naming, commit messages, PR template, cross-linking, and that every branch you merged has been deleted, are correct.
 
@@ -273,7 +273,7 @@ Use `gh issue edit <number> --body '...'` or the web UI. A PR closing an issue w
 - **Title format:** `<type>: <imperative description>` — mirrors commit convention (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`)
 - **Labels:** apply at creation, using the labels the project actually defines. At minimum one of `bug` / `enhancement` / `refactor` / `docs` / `chore`; add priority labels for urgent work.
 - **Related links:** always link related issues, PRs, or external references with `#<number>` or full URLs.
-- **Close keywords:** PR bodies use `Closes #<issue>` / `Fixes #<issue>` to auto-close on merge.
+- **Close keywords:** a `staging` PR uses `Part of #<issue>`; `Closes #<issue>` belongs in the **release candidate** (and in hotfixes, which target `main`). GitHub only executes closing keywords on the default branch — see [Closing Issues at Release](#-mandatory-closing-issues-at-release).
 - **Update, don't duplicate:** if an issue evolves, edit or comment. Don't open a second issue for the same concern.
 
 ## Pull Request Guidelines
@@ -302,7 +302,9 @@ gh pr create --base staging \
 - [ ] Existing tests pass unmodified (for refactors)
 
 ## Related
-Closes #<issue>
+Part of #<issue>
+<!-- `Part of`, NOT `Closes`: this PR merges to `staging`, where a closing keyword cannot fire.
+     The issue is closed by the release candidate that ships it — see "Closing Issues at Release". -->
 <Links to related PRs, issues, docs, external references>
 '
 ```
@@ -324,6 +326,17 @@ gh pr create --base main --head staging \
 - [ ] Version bumped in <manifest> (committed on staging, part of this diff)
 - [ ] Changelog updated for this version (if the project keeps one)
 - [ ] <main-back-merge-into-staging done, if a hotfix landed since the last release>
+- [ ] Closing list derived by script (RC step 4), not written from memory
+- [ ] Every issue below has ALL acceptance criteria checked; half-done issues are held, not closed
+
+### Closes (derived from the PRs shipping in this release)
+<!-- One line per issue, produced by the derivation — nothing typed from recollection. -->
+Closes #<N>
+Closes #<N>
+Closes #<N>
+
+### Held back (unchecked criteria — do not close yet)
+- #<N> — <which criterion remains open, and what it needs>
 
 ### Tag after merge
 `<version>`
@@ -352,6 +365,9 @@ Bypassing staging due to urgency.
 
 ## Related
 Closes #<issue>
+<!-- Correct here and nowhere else on a routine PR: a hotfix merges into `main`, the default
+     branch, so the closing keyword DOES fire. This is also why hotfix issues close earlier
+     than ordinary ones — they ship immediately. -->
 
 ## Post-merge
 - [ ] Merge main back into staging
@@ -362,7 +378,7 @@ Closes #<issue>
 
 - **Title format:** `<type>: <description> (#<issue>)` — issue number in parentheses
 - **Base branch:** features/fixes target `staging`; hotfixes and release candidates target `main`.
-- **Body must include:** summary, testing checklist, `Closes #<issue>`
+- **Body must include:** summary, testing checklist, and the issue reference — `Part of #<issue>` on a staging PR, `Closes #<issue>` on an RC or hotfix
 - **Link everything:** related issues (`#<number>`), prior PRs, docs, external resources
 - **Keep PRs small:** touching >10 files or >15 min of CI → split into stacked PRs
 - **Self-review before requesting review:** read your own diff; catch typos, leftover debug code, missing tests.
@@ -393,7 +409,7 @@ Closes #<issue>
 - **Scope change:** comment explaining what changed and why BEFORE modifying acceptance criteria.
 - **Decisions:** record architectural/scope decisions as comments so future readers get the "why."
 - **Cross-references:** "Addressed in #<pr>", "See also #<issue>".
-- **Closing:** let the PR auto-close via `Closes #<issue>`. Close manually only for invalid / won't-fix issues, with explanation.
+- **Closing:** a `staging` PR does **not** close its issue — the keyword cannot fire off the default branch. The release candidate closes it (see Closing Issues at Release). Close manually only for invalid / won't-fix issues, with explanation.
 
 ### On PRs
 
@@ -416,7 +432,9 @@ Traceability. These are REQUIRED, not optional:
 
 | From | To | How | Required? |
 |------|----|-----|-----------|
-| PR | Issue | `Closes #<N>` / `Fixes #<N>` in PR body | **Yes** |
+| Staging PR | Issue | `Part of #<N>` in PR body — **never `Closes #<N>`, which cannot fire on a `staging` merge** | **Yes** |
+| RC PR | Every issue shipping | `Closes #<N>` lines assembled mechanically from the merged PRs since the previous tag | **Yes** |
+| Hotfix PR | Issue | `Closes #<N>` (hotfixes target `main`, so the keyword does fire) | **Yes** |
 | Feature branch | Issue | Issue number in branch name: `feature/42-desc` | **Yes** |
 | Commit | Issue | `(#<N>)` in commit message | **Yes** |
 | Issue | Related issue/PR | `#<N>` or full URL in body/comment | **Yes** |
@@ -473,7 +491,7 @@ Run this every time, immediately before opening the PR (this is the artifact the
 - [ ] `<typecheck command>` and `<build command>` run now → clean / exit 0
 - [ ] All acceptance criteria checked in the **issue body**, plus a progress comment posted
 - [ ] `origin/staging` merged into this branch; conflicts resolved here, pushed
-- [ ] Cross-links present: `(#<issue>)` in commits, `Closes #<issue>` ready in PR body
+- [ ] Cross-links present: `(#<issue>)` in commits and in the PR title, `Part of #<issue>` in a staging PR body (`Closes #<issue>` only on an RC or hotfix)
 - [ ] PR small (< ~10 files, < ~15 min CI) or split into stacked PRs
 - [ ] Self-reviewed own diff: no debug leftovers, no stray files
 - [ ] Changelog entry added under `[Unreleased]` in `CHANGELOG.md` (see Changelog Convention)
@@ -481,7 +499,7 @@ Run this every time, immediately before opening the PR (this is the artifact the
 
 ## Release Candidate Workflow (`staging` → `main`)
 
-When `staging` is ready for release. **Agent role ends at "RC PR opened": an agent may do steps 1–4 and watch CI in step 5, but never merges or tags — steps 6–8 are maintainer actions.**
+When `staging` is ready for release. **Agent role ends at "RC PR opened": an agent may do steps 1–5 and watch CI in step 6, but never merges or tags — steps 7–9 are maintainer actions.**
 
 ```
 1. Determine the next version
@@ -498,26 +516,90 @@ When `staging` is ready for release. **Agent role ends at "RC PR opened": an age
    # The bump belongs to the RC so that "Version bumped in <manifest>" is verifiable BEFORE merge.
    git add <manifest> CHANGELOG.md && git commit -m "<version>"
 
-4. Open the release candidate PR from staging to main (RC template above)
-   gh pr create --base main --head staging --title "Release candidate: <version>" --body "..."
+4. Assemble the closing list — mechanically, never from memory (see below)
+    python3 - <<'PY'
+    import subprocess, json, re
+    def sh(*a): return subprocess.run(a, capture_output=True, text=True).stdout
+    prs  = json.loads(sh('gh','pr','list','--state','merged','--base','staging','--limit','300','--json','number,title'))
+    open_ = {int(i['number']): i for i in json.loads(sh('gh','issue','list','--state','open','--limit','300','--json','number,body'))}
+    # Narrow to this release: PRs merged after the previous tag, e.g.
+    # since = sh('git','log','--no-merges','--format=%s','<prev-tag>..origin/staging')
+    issues = {int(n) for p in prs for n in re.findall(r'\(#(\d+)\)', p['title'])}
+    for i in sorted(issues & set(open_)):
+        unchecked = len(re.findall(r'^- \[ \]', open_[i]['body'] or '', re.M))
+        print(f"#{i}  unchecked={unchecked}  {'HOLD — do not close' if unchecked else 'CLOSING'}")
+    PY
 
-5. ALL CI must pass on this PR. No exceptions for normal releases.
+5. Open the release candidate PR from staging to main, its body carrying one `Closes #<N>` line
+   per issue the script marked CLOSING (RC template above). Issues marked HOLD are omitted and
+   their deficit is named in the body.
+   gh pr create --base main --head staging --title "Release candidate: <version>" --body-file rc.md
+
+6. ALL CI must pass on this PR. No exceptions for normal releases.
    gh pr checks <number> --watch
 
-6. [MAINTAINER] Approve and merge to main
+7. [MAINTAINER] Approve and merge to main
    gh pr merge <number> --merge   # merge commit, not squash, for RCs
 
-7. [MAINTAINER] Tag and push — this triggers the release pipeline
+8. [MAINTAINER] Tag and push — this triggers the release pipeline
    # VERIFY FORMAT against the project's convention (prefix included)
    # The tag MUST equal the version already committed in <manifest> on main.
    git tag -a <version> -m "<version> — summary"
    git push origin main --tags
 
-8. [MAINTAINER] Verify the release succeeded
+9. [MAINTAINER] Verify the release succeeded, AND that every listed issue actually closed
    gh run list --limit 1 ; gh release view <version>
+   gh issue view <N> --json state --jq .state      # for each N in the closing list
+   # Any that are still OPEN were mis-listed or blocked by a permission: close or reopen with an
+   # explanatory comment. Do not leave the board silently wrong — that drift is what this step fixes.
 ```
 
 **One open release at a time.** Only one RC may be pending (`staging` → `main`) at any moment. Work that lands on `staging` after an RC is opened joins the *next* release unless the maintainer updates the existing RC to include it — never open a second RC over the same window, and never decide silently which release your change ships in. If an RC is already open when you finish, ask the maintainer whether to fold your change into it or hold it for the next one.
+
+## ⚠️ MANDATORY: Closing Issues at Release
+
+**GitHub executes `Closes #N` only when a PR merges into the repository's default branch.** A PR
+merged into `staging` (or any non-default branch) closes nothing — no comment, no error, no hint.
+Projects that gate development on `staging` and write `Closes #N` in every feature PR therefore run
+a board that silently drifts from reality, and nobody notices until 19 finished issues are still
+open.
+
+So the division is deliberate:
+
+| PR type | Base | Keyword | Why |
+|---------|------|---------|-----|
+| Feature / fix | `staging` | `Part of #N` | Auto-close cannot fire here; the reference is traceability only |
+| Release candidate | `main` | `Closes #N` for **every** shipping issue | This is where closure actually happens |
+| Hotfix | `main` | `Closes #N` | Targets the default branch directly, so it fires |
+
+Development PRs stay cheap to merge — fast, agent-merged, gated on tests alone. Deferring closure
+concentrates the bookkeeping on releases, which are far less frequent than staging merges. That is
+the trade: the RC carries the burden on purpose.
+
+**Assemble the closing list by running the derivation in RC step 4, never from memory.** A
+hand-written list is how a release closes the wrong issues or quietly forgets eight. The derivation
+walks merged PR titles since the previous tag, intersects them with currently-open issues, and
+reports each one's unchecked acceptance-criteria count.
+
+**Hard guard — an issue with any unchecked acceptance criterion is NOT closed by the release.**
+Hold it, omit its `Closes` line, and name the deficit in the RC body. Acceptance criteria are
+living checkboxes; closing an issue mid-flight destroys the only record of what remained. Checking
+the list therefore means checking that no half-finished work slipped in, not merely that a command
+ran.
+
+Also true, and easy to trip over:
+
+- A squash merge rewrites history, so a branch's own commits never appear on `main`. The link
+  survives in the PR *title* convention `(#N)` — which is what the derivation parses. Keep that
+  convention intact or the closing list silently comes back empty.
+- `Closes #N` only reaches issues in the **same repository**. Cross-repo work is closed manually
+  with a link.
+- `Fixes` / `Resolves` are equivalent keywords. Pick one and stay consistent so grep and
+  derivation remain simple.
+- One PR may close many issues: separate `Closes #12` / `Closes #13` lines, all landing on the
+  default branch.
+- If the RC merge leaves a listed issue open, that is a defect to correct immediately — close it
+  with a comment, or reopen it. RC step 9 is a verification, not a formality.
 
 ## Hotfix Workflow (Emergency Only)
 
@@ -694,6 +776,9 @@ These mean you have left the workflow; fix it before continuing:
 - Tagging anything other than `main`, or reusing an existing tag
 - Long-lived branch that has not synced `staging` recently
 - A PR merged whose branch still exists — locally or on the remote (see Post-Merge Branch Cleanup)
+- A `Closes #N` in a `staging` PR body, which cannot fire and reads as done when it is not
+- A release candidate whose closing list was written from memory instead of derived from the merged PRs
+- An issue closed by a release while it still has an unchecked acceptance criterion
 - Deleting a branch because its name looks stale, without confirming a merged PR and no open PR
 - Hotfix that skipped the `main` → `staging` sync
 - Same tool call or command repeated 3+ times without progress (see Agent Loop Guard)
@@ -704,7 +789,9 @@ These mean you have left the workflow; fix it before continuing:
 |--------|---------|
 | Start a feature | `git checkout staging && git pull && git checkout -b feature/N-desc` |
 | Sync staging into feature | `git fetch origin staging && git merge origin/staging` |
-| Open PR to staging | `gh pr create --base staging --title "..." --body "Closes #N"` |
+| Open PR to staging | `gh pr create --base staging --title "..." --body "Part of #N"` |
+| Derive the RC closing list | merged PR titles `(#N)` ∩ open issues, reporting unchecked-criteria counts |
+| Confirm a keyword will actually fire | it fires only when the PR's base is the **default** branch |
 | Check CI status | `gh pr checks <N> --watch` |
 | View failed CI logs | `gh run view <id> --log-failed` |
 | Merge PR (squash) | `gh pr merge <N> --squash` |

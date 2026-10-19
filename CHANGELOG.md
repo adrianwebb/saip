@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
+- workflow: issue closure moves to the release candidate. GitHub executes `Closes #N` only on merges into the default branch, and every development PR here targets `staging` — so the keyword never fired for any feature or fix PR, and 19 finished issues sat open. Staging PRs now use `Part of #<issue>`; the `staging`→`main` RC carries the `Closes` lines derived mechanically from merged PR titles since the previous tag, with a hard guard holding back any issue that still has an unchecked acceptance criterion. Hotfixes keep `Closes #N` because they land on `main` (#59)
 - workflow: `release-workflow` skill and `AGENTS.md` now mandate post-merge branch cleanup — delete the branch (remote + local) as the last action of every merge, with the four traps documented: squash merges defeat `git branch --merged` and `git branch -d`, `git branch -r` is stale until `--prune`, a bulk delete can silently skip refs, and open PRs must be excluded before deleting (#57)
 ### Added
 - shared: service profile seam — `profiles.ts` (tier validation, `GpuProbe` interface with `NvidiaSmiProbe`/`FakeGpuProbe`, profile resolution, derived `gpu_memory_utilization`, vLLM argv rendering) and the `ProfileService` Cordis service, so CLI, inference, and training resolve identical hardware contracts from one probe; capability-gates KV dtypes and fails closed with a named deficit instead of an OOM (#53)
