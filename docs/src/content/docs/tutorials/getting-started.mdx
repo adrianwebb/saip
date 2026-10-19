@@ -5,6 +5,17 @@ description: Deploy SAIP locally and make your first inference request
 
 This tutorial walks you through deploying SAIP on your local machine, starting the inference stack, and making your first chat completion request. By the end, you'll have a working local AI platform serving Qwen3.5-4B with adapter support.
 
+## Install the CLI
+
+```bash
+pnpm install && pnpm -r build
+pnpm --filter @saip/cli install:local
+saip --version
+```
+
+`saip` is not published to npm, so `npx saip` will not find it — install from a checkout.
+See [CLI Reference → Installing the CLI](/saip/guides/cli-reference/#installing-the-cli).
+
 ## Prerequisites
 
 Before you begin, make sure you have the following:

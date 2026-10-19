@@ -17,6 +17,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 
@@ -152,4 +153,47 @@ function stripUndefined(env: NodeJS.ProcessEnv): Env {
 
 function defaultEnvFile(): string {
   return process.env.SAIP_ENV_FILE ?? '.env'
+}
+
+/**
+ * Locate a config file: explicit path first, else the nearest match walking up from `start`.
+ *
+ * A globally installed CLI has no meaningful relationship to the directory it is invoked from,
+ * so "read ./saip.yaml" is wrong there. Walking up means running from a project subdirectory
+ * behaves like running from its root. The caller reports the chosen path: with several
+ * checkouts on one machine, silently loading a different project's config is worse than
+ * failing to find one.
+ */
+export function discoverFile(
+  filename: string,
+  opts: { start?: string; explicit?: string; env?: NodeJS.ProcessEnv; envVar?: string } = {},
+): string | undefined {
+  const explicit = opts.explicit ?? (opts.envVar ? opts.env?.[opts.envVar] || process.env[opts.envVar] : undefined)
+  if (explicit) {
+    // Deliberately no upward search from here: `SAIP_CONFIG=/x/y.yaml` means that file.
+    // A missing explicit path is reported by resolveConfigFile naming the file the user gave.
+    const p = resolve(explicit)
+    return existsSync(p) ? p : undefined
+  }
+  let dir = resolve(opts.start ?? process.cwd())
+  for (;;) {
+    const candidate = join(dir, filename)
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) return undefined
+    dir = parent
+  }
+}
+
+/** Explicit-but-missing yields an error naming it; otherwise a discovered path or undefined. */
+export function resolveConfigFile(
+  filename: string,
+  opts: { start?: string; explicit?: string; env?: NodeJS.ProcessEnv; envVar?: string } = {},
+): { path?: string; error?: string } {
+  const explicit = opts.explicit ?? (opts.envVar ? opts.env?.[opts.envVar] || process.env[opts.envVar] : undefined)
+  if (explicit) {
+    const p = resolve(explicit)
+    return existsSync(p) ? { path: p } : { error: `${opts.envVar ?? 'configured path'} points at ${p}, which does not exist` }
+  }
+  return { path: discoverFile(filename, opts) }
 }

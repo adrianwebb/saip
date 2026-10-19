@@ -5,6 +5,49 @@ description: Complete reference for the saip command-line interface
 
 The `saip` CLI manages SAIP services, models, and infrastructure. All commands operate relative to the project root directory where `.env` and `saip.yaml` reside.
 
+## Installing the CLI
+
+`saip` is the `@saip/cli` package's bin entry. It is **not published to npm**, so `npx saip`
+cannot resolve it and `npm i -g saip` would install an unrelated package. Install it from
+this repository.
+
+```bash
+pnpm install && pnpm -r build          # compiles every package; dist/ is the runnable output
+pnpm --filter @saip/cli install:local   # links saip onto your PATH
+saip --version
+```
+
+`install:local` rather than `link`: pnpm owns the `link` subcommand and intercepts it before your
+package script is reached. The script symlinks `cli/dist/index.js` into the first writable
+directory on your PATH among `pnpm bin -g`, `~/.local/bin`, and `~/.local/share/pnpm/bin`, and
+prints what it linked.
+
+It must be a **symlink**, not a hard link or a copy: a hard link is an ordinary file sitting in
+the bin directory, so Node resolves `node_modules` upward from *there* and fails to find
+`cordis`. And `@saip/cli` depends on `@saip/shared` through the `workspace:` protocol, which a
+global install cannot resolve at all — so linking against a checkout is the supported install
+until single-file binaries land.
+
+The binary resolves `@saip/shared` through the workspace, so a global *install* of the
+package (as opposed to a link) cannot work while that dependency uses the `workspace:`
+protocol. Standalone single-file binaries for each architecture are tracked separately;
+until then, install from a checkout.
+
+### Where it looks for configuration
+
+`saip` locates `saip.yaml` and `hosts.yaml` by **walking up from the current directory**, so
+it works from a project root, a subdirectory, or anywhere else you happen to be standing.
+An explicit path always wins:
+
+| Setting | Used for | Resolution |
+|---------|----------|------------|
+| `SAIP_CONFIG` | `saip.yaml` | explicit path if set, else nearest `saip.yaml` upward from cwd |
+| `SAIP_HOSTS_FILE` | `hosts.yaml` | explicit path if set, else nearest `hosts.yaml` upward from cwd |
+
+Every command that reads configuration **prints the file it loaded**. With a global install
+the dangerous failure is not "cannot find config" but "silently used another project's
+config", so the resolved path is part of normal output rather than a debug flag.
+
 ## Global Options
 
 | Flag | Description |
