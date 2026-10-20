@@ -212,6 +212,12 @@ export interface SecretStoreOptions {
   keySources?: KeySource[]
   /** Opt-in only: permits the on-disk `unattended` wrap. Off everywhere by default. */
   allowUnattended?: boolean
+  /**
+   * Environment for the default key sources and default paths. Without it the store silently
+   * reads `process.env`, so a caller that supplied its own env to `defaultSecretsProvider`
+   * could build a provider that could not unlock the store it was pointed at.
+   */
+  env?: NodeJS.ProcessEnv
 }
 
 const seal = (key: Buffer, plain: Buffer): Gcm => {
@@ -246,8 +252,13 @@ export class SecretStore {
   get unattendedKeyPath(): string { return join(dirname(this.path), 'keys', 'unattended.key') }
 
   constructor(opts: SecretStoreOptions = {}) {
-    this.path = opts.path ?? defaultStorePath()
-    this.sources = opts.keySources ?? defaultKeySources(process.env, { allowUnattended: opts.allowUnattended })
+    const env = opts.env ?? process.env
+    this.path = opts.path ?? defaultStorePath(env)
+    // No prompt in the library default on purpose: services must never block on a terminal.
+    // Interactive prompting belongs to the CLI's buildStore, which supplies its own sources.
+    // Threading `env` here is the fix: a caller passing its own environment previously got a
+    // store that quietly consulted process.env instead and could not be unlocked.
+    this.sources = opts.keySources ?? defaultKeySources(env, { allowUnattended: opts.allowUnattended, storePath: this.path })
   }
 
   exists(): boolean { return existsSync(this.path) }
@@ -439,5 +450,7 @@ export function defaultSecretsProvider(
   env: NodeJS.ProcessEnv = process.env,
   storeOpts: SecretStoreOptions = {},
 ): SecretsProvider {
-  return new ChainSecrets([new EnvSecrets(env), new EncryptedSecretsProvider(new SecretStore(storeOpts))])
+  // One env for both links of the chain. Passing it only to EnvSecrets produced a provider
+  // whose store half consulted process.env instead — untestable and wrong for any embedder.
+  return new ChainSecrets([new EnvSecrets(env), new EncryptedSecretsProvider(new SecretStore({ ...storeOpts, env }))])
 }

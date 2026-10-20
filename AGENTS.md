@@ -40,13 +40,64 @@ Plan/Issue → Documentation → Tests → Implementation → Release
    programmatic interface and prevents docs from going stale. Update all affected pages (site
    docs, repo docs, README, skills, AGENTS.md). Commit the docs.
 2. **Tests outside-in.** Acceptance/smoke → regression → integration → unit. The interface must
-   be stable before internals are built.
+   be stable before internals are built. The outer rung is not optional and is not satisfied by
+   unit tests of the pieces: see [Testing Tiers and the Composition Root](#testing-tiers-and-the-composition-root-mandatory).
 3. **Implementation.** Write code that makes the tests pass. Commit incrementally with issue refs.
 4. **Release.** PR → CI green → merge to staging.
 
 Why: docs written after code describe what was built, not what should be built. Tests written
 after code verify the implementation, not the specification. This cycle forces spec-driven
 development. See the `release-workflow` skill for full details.
+
+## Testing Tiers and the Composition Root (MANDATORY)
+
+This repo's architecture is deliberate about seams — `StorageProvider`, `VllmBackend`,
+`SecretsProvider`, `GpuProbe`, `OcrBackend`, `DeploymentProvider`, `AuthProvider`,
+`MonitoringProvider` — and about injecting them so modules are testable without a GPU, network,
+or cloud account. That choice is correct and has a cost that must be paid explicitly:
+
+> **Dependency injection moves bugs from the module into the composition root. It does not
+> eliminate them.**
+
+A test that injects a fake collaborator is blind to the exact place where production supplies the
+real one. In this project four shipped defects were that shape: a documented `${VAR}`
+interpolation no code implemented; the CLI unrunnable once installed; a secret store whose key
+sources were inert outside tests; an unlock method that could be created but never used. Every one
+had a green suite.
+
+Therefore, for **every injectable seam**:
+
+- At least one test must exercise the **default construction path** — the function that wires
+  production collaborators (`createApp()` with no injected backends, `defaultSecretsProvider()`,
+  `buildStore()`, `backendFromEnv()`). No fakes injected.
+- Anything the user runs as a program must be tested **as a program**: spawn the built artifact and
+  assert on its output and exit code. Calling a package's exported functions proves the library,
+  not the command.
+- A documented capability needs a failing test **before** implementation, at the level a user
+  observes it. Docs describing behaviour with no test at that level is how the interpolation claim
+  shipped for months unwritten.
+
+**A green test suite is not the gate.** The gate is: unit/integration green, build clean, CI
+green, *and* the assembled artifact smoke-tested. If any is missing, say so rather than reporting
+"tests pass".
+
+## Process Self-Evaluation (MANDATORY)
+
+Agents must actively evaluate the development and release process while working, not only when
+asked. Trigger a review when you hit or anticipate any of:
+
+- a defect that reached a merged branch despite green tests;
+- the same class of mistake recurring twice, or a gap you notice while fixing its predecessor;
+- a documented promise that no executable artefact checks;
+- a step so manual, or so easy to skip, that it will eventually be skipped.
+
+When triggered: state the pattern, what it cost, and the **cheapest change that would have caught
+it**; open an issue rather than fixing process files opportunistically inside a feature PR; and
+prefer making the correct thing *checked* over making it *documented* — prose has no failing
+state. Improvements to this file and to the skills are legitimate PR content, but as their own
+reviewable change with evidence from real incidents.
+
+This is not permission to expand scope silently. Propose; let the maintainer accept.
 
 ## Changelog (MANDATORY)
 
