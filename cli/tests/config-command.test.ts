@@ -12,8 +12,8 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CommandRegistryService } from '../src/lib/command-registry.js'
-import configPlugin, { runConfig, maskValue } from '../src/commands/config.js'
-import { SecretStore, MemoryKeySource, PassphraseKey } from '@saip/shared'
+import configPlugin, { runConfig, maskValue, buildStore } from '../src/commands/config.js'
+import { SecretStore, MemoryKeySource, PassphraseKey, KeyFileKey } from '@saip/shared'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryKeySource, SecretStore } from '@saip/shared'
@@ -274,5 +274,23 @@ describe('saip config key', () => {
     await store.set('A', '1')
     const r = await runConfig(store, {}, ['key', 'add', 'nonsense'], { env: {} })
     expect(r.code).toBe(1)
+  })
+})
+
+describe('unattended wrap is actually usable (#73 follow-up)', () => {
+  it('buildStore can open a store carrying an unattended wrap, with no passphrase in reach', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'saip-unatt-'))
+    const path = join(d, 's.enc.json')
+    const seed = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 11))] })
+    await seed.set('SAIP_R2_BUCKET', 'from-store')
+    await seed.addWrap(new KeyFileKey(join(d, 'keys', 'unattended.key')))
+
+    // Simulate a fresh process with no passphrase anywhere: exactly the installed-CLI case.
+    const savedPass = process.env.SAIP_SECRETS_PASSPHRASE
+    delete process.env.SAIP_SECRETS_PASSPHRASE
+    const store = buildStore({ env: {}, storePath: path })
+    if (savedPass !== undefined) process.env.SAIP_SECRETS_PASSPHRASE = savedPass
+    expect(await store.get('SAIP_R2_BUCKET')).toBe('from-store')
+    expect(await store.activeWrap()).toBe('unattended')
   })
 })

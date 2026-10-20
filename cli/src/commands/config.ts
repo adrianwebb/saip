@@ -31,6 +31,8 @@ export interface RunDeps {
   prompt?: (q: string) => Promise<string>
   /** Injectable keychain runner; omitted means probe the host for secret-tool. */
   toolRunner?: SecretToolRunner
+  /** Injectable store path, so tests never touch the real ~/.saip. */
+  storePath?: string
 }
 
 export interface RunResult { code: number; lines: string[] }
@@ -140,11 +142,19 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
   // Every key source is wired here. Both were unreachable before #73, which is how a fully
   // green test suite coexisted with a `saip config set` that could never create a store:
   // the sources were only ever constructed inside tests.
-  const sources = defaultKeySources(process.env, {
-    prompt: deps.prompt ?? promptHidden,
+  const env = deps.env ?? process.env
+  const storePath = deps.storePath ?? defaultStorePath(env)
+  const sources = defaultKeySources(env, {
+    prompt: deps.prompt ?? promptTTY,
     toolRunner: deps.toolRunner ?? (hasSecretTool() ? secretToolRunner() : undefined),
+    // Reading has to OFFER every tier that might exist on disk, otherwise `key add
+    // unattended` creates a wrap this CLI can never use. Creation stays opt-in — only
+    // `key add` provisions the key file — and a store without such a wrap is untouched,
+    // because the source returns null when the file is absent.
+    allowUnattended: true,
+    storePath,
   })
-  return new SecretStore({ path: defaultStorePath(), keySources: sources })
+  return new SecretStore({ path: storePath, keySources: sources })
 }
 
 export async function runConfig(
@@ -325,10 +335,9 @@ export default {
     ctx.commandRegistry!.register({
       ...spec,
       action: async (_ctx: Context, options, positional) => {
-        const store = config.store ?? new SecretStore({
-          path: defaultStorePath(),
-          keySources: defaultKeySources(),
-        })
+        // Single construction point. A second, separate `new SecretStore(...)` here is what
+        // let a real key-source wiring bug live in one path while the other looked correct.
+        const store = config.store ?? buildStore({})
         const result = await runConfig(store, options, positional)
         for (const l of result.lines) console.log(l)
         process.exitCode = result.code
