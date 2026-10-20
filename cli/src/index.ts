@@ -12,7 +12,7 @@ import { Context } from 'cordis'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
-import { SAIP_VERSION } from './version.js'
+import { SAIP_BUILD_COMMIT, SAIP_BUILD_DATE, SAIP_BUILD_TARGET, SAIP_VERSION } from './version.js'
 import { DisplayService } from './lib/display.js'
 import { UiService } from './lib/ui.js'
 import { jsonlRenderer } from './ui/json.js'
@@ -125,7 +125,22 @@ export async function buildProgram(): Promise<Command> {
  * `argv` defaults to the real process arguments, with the two node prefixes stripped the way
  * commander expects; tests and a future programmatic `saip.api()` can pass their own.
  */
+/**
+ * Provenance for the artifact, not the checkout (#119). Scanned from argv **before** commander runs,
+ * so `saip-dev --built` answers even when the rest of the environment is broken — which is precisely the
+ * moment an operator needs to know what this file is. Printed to stderr when `--json` is active, so the
+ * stream invariant (#115) holds and this line can never be mistaken for a record.
+ */
+export function buildProvenance(): string {
+  return `saip build: commit=${SAIP_BUILD_COMMIT} target=${SAIP_BUILD_TARGET} version=${SAIP_VERSION} builtAt=${SAIP_BUILD_DATE}`
+}
+
 export async function runCli(argv: string[] = process.argv): Promise<number> {
+  if (argv.includes('--built')) {
+    const machine = argv.includes('--json')
+    ;(machine ? process.stderr : process.stdout).write(`${buildProvenance()}\n`)
+    return 0
+  }
   const program = await buildProgram()
   await program.parseAsync(argv)
   return typeof process.exitCode === 'number' ? process.exitCode : 0

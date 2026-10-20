@@ -16,23 +16,13 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { ALL_TARGETS, artifactName, hostTarget } from './build-lib.mjs'
 import { fileURLToPath } from 'node:url'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BUN = 'bun@1.4.3' // pinned: a compiler upgrade must be a deliberate change, not a floating one
 const OUT_DIR = join(pkgRoot, 'dist', 'binaries')
 const ENTRY = 'src/bin.ts'
-
-// os-arch, matching `bun build --target`.
-const ALL_TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-x64', 'bun-darwin-arm64', 'bun-windows-x64']
-
-function hostTarget() {
-  const map = { 'x64-linux': 'bun-linux-x64', 'arm64-linux': 'bun-linux-arm64', 'x64-darwin': 'bun-darwin-x64', 'arm64-darwin': 'bun-darwin-arm64', 'x64-win32': 'bun-windows-x64' }
-  const key = `${process.arch}-${process.platform}`
-  const t = map[key]
-  if (!t) throw new Error(`no Bun target for ${key}; pass --target explicitly`)
-  return t
-}
 
 /**
  * A distributed binary is often the only copy of the application on a server, so the version it
@@ -51,7 +41,7 @@ function version() {
 }
 
 function build(target, { verify }) {
-  const name = `saip-${target.replace('bun-', '')}${target.includes('windows') ? '.exe' : ''}`
+  const name = artifactName(target)
   const outfile = join(OUT_DIR, name)
   // `npx --yes bun@<pinned> build …` — an earlier version passed `exec` as the first argument,
   // turning it into `npx exec …`, which is not a bun invocation. The failure was opaque ("stdout:

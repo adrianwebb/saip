@@ -150,6 +150,43 @@ behaviour in every row above, and a deliberate plain-text path for non-TTY outpu
 the packager ([#71](https://github.com/adrianwebb/saip/issues/71)), Ink for interactive use with
 this as the fallback is a live option rather than a rejected one.
 
+### `saip` vs `saip-dev` — which build you are running
+
+Two names, deliberately, because the two builds behave differently and "works in dev, broken on the
+server" is this project's most repeated defect class:
+
+| Command | What it is | How to get it |
+|---|---|---|
+| `saip` | the **source** build: `cli/dist/bin.js` symlinked by `pnpm --filter @saip/cli install:local`, runs on Node, tracks your working tree | use it while developing |
+| `saip-dev` | a **compiled Bun binary** for your architecture, installed to `~/.local/bin/saip-dev` | `pnpm --filter @saip/cli install:dev` |
+| release binary | the same compiled artifact, downloaded with `SHA256SUMS` | see "Installing a released binary" above |
+
+`saip-dev` is what a server runs, so it is what a change should be accepted against — especially the
+terminal behaviour that cannot be judged from a test log: the wizard printing each value's explanation
+**before** its prompt, and **paste** working, because most credential values are copied rather than typed.
+
+```bash
+pnpm --filter @saip/cli install:dev     # build host binary, install, execute it, write provenance
+saip-dev --version                      # the version it was built from
+saip-dev --built                        # commit, target, builtAt — what this artifact actually is
+saip-dev config init                    # the acceptance test, at a real terminal
+```
+
+Notes that matter:
+
+- The install runs the **same** build script as the release, so the version-parity guard applies: if
+  `cli/src/version.ts` and `cli/package.json` disagree, the install refuses instead of shipping a binary
+  that reports the wrong version.
+- It **executes** what it installed and checks the reported version before calling the install a success.
+  A copy that runs nowhere is not an install.
+- It will **not** overwrite a `saip-dev` that it did not install (no matching provenance file) unless you
+  pass `--force`. An unrelated file at that path is yours, not ours to replace.
+- `SAIP_DEV_BINDIR` overrides the destination — used by the tests to install into a temp directory, and
+  available if you want dev builds elsewhere.
+- `--built` prints commit provenance recorded at compile time. A binary on a server is often the only
+  copy of the application, so "which release" (`--version`) and "which commit" (`--built`) are the whole
+  audit trail.
+
 ### Building a binary yourself
 
 ```bash

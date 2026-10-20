@@ -1,7 +1,7 @@
 {
   "name": "@saip/cli",
   "version": "0.5.0",
-  "description": "SAIP CLI — manage inference and training services",
+  "description": "SAIP CLI \u2014 manage inference and training services",
   "type": "module",
   "bin": {
     "saip": "dist/bin.js"
@@ -14,7 +14,8 @@
     "clean": "rm -rf dist",
     "install:local": "node scripts/install-link.mjs",
     "build:bin": "node scripts/build-binaries.mjs",
-    "build:bin:all": "node scripts/build-binaries.mjs --all"
+    "build:bin:all": "node scripts/build-binaries.mjs --all",
+    "install:dev": "node scripts/install-dev.mjs"
   },
   "dependencies": {
     "@saip/shared": "workspace:*",
