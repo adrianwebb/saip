@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - cli: `saip config init` shows each credential's explanation **before** prompting for it, rather than buffering the transcript and printing it after the last prompt, and **Ctrl+C now works** — raw mode had disabled `ISIG`, so the keypress arrived as an ordinary byte and the wizard hung. Cancelling exits 130, keeps everything already answered (config values are written per item, not batched), and reports what remains; bracketed-paste markers no longer leak into pasted keys (#78)
 ### Fixed
+- ci: **tagged releases now publish the per-platform binaries and `SHA256SUMS`** (#111). Releases before this were cut by hand and carry no assets, while the install docs told users to `curl` them — the documented download 404ed against release `0.5.0`. Each platform is compiled and **executed on a native runner** before upload, a missing platform fails the release rather than publishing a partial set, the tag must equal the version the binary reports, and an existing hand-written release gets assets attached without its notes being overwritten. The docs now say plainly which releases carry binaries (#111)
 - XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
 - Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
 - Download for AI header menu no longer renders permanently open; panel closes correctly (#13)

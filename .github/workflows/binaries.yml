@@ -93,7 +93,7 @@ jobs:
             target: bun-darwin-x64
             bin: saip-darwin-x64
           - name: darwin-arm64
-            runs-on: macos-14
+            runs-on: macos-15
             target: bun-darwin-arm64
             bin: saip-darwin-arm64
           - name: windows-x64
