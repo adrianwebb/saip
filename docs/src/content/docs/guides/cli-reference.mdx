@@ -171,6 +171,42 @@ Output lands in `cli/dist/binaries/` with `SHA256SUMS`. Notes that matter when c
   detection because a compiled binary's `process.argv[1]` is a virtual `/$bunfs/...` path, which no
   path comparison can resolve.
 
+### `--json` — machine output is a guarantee, not a per-command feature
+
+Every SAIP command accepts `--json`. The rule (#113):
+
+> stdout of a `--json` run is **valid JSONL** — one parseable record per line — or the command says
+> why it cannot be, as a JSON record, with a non-zero exit.
+
+That means, for a script or agent:
+
+- **Commands that emit records** (`status`, `profiles`) put blocks on stdout: `{"kind":"keyValues",…}`,
+  one compact line each. Nothing else ever reaches stdout — provenance lines like
+  `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+- **Commands that have not migrated yet** answer with a single record and exit **2**:
+
+  ```json
+  {"kind":"line","level":"error","text":"command "awake" does not emit --json records yet; …",
+   "data":{"code":"not_structured","command":"awake"}}
+  ```
+
+  and **do not run**: `saip awake --json` switches nothing, because the guard short-circuits before the
+  action. Ask for machine output from a side-effecting command and you get a refusal, not a deployment.
+
+An empty stdout is deliberately treated as a failure of this guarantee, since a consumer cannot tell
+"nothing to report" from "broken stream".
+
+**Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
+`saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
+valid; the stream was not; no test noticed, because every test parsed the JSON and ignored stdout. Ten
+commands each remembering one rule is how that happened.
+
+```bash
+saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
+saip profiles --json   | jq .resolution.profile
+saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
+```
+
 ## Global Options
 
 | Flag | Description |

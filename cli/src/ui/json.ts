@@ -24,7 +24,15 @@ export const jsonlRenderer: Renderer = {
       case 'columns':
         return JSON.stringify({ kind: 'columns', header: block.header, rows: block.rows })
       case 'line':
-        return JSON.stringify({ kind: 'line', level: block.level ?? 'info', text: block.text })
+        return JSON.stringify({
+          // The `[saip] ` marker is presentation, so it is dropped here rather than leaking into a
+          // machine value (the blemish #113 noted: an Error message rendered as a record still carried
+          // its prefix). `level` already encodes what the marker was for.
+          kind: 'line', level: block.level ?? 'info', text: block.text.replace(/^\[saip(?: [!x])?\]\s*/, ''),
+          // A structured payload is optional metadata; `text` stays so a consumer never has to guess
+          // whether a record carries a code.
+          ...(block.data ? { data: block.data } : {}),
+        })
       case 'rule':
         // A rule is decoration. It still gets a record rather than being silently dropped, so a
         // consumer sees the same block sequence the terminal saw.

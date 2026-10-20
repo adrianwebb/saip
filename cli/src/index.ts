@@ -7,7 +7,7 @@
  * commander surface. Adding a command = adding a plugin, never editing here.
  */
 
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import { Context } from 'cordis'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
@@ -15,6 +15,8 @@ import { CommandRegistryService } from './lib/command-registry.js'
 import { SAIP_VERSION } from './version.js'
 import { DisplayService } from './lib/display.js'
 import { UiService } from './lib/ui.js'
+import { jsonlRenderer } from './ui/json.js'
+import { isStructuredCommand, jsonModeOn, redirectHumanStdout, setJsonMode, unsupportedRecord } from './lib/json-mode.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
 import awakePlugin from './commands/awake.js'
@@ -55,6 +57,15 @@ export async function buildProgram(): Promise<Command> {
   for (const spec of ctx.commandRegistry!.list()) {
     const cmd = new Command(spec.name).description(spec.description)
     for (const opt of spec.options ?? []) cmd.option(opt.flag, opt.description)
+    // Every command may be asked for machine output, so every command answers the same way (#113).
+    // Declared per command rather than as a commander global because the option must appear in
+    // `cmd.action`'s own opts object; a program-level global would need `program.opts()` everywhere.
+    // Only declare it if the command has not already: `profiles` ships its own `--json` spec entry,
+    // and commander throws on a duplicate option name — which aborted buildProgram for EVERY command,
+    // so `awake --json` returned exit 1 with empty stdout. Guarded rather than assumed.
+    if (!(spec.options ?? []).some((o) => o.flag.split(/[\s[]/)[0] === '--json')) {
+      cmd.addOption(new Option('--json', 'Output JSONL records on stdout (for scripts and agents)'))
+    }
     // `.argument()` describes ONE parameter; a multi-word spec must go through `.arguments()`.
     // Passing '<action> [name]' to .argument() registers a single argument and then rejects every
     // two-word call — which only a real CLI invocation caught, not the unit suite.
@@ -73,6 +84,26 @@ export async function buildProgram(): Promise<Command> {
       const head = hasCommand ? argv.slice(0, -1) : argv
       const options = (head[head.length - 1] ?? {}) as Record<string, unknown>
       const positional = (spec.positional ? head.slice(0, -1) : []).map(String)
+      // The `--json` invariant (#113): stdout is valid JSONL or the command says why it cannot be.
+      if ((options as Record<string, unknown>)?.json) {
+        setJsonMode(true)
+        const restore = redirectHumanStdout()
+        try {
+          if (!isStructuredCommand(spec.name)) {
+            // Short-circuit BEFORE the action. `saip awake --json` from an agent must not switch a
+            // stack: an unsupported command answers with a record and exit 2, and does nothing else.
+            process.stdout.write(`${jsonlRenderer.render(unsupportedRecord(spec.name))}\n`)
+            process.exitCode = 2
+            return
+          }
+          await spec.action(ctx, options, positional)
+        } finally {
+          setJsonMode(false)
+          restore()
+        }
+        return
+      }
+      setJsonMode(false)
       try {
         await spec.action(ctx, options ?? {}, positional)
       } catch (err: any) {

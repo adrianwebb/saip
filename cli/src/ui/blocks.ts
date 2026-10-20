@@ -14,7 +14,7 @@ export type Block =
   | { kind: 'card'; spec: CardSpec }
   | { kind: 'keyValues'; rows: KvRow[] }
   | { kind: 'columns'; header: string[]; rows: string[][] }
-  | { kind: 'line'; text: string; level?: 'info' | 'warn' | 'error' }
+  | { kind: 'line'; text: string; level?: 'info' | 'warn' | 'error'; data?: Record<string, unknown> }
   | { kind: 'rule'; width: number }
 
 export interface KvRow { label: string; value: string; hint?: string }
