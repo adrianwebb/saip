@@ -2,6 +2,7 @@ import type { Context } from 'cordis'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { runVerb, withHost } from '../lib/host-command.js'
 import { resolveForHost } from './profiles.js'
+import { uiOr } from '../ui/output.js'
 
 const spec: CommandSpec = {
   name: 'awake',
@@ -12,8 +13,8 @@ const spec: CommandSpec = {
     { flag: '--profile <name>', description: 'Service profile to run (default: resolve from the GPU)' },
   ],
   action: async (ctx: Context, options) => {
-    console.log(`[saip] Switching to AWAKE mode...`)
-    if (options.bucket) console.log(`[saip] Using bucket override: ${options.bucket}`)
+    uiOr(ctx).showLine('Switching to AWAKE mode...')
+    if (options.bucket) uiOr(ctx).showLine(`Using bucket override: ${options.bucket}`)
 
     // Resolve the target host FIRST: an unknown host is a mistake regardless of hardware,
     // and probing this machine's GPU to validate a remote host would be meaningless.
@@ -31,8 +32,8 @@ const spec: CommandSpec = {
       }
       if (report.resolution?.ok) {
         const gpu = (report.resolution as any).gpu
-        console.log(`[saip] Profile: ${report.resolution.profile}${report.resolution.auto ? ' (auto-resolved)' : ''} — ${gpu?.name}, ${gpu?.total_gib} GiB total, ${gpu?.free_gib} GiB free, cc ${gpu?.capability}`)
-        if (report.utilization?.ok) console.log(`[saip] Derived gpu_memory_utilization=${report.utilization.utilization}`)
+        uiOr(ctx).showLine(`Profile: ${report.resolution.profile}${report.resolution.auto ? ' (auto-resolved)' : ''} — ${gpu?.name}, ${gpu?.total_gib} GiB total, ${gpu?.free_gib} GiB free, cc ${gpu?.capability}`)
+        if (report.utilization?.ok) uiOr(ctx).showLine(`Derived gpu_memory_utilization=${report.utilization.utilization}`)
       }
       // The engine reads this to render its arguments; SAIP_PROFILE propagates to compose.
       if (options.profile) process.env.SAIP_PROFILE = String(options.profile)

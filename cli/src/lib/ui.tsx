@@ -142,4 +142,12 @@ export class UiService extends Service {
   }
   /** Render and write several blocks in order — the common "print a report" shape. */
   showAll(blocks: Block[]): void { for (const b of blocks) this.show(b) }
+
+  /**
+   * Write to stderr. Errors stay human text on stderr even in `--json` mode: the stream invariant
+   * (#115) is about **stdout**, and moving diagnostics into the record stream would make `jq` read
+   * them as data. A command that fails while structured also gets a `line` record on stdout when the
+   * dispatcher or command chooses to emit one — this method is only the human channel.
+   */
+  fail(text: string): void { process.stderr.write(`${text.startsWith('[saip') ? text : `[saip] ${text}`}\n`) }
 }
