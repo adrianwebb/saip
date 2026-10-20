@@ -34,6 +34,8 @@ export interface RunDeps {
   toolRunner?: SecretToolRunner
   /** Injectable store path, so tests never touch the real ~/.saip. */
   storePath?: string
+  /** Why the passphrase is being asked for. Printed immediately before the prompt. */
+  reason?: string
   /** Card renderer for a human terminal; omitted means plain labelled lines (pipes, CI, tests). */
   formatItem?: (item: InitItem) => string[]
   /** Injectable access gateway; the default wraps the same store so the KEK cache is shared. */
@@ -138,8 +140,22 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
   // the sources were only ever constructed inside tests.
   const env = deps.env ?? process.env
   const storePath = deps.storePath ?? defaultStorePath(env)
+  // The passphrase is the one prompt that must never arrive bare: it is the gate on every other
+  // secret, and a user who does not know what it unlocks cannot judge whether to answer.
+  const askPassphrase: (q: string) => Promise<string> = async (q) => {
+    // The reason is the caller's; the escape hatch is ours. Appending it here means every prompt
+    // path offers it, rather than each call site having to remember the same sentence — the kind
+    // of "documented in one place, true in another" split this project keeps having to repair.
+    const lines: string[] = []
+    if (deps.reason) lines.push(deps.reason)
+    if (!env.SAIP_SECRETS_PASSPHRASE) {
+      lines.push('SAIP_SECRETS_PASSPHRASE skips this prompt; `saip config key add unattended` removes the need for one, at a weaker guarantee (run `saip config doctor` to see it).')
+    }
+    if (lines.length) process.stdout.write(`[saip] ${lines.join('\n[saip] ')}\n`)
+    return deps.prompt ? deps.prompt(q) : promptTTY(q)
+  }
   const sources = defaultKeySources(env, {
-    prompt: deps.prompt ?? promptTTY,
+    prompt: askPassphrase,
     toolRunner: deps.toolRunner ?? (hasSecretTool() ? secretToolRunner() : undefined),
     // Reading has to OFFER every tier that might exist on disk, otherwise `key add
     // unattended` creates a wrap this CLI can never use. Creation stays opt-in — only

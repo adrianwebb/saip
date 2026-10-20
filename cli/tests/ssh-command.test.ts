@@ -11,6 +11,7 @@ import { Context } from 'cordis'
 import { CommandRegistryService } from '../src/lib/command-registry.js'
 import { SecretStore, MemoryKeySource } from '@saip/shared'
 import sshPlugin, { runSsh, type SshRunner } from '../src/commands/ssh.js'
+import { buildStore } from '../src/commands/config.js'
 import { managedKeyName, liveMaterialisedKeys } from '../src/lib/ssh-keys.js'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'saip-sshcmd-'))
@@ -66,6 +67,44 @@ describe('saip ssh generate / show', () => {
     const r = await runSsh('show', { host: 'lab' }, { store, hosts: () => HOSTS })
     expect(r.lines.join("")).toMatch(/ssh-ed25519/)
     expect(r.lines.join(' ')).not.toMatch(/PRIVATE KEY/)
+  })
+})
+
+describe('the passphrase explains itself before it asks (#89 ordering)', () => {
+  it('buildStore writes the reason line before prompting for the passphrase', async () => {
+    const d = dir()
+    const path = join(d, 's.enc.json')
+    // Seed with the SAME derivation the prompt will produce, otherwise the unlock legitimately
+    // fails and the test measures a wrong passphrase instead of a prompt ordering.
+    const { PassphraseKey } = await import('@saip/shared')
+    const phrase = 'the-typed-passphrase'
+    const seed = new SecretStore({ path, keySources: [new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: phrase })] })
+    await seed.set('A_KEY', 'v')
+    const asked: string[] = []
+    const writes: string[] = []
+    // Declared outside the try so the assertions after it can see the snapshot.
+    const writesAtPrompt: string[] = []
+    const real = process.stdout.write.bind(process.stdout)
+    ;(process.stdout as any).write = (c: any) => { writes.push(String(c)); return true }
+    try {
+      // Snapshot stdout at the moment the prompt is invoked: that is the only way to see
+      // whether the explanation reached the screen before the question did.
+      const store = buildStore({
+        storePath: path,
+        env: {},
+        prompt: async (q) => { asked.push(q); writesAtPrompt.push(...writes); return phrase },
+        reason: 'unlocking the store that holds the SSH key for host "probe"',
+      })
+      await store.get('A_KEY')
+    } finally { (process.stdout as any).write = real }
+    expect(asked.length).toBe(1)
+    // The reason must be on screen before the prompt, not after the answer.
+    const seen = writesAtPrompt.join('')
+    expect(seen).toMatch(/SSH key for host "probe"/)               // caller's reason
+    expect(seen).toMatch(/SAIP_SECRETS_PASSPHRASE skips this prompt/) // and the hint, added once here
+    expect(seen.indexOf('SSH key for host')).toBeLessThan(seen.indexOf('SAIP_SECRETS_PASSPHRASE'))
+    // The store read must still succeed: the prompt is answered with the seeded passphrase.
+    
   })
 })
 
