@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 
 /**
  * SAIP CLI — manage inference and training services.
@@ -10,8 +9,6 @@
 
 import { Command } from 'commander'
 import { Context } from 'cordis'
-import { realpathSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
@@ -86,23 +83,14 @@ export async function buildProgram(): Promise<Command> {
 }
 
 /**
- * True when this module is the process entry point.
+ * Run the CLI. `bin.ts` calls this and nothing else does — see that file for why entry detection
+ * was removed rather than fixed (#101).
  *
- * The obvious form — comparing `import.meta.url` to `file://` + `process.argv[1]` — is false
- * under a symlink or wrapper, which is exactly how an installed CLI is launched: argv[1] is the
- * link path while import.meta.url is the resolved file. The result is a CLI that loads, runs
- * nothing, and exits 0 with no output. Resolving realpath on the argv side makes the check hold
- * for direct runs, symlinks, relative paths, and a copied launcher alike.
+ * `argv` defaults to the real process arguments, with the two node prefixes stripped the way
+ * commander expects; tests and a future programmatic `saip.api()` can pass their own.
  */
-export function isMainEntry(argv1 = process.argv[1]): boolean {
-  if (!argv1) return false
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href
-  } catch {
-    return false
-  }
-}
-
-if (isMainEntry()) {
-  void buildProgram().then((program) => program.parse())
+export async function runCli(argv: string[] = process.argv): Promise<number> {
+  const program = await buildProgram()
+  await program.parseAsync(argv)
+  return typeof process.exitCode === 'number' ? process.exitCode : 0
 }

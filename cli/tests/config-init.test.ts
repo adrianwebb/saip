@@ -19,7 +19,7 @@ import { SecretStore, MemoryKeySource } from '@saip/shared'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'saip-init-'))
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
-const distBin = join(repoRoot, 'cli/dist/index.js')
+const distBin = join(repoRoot, 'cli/dist/bin.js')
 
 const baseConfig = {
   storage: { r2: { bucket_env: 'SAIP_R2_BUCKET', token_env: 'SAIP_HF_TOKEN' } },
