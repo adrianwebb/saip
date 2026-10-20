@@ -48,6 +48,41 @@ Every command that reads configuration **prints the file it loaded**. With a glo
 the dangerous failure is not "cannot find config" but "silently used another project's
 config", so the resolved path is part of normal output rather than a debug flag.
 
+## How output is presented
+
+`saip config init` and `saip config help` render each credential as a **card** when you are at a
+terminal, and as plain `label: value` lines everywhere else. The same fields and the same wording
+either way — presentation is the only thing that changes, so a log line and a card cannot disagree.
+
+```
+╭────────────────────────────────────────────────────────────────╮
+│ SAIP_R2_BUCKET  (required)                                     │
+│ what: Object storage for adapters, knowledge, sessions and      │
+│ feedback. Everything the platform persists lives here.         │
+│ scoping: One private bucket per deployment is enough. Do not   │
+│ make it public: adapter weights and user data go in it.        │
+│ create: https://dash.cloudflare.com/?to=/:account/r2/overview  │
+╰────────────────────────────────────────────────────────────────╯
+```
+
+The fallback is automatic, never a flag:
+
+| Situation | What you get |
+|---|---|
+| Piped, redirected, CI, agent | plain lines — greppable, and **no box-drawing characters at all** |
+| `TERM=dumb` or a non-UTF-8 locale (`LANG=C`) | ASCII frame (`+----+`) if a frame is drawn at all |
+| `NO_COLOR`, or not a TTY | no ANSI escapes, ever |
+| Terminal narrower than ~72 columns | labels and values stack instead of sharing a line |
+| 100+ columns | width is clamped so a giant terminal does not produce a giant card |
+
+**Why this is hand-rolled rather than Ink.** A spike against `ink@5` + `react@18` measured:
+19 MB across 43 transitive packages for a static bordered block; **no** degradation under
+`TERM=dumb` (it still emitted box-drawing characters); and an esbuild bundle of 1.39 MB that
+**does not run** — unresolved `react-devtools-core`, and after shimming that away it fails on
+`Dynamic require of "…" is not supported`. That last failure is exactly what a single-file binary
+([#71](https://github.com/adrianwebb/saip/issues/71)) cannot survive. Ink's piped output was clean, so that
+concern was disproved — the rejection rests on the two that were not.
+
 ## Global Options
 
 | Flag | Description |

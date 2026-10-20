@@ -70,6 +70,7 @@ export function newLineAccumulator(): {
   }
 }
 import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, type SecretEntry, type SecretStore } from '@saip/shared'
+import { renderCard, type CardSpec, type DisplayOptions } from '../lib/display.js'
 
 export interface InitItem {
   readonly name: string
@@ -172,10 +173,16 @@ export async function currentDisplay(
   return raw ? `current value: ${raw}` : 'set'
 }
 
-/** The teaching block. Printed for EVERY item, set or unset — see #82. */
-function guidanceLines(item: InitItem): string[] {
+/**
+ * The default guidance block: prefixed label lines. Kept as the fallback for pipes, CI, agents and
+ * dumb terminals, where a box is noise. The card renderer in `lib/display.ts` produces the same
+ * fields with the same wording, so which one a user sees is a presentation choice only.
+ */
+export function plainGuidance(item: InitItem): string[] {
   const out = [
-    `── ${item.name} ${item.required ? '(required)' : '(optional)'}`,
+    // ASCII prefix: this is the fallback for pipes, CI, log collectors and TERM=dumb,
+    // where U+2500 is either noise or mojibake (#88).
+    `-- ${item.name} ${item.required ? '(required)' : '(optional)'}`,
     `   what    : ${item.purpose}`,
     `   how     : ${item.how}`,
   ]
@@ -183,6 +190,27 @@ function guidanceLines(item: InitItem): string[] {
   out.push(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
   if (item.docsUrl) out.push(`   docs    : ${item.docsUrl}`)
   return out
+}
+
+/**
+ * The same fields as the plain block, as a card (#88). Kept next to `plainGuidance` so the two
+ * renderers cannot drift apart in content — only in presentation — which is the failure mode a
+ * separate "pretty" path usually grows.
+ */
+export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
+  const fields = [
+    { label: 'what', value: item.purpose },
+    { label: 'how', value: item.how },
+    ...(item.scope ? [{ label: 'scoping', value: item.scope }] : []),
+    { label: 'create', value: item.providerUrl ?? 'generate this one yourself' },
+    ...(item.docsUrl ? [{ label: 'docs', value: item.docsUrl }] : []),
+  ]
+  const spec: CardSpec = {
+    title: item.name,
+    badge: item.required ? 'required' : 'optional',
+    fields,
+  }
+  return renderCard(spec, opts).split('\n')
 }
 
 export interface RunInitOptions {
@@ -200,6 +228,12 @@ export interface RunInitOptions {
   reset?: string
   /** Retired config keys found in saip.yaml; reported before anything else. */
   deprecations?: string[]
+  /**
+   * Renders one guidance block. The CLI passes the DisplayService card renderer; the default is
+   * the plain `label: value` lines used when stdout is not a terminal and by every test. One
+   * formatter, so a human's card and a log line cannot disagree about what a field says.
+   */
+  formatItem?: (item: InitItem) => string[]
 }
 
 /** Print the catalog with no prompts and no writes — the guidance as a help surface (#82). */
@@ -210,6 +244,7 @@ export async function runHelp(opts: {
   only?: string
   io: Io
   env?: NodeJS.ProcessEnv
+  formatItem?: (item: InitItem) => string[]
 }): Promise<{ code: number; lines: string[] }> {
   const envPath = opts.envPath ?? envFilePath()
   const ctx = { env: opts.env, envPath, store: opts.store }
@@ -221,7 +256,7 @@ export async function runHelp(opts: {
     return { code: 1, lines }
   }
   for (const item of wanted) {
-    for (const l of guidanceLines(item)) emit(l)
+    for (const l of (opts.formatItem ?? plainGuidance)(item)) emit(l)
     const sensitive = item.sensitive
   const src = await valueSource(item.name, ctx)
     emit(src ? `   state   : ${src === 'store' ? 'stored (encrypted)' : src === '.env' ? 'set in .env' : 'set in your shell'} — ${item.required ? 'required' : 'optional'}` : `   state   : not set — ${item.required ? 'REQUIRED, must be provided' : 'optional, safe to skip'}`)
@@ -347,7 +382,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     // Guidance first, ALWAYS — including for values already set. Hiding it once something exists
     // conceals it from precisely the user whose existing value is wrong, which is the case where
     // the explanation is worth the most.
-    for (const l of interactive ? guidanceLines(item) : (item.required && !answers[item.name] ? [`   missing   : ${item.name} — ${item.purpose}`] : [])) emit(l)
+    for (const l of interactive ? (opts.formatItem ?? plainGuidance)(item) : (item.required && !answers[item.name] ? [`   missing   : ${item.name} — ${item.purpose}`] : [])) emit(l)
     if (src) for (const l of sourceNote(item.name, src, await currentDisplay(item, src, ctx, sensitive))) emit(l)
 
     if (reset === item.name) {

@@ -13,5 +13,8 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }
