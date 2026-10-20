@@ -382,7 +382,7 @@ describe('the real terminal reader, driven without a TTY (#78 follow-up)', () =>
   it('resolves a bracketed paste to the pasted value only', async () => {
     const { PassThrough } = await import('node:stream')
     const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
-    const p = promptTTY('SAIP_R2_ACCESS_KEY_ID: ', stream)
+    const p = promptTTY('SAIP_R2_ACCESS_KEY_ID: ', { stream })
     stream!.write('\u001b[200\u007eAKIAIOSFODNN7EXAMPLE\u001b[201\u007e\r\n')
     await expect(p).resolves.toBe('AKIAIOSFODNN7EXAMPLE')
   })
@@ -390,7 +390,7 @@ describe('the real terminal reader, driven without a TTY (#78 follow-up)', () =>
   it('rejects with WizardCancelled when Ctrl+C is typed', async () => {
     const { PassThrough } = await import('node:stream')
     const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
-    const p = promptTTY('SAIP_R2_BUCKET: ', stream)
+    const p = promptTTY('SAIP_R2_BUCKET: ', { stream })
     stream!.write('half-typed\u0003')
     await expect(p).rejects.toBeInstanceOf(WizardCancelled)
   })
@@ -398,7 +398,7 @@ describe('the real terminal reader, driven without a TTY (#78 follow-up)', () =>
   it('treats Ctrl+D as end of input, so a paste terminated by EOF works', async () => {
     const { PassThrough } = await import('node:stream')
     const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
-    const p = promptTTY('SAIP_R2_BUCKET: ', stream)
+    const p = promptTTY('SAIP_R2_BUCKET: ', { stream })
     stream!.write('value-then-eof\u0004')
     await expect(p).resolves.toBe('value-then-eof')
   })
@@ -409,7 +409,7 @@ describe('the real terminal reader, driven without a TTY (#78 follow-up)', () =>
     const stream = new PassThrough()
     const io: Io = {
       say: () => {},
-      ask: async (q) => promptTTY(q, stream as unknown as Parameters<typeof promptTTY>[1]),
+      ask: async (q) => promptTTY(q, { stream: stream as never }),
     }
     const run = runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: join(d, '.env') })
     // The first prompt is issued; answer it, then cancel at the second.
@@ -583,5 +583,51 @@ describe('one unlock per command (#86)', () => {
     expect(r.code).toBe(1)
     expect(said.join(' ')).toMatch(/cannot unlock/)
     expect(said.join(' ')).not.toMatch(/stored SAIP_R2_ENDPOINT/)
+  })
+})
+
+describe('sensitive vs ordinary values (#87)', () => {
+  it('asks with echo ON for ordinary config and echo OFF for credentials', async () => {
+    const { d, store } = mkStore()
+    const seen: Array<{ q: string; secret: boolean }> = []
+    const io: Io = { say: () => {}, ask: async (q, o) => { seen.push({ q, secret: o.secret }); return 'whatever' } }
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: join(d, '.env') })
+    const bucket = seen.find((x) => x.q.startsWith('SAIP_R2_BUCKET'))!
+    const key = seen.find((x) => x.q.startsWith('SAIP_R2_ACCESS_KEY_ID'))!
+    const endpoint = seen.find((x) => x.q.startsWith('SAIP_R2_ENDPOINT'))!
+    expect(bucket.secret).toBe(false)
+    expect(endpoint.secret).toBe(false)
+    expect(key.secret).toBe(true)
+  })
+
+  it('shows the FULL current value for an ordinary setting, and only a length for a credential', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'saip-sens-'))
+    const env = join(d, '.env')
+    const path = join(d, 's.enc.json')
+    const key = Buffer.alloc(32, 71)
+    const store = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', key)] })
+    await store.set('SAIP_R2_ACCESS_KEY_ID', 'AKIASECRETVALUE')
+    // Both required settings must already exist, or the wizard correctly aborts on the unset
+    // endpoint before ever reaching the credential this test is about.
+    writeFileSync(env, 'SAIP_R2_BUCKET=visible-bucket-name\nSAIP_R2_ENDPOINT=https://visible.endpoint\n')
+    await store.set('SAIP_R2_SECRET_ACCESS_KEY', 'anothersecret')
+    const said: string[] = []
+    await runInit({
+      store, items: planInitItems({ config: baseConfig, hosts }),
+      io: { say: (l) => said.push(l), ask: async () => '' }, envPath: env,
+    })
+    const text = said.join('\n')
+    expect(text).toMatch(/visible-bucket-name/)          // ordinary config: readable, so you know what you have
+    expect(text).toMatch(/https:\/\/visible\.endpoint/)
+    expect(text).not.toMatch(/AKIASECRETVALUE/)         // credential: never displayed
+    expect(text).toMatch(/\d+ chars, hidden/)
+    expect(text).toMatch(/source: \(store\)/)
+  })
+
+  it('SAIP_UI_ADMIN guidance states that nothing enforces it yet (#90)', async () => {
+    const item = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
+      .find((i) => i.name === 'SAIP_UI_ADMIN')!
+    expect(item.scope).toMatch(/not enforced yet|no route.*yet|does not yet/i)
+    expect(item.purpose).toMatch(/password/i)
   })
 })
