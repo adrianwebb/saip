@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - security: `defaultSecretsProvider(env)` passed `env` to the environment link only, while the store fell back to `process.env` — so an embedder supplying its own environment got a provider that could not unlock the store it was pointed at, and the library default silently reproduced #73's unreachable-prompt bug (#76)
 - inference: the adapter alias index was snapshotted once at boot, so a newly promoted adapter stayed invisible until restart, contradicting `architecture.mdx`'s "the next request uses it without any client-side change". The initial read is now awaited and a miss triggers a refresh (#76)
 
+- cli: `saip config init` shows each credential's explanation **before** prompting for it, rather than buffering the transcript and printing it after the last prompt, and **Ctrl+C now works** — raw mode had disabled `ISIG`, so the keypress arrived as an ordinary byte and the wizard hung. Cancelling exits 130, keeps everything already answered (config values are written per item, not batched), and reports what remains; bracketed-paste markers no longer leak into pasted keys (#78)
 ### Fixed
 - XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)
 - Download for AI button contrast: accent-colored bold text on subtle surface replaces white-on-light-blue fill (#16)
