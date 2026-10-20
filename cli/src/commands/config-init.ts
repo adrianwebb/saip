@@ -325,13 +325,18 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   // us the name list, which is the only reliable way to see variables set outside the catalog.
   if (interactive && store.exists()) {
     let names: string[] = []
+    // The explanation goes out BEFORE the prompt. Regressed once already: moving the store-name
+    // listing after ensureUnlocked() also moved the reason for the passphrase after it, so the
+    // user was asked to type a secret before being told what it unlocks — the exact complaint
+    // this ordering rule exists to prevent.
+    emit('')
+    emit(`[saip] this command reads ${items.length} value(s): ${items.map((i) => i.name).join(', ')}`)
+    emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
+    emit(`[saip] unlocking the store at ${store.filePath} — one passphrase for the whole command.`)
     try {
       const wrap = await store.ensureUnlocked()
       names = await store.names()
-      emit('')
-      emit(`[saip] this command reads ${items.length} value(s): ${items.map((i) => i.name).join(', ')}`)
       if (names.length) emit(`[saip] the store already holds ${names.length}: ${names.join(', ')}`)
-      emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
       emit(`[saip] store unlocked (via ${wrap}) — you will not be asked again in this command.`)
     } catch (e) {
       emit(`[saip] ${(e as Error).message}`)

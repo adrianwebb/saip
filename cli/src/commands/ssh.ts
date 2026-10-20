@@ -13,8 +13,9 @@ import type { Context } from 'cordis'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { SecretStore, type HostConfig } from '@saip/shared'
+import { type HostConfig, type SecretStore } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { buildStore } from './config.js'
 import {
   generateKeypair, importPrivateKey, managedKeyName, publicPath, writePublicKeypair,
   materialiseKey, sshKeyDir, sshKeyName, type Keypair,
@@ -49,10 +50,19 @@ export async function runSsh(
   options: Record<string, unknown>,
   deps: SshDeps = {},
 ): Promise<{ code: number; lines: string[] }> {
-  const store = deps.store ?? new SecretStore({})
   const runner = deps.runner ?? defaultRunner
   const hostName = typeof options.host === 'string' ? options.host : undefined
   const hosts = deps.hosts?.() ?? []
+  // Built after the host is known, so the passphrase prompt can say which host's key it is
+  // unlocking. A bare "passphrase:" for a command the user typed as `saip ssh generate` is the
+  // same complaint they already filed twice.
+  const store = deps.store ?? buildStore({
+    reason: hostName
+      // No hint text here: buildStore appends it, and repeating it per call site is how one
+      // drifts out of date while the other stays polite.
+      ? `unlocking the store that holds the SSH key for host "${hostName}"`
+      : 'unlocking the encrypted secret store',
+  })
 
   /** Managed key name for a host: explicit `key_secret` wins, else the per-host managed name. */
   const nameFor = (host?: HostConfig) => (host ? sshKeyName(host) : managedKeyName(hostName!))
@@ -190,13 +200,16 @@ export default {
     ctx.commandRegistry!.register({
       ...spec,
       action: async (_ctx: Context, options, positional) => {
-        // One construction point, like the config command: a second `new SecretStore(...)` deeper
-        // in the body is how #73's unreachable-key-source bug survived a green suite.
-        const store = config.store ?? new SecretStore({})
+        // The store is deliberately NOT constructed here: runSsh builds it once the host is known
+        // so the passphrase prompt can name that host. Pre-building it (as an earlier revision of
+        // this file did) made the plugin hand down a reason-less store and the explanation vanished
+        // for every real invocation — green tests, unhelpful prompt, the same split again.
         const hosts = config.hosts ?? ((): HostConfig[] => {
           try { return (_ctx as any).hosts?.list?.() ?? [] } catch { return [] }
         })
-        const result = await runSsh(positional?.[0], options ?? {}, { store, runner: config.runner, hosts })
+        const result = await runSsh(positional?.[0], options ?? {}, {
+          store: config.store, runner: config.runner, hosts,
+        })
         for (const l of result.lines) console.log(l)
         process.exitCode = result.code
       },

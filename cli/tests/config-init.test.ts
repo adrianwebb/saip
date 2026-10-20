@@ -676,6 +676,30 @@ describe('declared sensitivity, not inferred (#93)', () => {
   })
 })
 
+describe('the passphrase prompt is preceded by its explanation (#89 regression)', () => {
+  it('emits the read-list before the store is unlocked, not after', async () => {
+    const { d, store } = mkStore()
+    await store.set('SAIP_R2_BUCKET', 'b')
+    const said: string[] = []
+    // A store whose ensureUnlocked() records what has already been printed. If the explanation is
+    // emitted after the unlock, this sees an empty transcript — which is precisely the bug.
+    class ProbeStore extends SecretStore {
+      seenAtUnlock = -1
+      override async ensureUnlocked() {
+        this.seenAtUnlock = said.join('\n').includes('this command reads') ? 1 : 0
+        return super.ensureUnlocked()
+      }
+    }
+    const probe = new ProbeStore({ path: (store as any).path, keySources: (store as any).sources })
+    await runInit({
+      store: probe, items: planInitItems({ config: baseConfig, hosts }), envPath: join(d, '.env'),
+      io: { say: (l) => said.push(l), ask: async () => 'x' },
+    })
+    expect(probe.seenAtUnlock).toBe(1)
+    expect(said.join('\n')).toMatch(/one passphrase for the whole command/)
+  })
+})
+
 describe('retired values are surfaced, not hidden (#90)', () => {
   it('tells the user a stored SAIP_UI_ADMIN is retired and how to remove it', async () => {
     const { d, store } = mkStore()
