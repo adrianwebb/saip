@@ -80,16 +80,34 @@ describe('saip config list', () => {
 })
 
 describe('saip config get', () => {
-  it('masks the value by default', async () => {
-    const r = await runConfig(await mkStore(), {}, ['get', 'SAIP_R2_BUCKET'], { env: {} })
+  it('shows a declared non-sensitive value plainly, and masks a credential', async () => {
+    const path = mkdtempSync(join(tmpdir(), 'saip-plain-')) + '/s.enc.json'
+    const store = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', KEY)] })
+    await store.set('SAIP_R2_BUCKET', 'visible-bucket-name')
+    await store.set('SAIP_R2_ACCESS_KEY_ID', 'AKIASECRETVALUE')
+    const r = await runConfig(store, {}, ['get', 'SAIP_R2_BUCKET'], { env: {} })
+    // SAIP_R2_BUCKET is declared sensitive: false in the catalog (#93), so masking it would be
+    // the same blanket rule the wizard just stopped using.
     expect(r.code).toBe(0)
-    expect(r.lines.join(' ')).toContain('saip-platform'.length.toString())
-    expect(r.lines.join(' ')).not.toContain('saip-platform')
+    expect(r.lines.join(' ')).not.toMatch(/••••/)
+    expect(r.lines.join(' ')).toContain('visible-bucket-name')
+
+    const k = await runConfig(store, {}, ['get', 'SAIP_R2_ACCESS_KEY_ID'], { env: {} })
+    expect(k.lines.join(' ')).toMatch(/••••/)
   })
 
-  it('reveals only with --reveal', async () => {
-    const r = await runConfig(await mkStore(), { reveal: true }, ['get', 'SAIP_R2_BUCKET'], { env: {} })
-    expect(r.lines.join(' ')).toContain('saip-platform')
+  it('masks a credential by default', async () => {
+    // Retargeted from SAIP_R2_BUCKET, which #93 declares NON-sensitive: masking it was the blanket
+    // rule the catalog replaced. Credentials are the subject a masking test actually needs.
+    const r = await runConfig(await mkStore(), {}, ['get', 'SAIP_R2_SECRET_ACCESS_KEY'], { env: {} })
+    expect(r.code).toBe(0)
+    expect(r.lines.join(' ')).toContain('super-secret-value-12345'.length.toString())
+    expect(r.lines.join(' ')).not.toContain('super-secret-value-12345')
+  })
+
+  it('reveals a credential only with --reveal', async () => {
+    const r = await runConfig(await mkStore(), { reveal: true }, ['get', 'SAIP_R2_SECRET_ACCESS_KEY'], { env: {} })
+    expect(r.lines.join(' ')).toContain('super-secret-value-12345')
   })
 
   it('a missing name is exit 1, not an empty success', async () => {

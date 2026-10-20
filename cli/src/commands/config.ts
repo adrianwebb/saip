@@ -19,7 +19,7 @@ import { statSync, openSync } from 'node:fs'
 import { ReadStream } from 'node:tty'
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
+import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { planInitItems, runInit, runHelp, forgetValue, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 
@@ -34,6 +34,8 @@ export interface RunDeps {
   toolRunner?: SecretToolRunner
   /** Injectable store path, so tests never touch the real ~/.saip. */
   storePath?: string
+  /** Injectable access gateway; the default wraps the same store so the KEK cache is shared. */
+  access?: SecretAccess
 }
 
 export interface RunResult { code: number; lines: string[] }
@@ -174,6 +176,10 @@ export async function runConfig(
 ): Promise<RunResult> {
   const [action, name] = positional
   const env = deps.env ?? process.env
+  // Commands that touch the store go through the gateway, which is what makes the access record
+  // exist at all — a service registered in the composition root but bypassed by every command is
+  // the #76 pattern in a new place, and it is exactly what the first version of this did.
+  const access = deps.access ?? new SecretAccess(store, env, `${store.filePath}.access.json`)
   const lines: string[] = []
   const fail = (msg: string): RunResult => ({ code: 1, lines: [`[saip] ${msg}`] })
   if (!action) return fail('usage: saip config <init|help|list|get|set|unset|forget|key|doctor> [name]')
@@ -193,14 +199,25 @@ export async function runConfig(
     case 'get': {
       if (!name) return fail('get requires a name')
       let value: string | undefined
-      try { value = await store.get(name) } catch (e) { return fail((e as Error).message) }
+      try {
+        await access.unlock()
+        access.declare('config get', [{ name, purpose: 'displayed to the user' }])
+        value = await access.read(name)
+      } catch (e) { return fail((e as Error).message) }
+      // Display follows the DECLARED flag: a bucket name is ordinary configuration and is shown
+      // plainly so it can be checked, while a credential stays masked unless --reveal. Masking
+      // everything contradicted the catalog the same release introduced, and hid the very values a
+      // user needs to eyeball for the typo that made them run `forget` in the first place.
+      const sens = sensitivityOf(name)
+      const plain = options.reveal || !sens.sensitive
+      const note = sens.declared ? '' : '  (sensitivity inferred — not in the catalog)'
       const shadow = env[name]
       if (shadow) {
-        const shown = options.reveal ? shadow : maskValue(shadow)
-        return { code: 0, lines: [`[saip] ${name}=${shown}  (from shell environment — shadows the store value)`] }
+        const shown = plain ? shadow : maskValue(shadow)
+        return { code: 0, lines: [`[saip] ${name}=${shown}  (from shell environment — shadows the store value)${note}`] }
       }
       if (value === undefined) return fail(`${name} is not set`)
-      return { code: 0, lines: [`[saip] ${name}=${options.reveal ? value : maskValue(value)}`] }
+      return { code: 0, lines: [`[saip] ${name}=${plain ? value : maskValue(value)}${note}`] }
     }
 
     case 'set': {
@@ -237,7 +254,20 @@ export async function runConfig(
           }),
         })
       }
-      try { await target.set(name, value) } catch (e) { return fail((e as Error).message) }
+      try {
+        // Bound to the store that actually wrote. The confirm-on-create path rebuilds the store
+        // with the typed passphrase, so an access object captured earlier would read the old
+        // instance's key sources and report a successful write as a failure.
+        const writer = deps.access ?? new SecretAccess(target, env, `${target.filePath}.access.json`)
+        writer.declare('config set', [{ name, purpose: 'value being stored' }])
+        await target.set(name, value)
+        try {
+          // Read it back: proves the write landed and puts the write in the access record.
+          // An unverified store is the shape every silent failure in this issue set has taken.
+          await writer.unlock()
+          if ((await writer.read(name)) !== value) return fail(`${name} did not persist as written`)
+        } catch (e) { return fail(`stored ${name} but could not read it back: ${(e as Error).message}`) }
+      } catch (e) { return fail((e as Error).message) }
       // Never echo what was just stored, including on the success path.
       return { code: 0, lines: [`[saip] stored ${name} (${value.length} chars)`] }
     }
@@ -291,6 +321,17 @@ export async function runConfig(
         if (store.wrapIds().includes('unattended')) {
           lines.push(`  WARNING:     an 'unattended' wrap exists at ${store.unattendedKeyPath} — these secrets unlock with no passphrase, for any process that can read your home directory`)
         }
+        // The answer to "why did it ask me for a password?", readable after the fact.
+        try {
+          const history = readAudit(`${store.filePath}.access.json`)
+          if (history.length) {
+            lines.push(`  recent access: ${history.length} record(s), latest first`)
+            for (const r of history.slice(-5).reverse()) {
+              const when = new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')
+              lines.push(`    ${when}  ${r.command} -> ${r.name}${r.declared ? '' : ' (sensitivity inferred)'}: ${r.purpose}`)
+            }
+          }
+        } catch { /* history is diagnostic only */ }
         const shadowed = names.filter((n) => (env[n] ?? '') !== '')
         if (shadowed.length) {
           lines.push(`  note:        ${shadowed.join(', ')} also set in shell — the shell value wins`)

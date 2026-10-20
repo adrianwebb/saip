@@ -133,3 +133,42 @@ describe('createApp() composition root: env-selected engine backend', () => {
     }
   })
 })
+
+describe('secret resolution reaches the encrypted store (#93)', () => {
+  const built = true
+
+  it('reads a value from the store through the wired composition, with nothing injected', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const d = mkdtempSync(join(tmpdir(), 'saip-wire-'))
+    const path = join(d, 'secrets.enc.json')
+    const pass = 'composition-root-passphrase'
+    // Seed a real store using the production defaults (env passphrase, no injected provider).
+    const { SecretStore, defaultKeySources } = await import('@saip/shared')
+    const env = { SAIP_SECRETS_PASSPHRASE: pass, SAIP_SECRETS_FILE: path }
+    const store = new SecretStore({ path, keySources: defaultKeySources(env, { storePath: path }) })
+    await store.set('SAIP_R2_BUCKET', 'from-the-encrypted-store')
+
+    const saved = { ...process.env }
+    process.env.SAIP_SECRETS_FILE = path
+    process.env.SAIP_SECRETS_PASSPHRASE = pass
+    delete process.env.SAIP_R2_BUCKET
+    try {
+      const ctx = (await createApp({ configPath: devModeConfig() })) as any
+      // The gateway's own secrets service — the wired default, not an injected provider.
+      const value = await ctx.secrets.get('SAIP_R2_BUCKET')
+      expect(value).toBe('from-the-encrypted-store')
+    } finally {
+      for (const k of ['SAIP_SECRETS_FILE', 'SAIP_SECRETS_PASSPHRASE']) {
+        if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!
+      }
+    }
+  })
+
+  it('exposes the secret-access gateway as a Cordis service', async () => {
+    const ctx = (await createApp({ configPath: devModeConfig() })) as any
+    const gw = ctx.secretAccess
+    expect(gw).toBeTruthy()
+    expect(typeof gw.explain).toBe('function')
+    expect(typeof gw.unlock).toBe('function')
+  })
+})
