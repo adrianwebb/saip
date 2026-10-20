@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
+import { DisplayService } from './lib/display.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
 import awakePlugin from './commands/awake.js'
@@ -35,6 +36,8 @@ export async function buildProgram(): Promise<Command> {
   // The gateway that owns unlocking and the audit record (#93). One per process.
   await ctx.plugin(SecretAccessService, {})
   await ctx.plugin(CommandRegistryService)
+  // Cards for humans, plain lines for pipes — the choice is made once, here (#88).
+  await ctx.plugin(DisplayService, {})
 
   // Load every command plugin so they self-register.
   for (const plugin of COMMAND_PLUGINS) {

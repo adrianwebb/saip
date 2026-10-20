@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { planInitItems, runInit, runHelp, forgetValue, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { planInitItems, runInit, runHelp, forgetValue, cardGuidance, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -34,6 +34,8 @@ export interface RunDeps {
   toolRunner?: SecretToolRunner
   /** Injectable store path, so tests never touch the real ~/.saip. */
   storePath?: string
+  /** Card renderer for a human terminal; omitted means plain labelled lines (pipes, CI, tests). */
+  formatItem?: (item: InitItem) => string[]
   /** Injectable access gateway; the default wraps the same store so the KEK cache is shared. */
   access?: SecretAccess
 }
@@ -291,7 +293,7 @@ export async function runConfig(
       // printed twice — found only by running the command, since every unit test called runHelp
       // directly and read only its return value.
       const io: Io = { say: () => {}, ask: async () => '' }
-      return await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io })
+      return await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io, formatItem: deps.formatItem })
     }
 
     case 'doctor': {
@@ -399,6 +401,11 @@ export async function runConfig(
 
       const items = planInitItems({ config: cfg, hosts })
       const nonInteractive = Boolean(options.nonInteractive)
+      // Cards for a human at a terminal, plain labelled lines for pipes, CI, agents and dumb
+      // terminals. Chosen once here rather than at each call site (#88).
+      // Presentation comes from deps, injected by the command action, because runConfig
+      // has no context of its own — keeping it pure is what makes it testable (#76).
+      const formatItem = deps.formatItem
       const io: Io = {
         // Immediate. The previous version pushed to `lines`, which the command printed only after
         // the whole wizard finished — so a user saw "NAME: " with none of the guidance that was
@@ -416,6 +423,7 @@ export async function runConfig(
       try {
         const r = await runInit({
           store, items, io,
+          formatItem,
           deprecations: cfgDeprecations,
           envPath,
           interactive: !nonInteractive,
@@ -476,7 +484,13 @@ export default {
         // Single construction point. A second, separate `new SecretStore(...)` here is what
         // let a real key-source wiring bug live in one path while the other looked correct.
         const store = config.store ?? buildStore({})
-        const result = await runConfig(store, options, positional)
+        // Cards when a human is at a terminal; plain lines otherwise. Decided once, here, from the
+        // DisplayService plugin — no command body branches on isTTY itself (#88).
+        const display = _ctx.display
+        const formatItem = display && !display.plain
+          ? (item: InitItem) => cardGuidance(item, display.options)
+          : undefined
+        const result = await runConfig(store, options, positional, { formatItem })
         for (const l of result.lines) console.log(l)
         process.exitCode = result.code
       },

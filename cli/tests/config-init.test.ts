@@ -265,10 +265,10 @@ describe('the assembled program (#76 rule: test it as a program)', () => {
       env: { ...process.env, SAIP_SECRETS_FILE: join(d, 's.json'), SAIP_ENV_FILE: join(d, '.env'), SAIP_CONFIG: join(repoRoot, 'saip.yaml') },
     })
     expect(r.status).toBe(0)
-    const entries = (r.stdout.match(/── SAIP_/g) ?? []).length
+    const entries = (r.stdout.match(/-- SAIP_/g) ?? []).length
     expect(entries).toBeGreaterThanOrEqual(8)
     // Duplicate transcript was the bug: the same header must appear exactly once.
-    expect((r.stdout.match(/── SAIP_HF_TOKEN/g) ?? []).length).toBe(1)
+    expect((r.stdout.match(/-- SAIP_HF_TOKEN/g) ?? []).length).toBe(1)
     expect(r.stdout).not.toMatch(/no guidance entry/)
     // Integration keys are listed even with no hosts.yaml and an empty store.
     for (const n of ['SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_SSH_PRIVATE_KEY']) {
@@ -699,7 +699,7 @@ describe('the wizard reports retired config keys (#90)', () => {
       deprecations: ['security.ui.admin_secret ("SAIP_UI_ADMIN") is retired (#90): it protects nothing'],
     })
     const warn = said.findIndex((l) => /WARNING.*security\.ui\.admin_secret/.test(l))
-    const firstAsk = said.findIndex((l) => /── SAIP_R2_BUCKET/.test(l))
+    const firstAsk = said.findIndex((l) => /-- SAIP_R2_BUCKET/.test(l))
     expect(warn).toBeGreaterThanOrEqual(0)
     expect(warn).toBeLessThan(firstAsk)   // told before being asked, not after
   })
