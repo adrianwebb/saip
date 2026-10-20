@@ -71,43 +71,131 @@ export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
  * /dev/tty; so do we — and with no controlling terminal we refuse outright rather than storing
  * a key that nobody knows, which would look like success and be unrecoverable.
  */
-export function promptTTY(question: string, opts: { echo?: boolean; stream?: ReadStream } = {}): Promise<string> {
-  let own: ReadStream | undefined
-  if (!opts.stream) {
-    let fd: number
-    try { fd = openSync('/dev/tty', 'r+') }
-    catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
-    own = new ReadStream(fd)
-  }
-  const tty: ReadStream = opts.stream ?? (own as ReadStream)
-  const echo = opts.echo ?? false
-  const wasRaw = tty.isRaw
-  // Raw mode is what makes echo suppression possible — and it is also why Ctrl+C appeared to do
-  // nothing: setRawMode disables ISIG, so 0x03 arrives as an ordinary byte instead of raising
-  // SIGINT. The reducer below is therefore the cancel handler, not a nicety.
-  // Raw mode is entered only when echo must be suppressed. Ordinary values are read with echo ON
-  // so the user can see and correct what they type, and the trailing newline below is then skipped:
-  // the terminal already advanced, and writing another one is what made prompts look misaligned.
-  if (!echo) { try { tty.setRawMode(true) } catch { /* injected stream in tests */ } }
-  // Prompt on stdout, same stream as the explanation block, so ordering on screen is the ordering
-  // of the calls. Splitting one to stderr and the other to stdout scrambles it when redirected.
+/** One stream for the controlling terminal, opened once and reused. */
+let ttyStream: ReadStream | undefined
+function ttyInput(): ReadStream {
+  if (ttyStream) return ttyStream
+  let fd: number
+  try { fd = openSync('/dev/tty', 'r+') }
+  catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
+  ttyStream = new ReadStream(fd)
+  return ttyStream
+}
+
+/**
+ * Bytes that arrived but were not consumed by the previous prompt.
+ *
+ * This is the fix for a paste that appears to lock the wizard up. A clipboard value usually carries
+ * its own trailing newline, so the terminal delivers `value\r` — sometimes several lines at once —
+ * in a SINGLE chunk. The first newline ended the prompt and everything after it was previously
+ * discarded along with the stream, so the next prompt waited for input that had already arrived and
+ * the program looked hung. Retaining the remainder is also what makes scripted input work at all.
+ */
+const pending = new WeakMap<NodeJS.ReadableStream, string>()
+
+/**
+ * Read one line from the terminal.
+ *
+ * `secret: true` suppresses echo. Doing that requires raw mode, which also turns off `OPOST`, so the
+ * terminal will not expand a lone `\n` into carriage-return + line-feed. The old code wrote a bare
+ * `\n`, and the cursor walked down to the *same column* where the prompt ended — the "cursor on the
+ * line after the variable name" artifact. In raw mode we therefore terminate with `\r\n`, and when
+ * echo is on we write nothing, because the terminal already advanced.
+ *
+ * Bracketed paste mode is enabled while hidden input is expected so a pasted secret's embedded
+ * newline is content rather than an accidental submission. Terminals that ignore the sequence still
+ * behave, because callers strip trailing newlines.
+ */
+export function promptTTY(
+  question: string,
+  opts: { echo?: boolean; secret?: boolean; stream?: ReadStream } = {},
+): Promise<string> {
+  const hidden = opts.secret ?? (opts.echo === undefined ? true : !opts.echo)
+  const stream = opts.stream ?? ttyInput()
+  const wasRaw = stream.isRaw
+  if (hidden) { try { stream.setRawMode(true) } catch { /* injected stream in tests */ } }
+  // Ask the terminal for bracketed paste so a clipboard value's own newlines are content rather
+  // than accidental submissions. Older terminals ignore the sequence, which is why a secret
+  // containing newlines is better piped — the prompt says so instead of failing quietly.
+  if (hidden) process.stdout.write('\u001b[?2004h')
   process.stdout.write(question)
-  const acc = newLineAccumulator()
+
+  let value = ''
+  let inPaste = false
+  let csi = ''                 // CSI parameter bytes, to recognise the paste markers
+  // ECMA-48: `ESC [` is a two-byte introducer, and only then do parameter bytes begin. Collapsing
+  // this into "ESC then final byte" made `[` itself look final, so a bracketed-paste marker's
+  // digits and `~` were treated as typed characters and leaked into the value.
+  let escState: 'none' | 'introducer' | 'params' = 'none'
+
   return new Promise((resolve, reject) => {
-    const finish = (): void => {
-      if (!echo) { try { tty.setRawMode(!!wasRaw) } catch { /* not a real tty */ } }
-      try { tty.destroy() } catch { /* already closed */ }
-      if (!echo) process.stdout.write('\n')
+    const carryFrom = (text: string, index: number): void => {
+      const rest = text.slice(index + 1)
+      if (rest) pending.set(stream, (pending.get(stream) ?? '') + rest)
     }
-    tty.on('data', (chunk: Buffer) => {
-      const r = acc.feed(chunk.toString('utf8'))
-      if (!r.done) return
-      finish()
-      if (r.cancelled) reject(new WizardCancelled('cancelled by user'))
-      else resolve(r.value)
-    })
-    tty.once('error', () => { finish(); reject(new WizardCancelled('terminal closed')) })
-    tty.once('close', () => { finish(); reject(new WizardCancelled('terminal closed')) })
+    const cleanup = (): void => {
+      if (hidden) { try { stream.setRawMode(!!wasRaw) } catch { /* not a real tty */ } }
+      if (hidden) process.stdout.write('\u001b[?2004l')     // leave the terminal as we found it
+      stream.removeListener('data', onData)
+      stream.removeListener('error', onError)
+    }
+    const finish = (): void => {
+      cleanup()
+      // Raw mode has no OPOST, so the line break must carry its own carriage return. A bare \n
+      // leaves the cursor under the middle of the prompt — the "cursor on the next line" artifact.
+      if (hidden) process.stdout.write('\r\n')
+      resolve(value)
+    }
+    const onData = (chunk: Buffer): void => {
+      const text = chunk.toString('utf8')
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        const code = ch.codePointAt(0) ?? 0
+        if (escState === 'introducer') {
+          escState = ch === '[' ? 'params' : 'none'   // other escapes: swallow their next byte
+          continue
+        }
+        if (escState === 'params') {
+          if (code >= 0x30 && code <= 0x3f) { csi += ch; continue }
+          escState = 'none'
+          if (ch === '~' && csi === '200') { inPaste = true; csi = ''; continue }
+          if (ch === '~' && csi === '201') { inPaste = false; csi = ''; continue }
+          csi = ''
+          continue
+        }
+        if (code === 0x1b) { escState = 'introducer'; csi = ''; continue }
+        if (ch === '\n' || ch === '\r') {
+          if (inPaste) { value += '\n'; continue }        // pasted newline is content
+          carryFrom(text, i)
+          return finish()
+        }
+        if (code === 0x04) { carryFrom(text, i); return finish() }          // Ctrl+D = EOF
+        if (code === 0x03) {                                            // Ctrl+C
+          value = ''; pending.delete(stream); inPaste = false
+          cleanup()
+          return reject(new WizardCancelled('cancelled by user'))
+        }
+        if (code === 0x7f || code === 0x08) { value = value.slice(0, -1); continue }
+        if (code < 0x20) continue                                            // never store control bytes
+        value += ch
+      }
+    }
+    const onError = (): void => { cleanup(); reject(new WizardCancelled('terminal closed')) }
+    stream.on('data', onData)
+    stream.once('error', onError)
+    const queued = pending.get(stream)
+    if (queued) {
+      pending.delete(stream)
+      // A clipboard value often carries a trailing blank line, and that newline used to submit the
+      // NEXT prompt empty — a required secret reported as "left empty" that the user never typed
+      // into. Leftover text that contains a real character is typed-ahead input and must survive;
+      // a remainder made only of line terminators is the tail of the previous paste, and is dropped.
+      if (/^[\r\n\u0004]+$/.test(queued)) {
+        /* discarded */
+      } else {
+        queueMicrotask(() => onData(Buffer.from(queued, 'utf8')))
+      }
+    }
   })
 }
 
@@ -150,6 +238,7 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
     if (deps.reason) lines.push(deps.reason)
     if (!env.SAIP_SECRETS_PASSPHRASE) {
       lines.push('SAIP_SECRETS_PASSPHRASE skips this prompt; `saip config key add unattended` removes the need for one, at a weaker guarantee (run `saip config doctor` to see it).')
+      lines.push('Pasting works. A value that contains newlines is safer piped: printf %s "$VALUE" | saip config set NAME --stdin')
     }
     if (lines.length) process.stdout.write(`[saip] ${lines.join('\n[saip] ')}\n`)
     return deps.prompt ? deps.prompt(q) : promptTTY(q)
