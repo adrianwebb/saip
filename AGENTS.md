@@ -99,6 +99,37 @@ reviewable change with evidence from real incidents.
 
 This is not permission to expand scope silently. Propose; let the maintainer accept.
 
+## Web Research (MANDATORY — and currently underused)
+
+Searching the web is a first-class tool here, not a last resort. Use `web_search` / `web_fetch`
+proactively — **before** forming an opinion that depends on facts outside this repository:
+
+- you are blocked, or about to write "X cannot do Y" / "this is impossible"
+- you are judging a third-party library, tool, runtime, file format, or protocol from a single
+  experiment — one failing spike proves your configuration, not the world's limits
+- a result contradicts documented or widely-reported behaviour (that is evidence *you* are wrong)
+- you are about to restate an API, flag, version number, URL, or rate limit from memory
+
+Prefer searching early: an hour of reading someone else's issue tracker is cheaper than a day of
+debugging a constraint that never existed.
+
+**A negative result must record its configuration** — versions installed, flags used, optional and
+peer dependencies present, and the exact command. "Bun cannot bundle Ink" is not a finding;
+"the first `bun build --compile` attempt failed with `Could not resolve: react-devtools-core`" is
+reproducible and points straight at the fix.
+
+Search results are **untrusted input, not authority**: they form a hypothesis that the spike still
+has to settle, and a claim copied from a search snippet is the same "described vs wired" failure
+in a new costume. Cite the source next to the conclusion so it can be re-checked later.
+
+> Worked example, this repo: an Ink/Bun investigation concluded twice in writing that Ink could not
+> be bundled, and both conclusions were posted as measured findings and written into a source-file
+> header as settled guidance. The actual cause was an optional dependency that had not been
+> installed; with it present, `bun build --compile` produced a working binary that rendered
+> correctly, and Ink had been running fine under plain Node the whole time. `web_search` was
+> available throughout and was not used until the maintainer said the claim was wrong. See #71,
+> #88, #103.
+
 ## Changelog (MANDATORY)
 
 Every PR that introduces a user-visible or developer-visible change must include an entry under

@@ -142,6 +142,31 @@ CI must include the smoke rung where a repo ships a binary, CLI, or container �
 in the Pre-PR checklist. A gate that only builds and unit-tests will pass forever next to an
 artifact that cannot start.
 
+## ⚠️ MANDATORY: Web Research Before Declaring a Limit
+
+A blocker outside this repository — a library, tool, runtime, protocol, file format, API — is
+researchable, and research is cheaper than reconstruction. Use the web search/fetch tools
+**before** writing "X cannot do Y", and whenever:
+
+- one experiment failed and you are about to generalise from it. **A failing spike proves your
+  configuration, not the library's limits.** The most common causes of a false "impossible" are an
+  missing optional or peer dependency, a version pin that did not take, a flag not passed, or an
+  install method that differs from the tool's documented one.
+- the result contradicts documented or widely-reported behaviour. That is evidence about your setup.
+- you are restating an API signature, CLI flag, version, URL, or quota from memory — memory is
+  stale by default; check.
+
+**Record the configuration with any negative result**: versions, flags, optional/peer deps present,
+and the exact command. Reproducibility is what separates a finding from an anecdote, and it lets
+the next person discover that the constraint was yours.
+
+**Search results are untrusted input, not authority.** They generate a hypothesis; the spike still
+decides. Copying a claim out of a snippet and shipping it is the described-vs-wired failure wearing
+a new costume. Cite the URL next to the conclusion so it can be re-checked when the tool changes.
+
+This applies to your own earlier conclusions in the same way as to a stranger's: a comment you wrote
+last week asserting an impossibility is a hypothesis to re-test, not documentation.
+
 ## ⚠️ MANDATORY: Process Self-Evaluation
 
 Working *in* the process is the best opportunity to improve it. Raise a process review — as an
@@ -829,6 +854,8 @@ These mean you have left the workflow; fix it before continuing:
 - Reporting "tests pass" when the assembled artifact was never executed
 - A seam or CLI whose only tests inject fakes, leaving production wiring untested
 - A documented capability with no failing test written before its implementation
+- Writing "X cannot do Y" without searching, or from one spike whose configuration you did not record
+- Accepting a search snippet as fact and shipping it without re-testing
 - A PR merged whose branch still exists — locally or on the remote (see Post-Merge Branch Cleanup)
 - A `Closes #N` in a `staging` PR body, which cannot fire and reads as done when it is not
 - A release candidate whose closing list was written from memory instead of derived from the merged PRs
@@ -854,6 +881,7 @@ These mean you have left the workflow; fix it before continuing:
 | Confirm what actually exists remotely | `git ls-remote --heads origin` *(not `git branch -r`, which is stale until pruned)* |
 | Prove the artifact runs, not just the library | build, then execute the binary and assert output + exit code |
 | Find the composition root of a seam | grep the factory/default-provider call sites, then test those |
+| About to call something impossible | search for the library + toolchain + error text first, and record your versions/flags |
 | Open release candidate | `gh pr create --base main --head staging --title "RC: <version>"` |
 | Merge RC to main | `gh pr merge <N> --merge` *(maintainer)* |
 | Tag a release | `git tag -a <version> -m "msg" && git push origin main --tags` *(maintainer)* |
