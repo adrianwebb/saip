@@ -96,13 +96,23 @@ The fallback is automatic, never a flag:
 | Terminal narrower than ~72 columns | labels and values stack instead of sharing a line |
 | 100+ columns | width is clamped so a giant terminal does not produce a giant card |
 
-**Why this is hand-rolled rather than Ink.** A spike against `ink@5` + `react@18` measured:
-19 MB across 43 transitive packages for a static bordered block; **no** degradation under
-`TERM=dumb` (it still emitted box-drawing characters); and an esbuild bundle of 1.39 MB that
-**does not run** — unresolved `react-devtools-core`, and after shimming that away it fails on
-`Dynamic require of "…" is not supported`. That last failure is exactly what a single-file binary
-([#71](https://github.com/adrianwebb/saip/issues/71)) cannot survive. Ink's piped output was clean, so that
-concern was disproved — the rejection rests on the two that were not.
+**Why this is hand-rolled rather than Ink.** An earlier version of this note said Ink could not be
+bundled. **That was wrong**, and the mistake is worth keeping visible: every failure came from my
+setup, not from Ink. Re-measured with the configuration attached:
+
+| Setup | Result |
+|---|---|
+| plain Node, unbundled | **works**, including into a pipe (no cursor control sequences) |
+| esbuild bundle | **fails**: unresolved `react-devtools-core`; with it stubbed, `Dynamic require of "…"` at runtime |
+| `bun build --compile`, `react-devtools-core` installed | **works**: ~92.7 MB binary, renders under a pty; ~0.7 MB over a plain Bun binary |
+| `bun build --compile` without it | fails to resolve — the exact error I had reported as a limit of Ink |
+| `TERM=dumb` | Ink does **not** degrade: box-drawing characters either way |
+| compiled Bun binary, piped | writes **nothing** — a property of that artifact, not of Ink |
+
+So the hand-rolled renderer ships for a weaker but honest reason: no dependencies, identical
+behaviour in every row above, and a deliberate plain-text path for non-TTY output. If Bun becomes
+the packager ([#71](https://github.com/adrianwebb/saip/issues/71)), Ink for interactive use with
+this as the fallback is a live option rather than a rejected one.
 
 ## Global Options
 
