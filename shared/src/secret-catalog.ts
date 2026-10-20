@@ -106,15 +106,35 @@ export const SECRET_CATALOG: readonly SecretEntry[] = [
     docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
     usedBy: ['config init', 'config help', 'saip awake (pending #83/#89)'],
   },
+]
+
+export interface RetiredSecret {
+  readonly name: string
+  /** Why it went, so tooling can answer "I used to be asked for this — why not now?" */
+  readonly reason: string
+  /** The config path that referenced it, kept so a legacy file can be diagnosed. */
+  readonly configPath: string
+  readonly since: string
+}
+
+/**
+ * Retired credentials. Removal is the honest resolution for a secret that promised protection
+ * nothing implemented: `security.ui.admin_secret` was prompted for, stored, and typed — while the
+ * guard class that would have checked it was never constructed and no UI route existed to guard.
+ * Values a user already stored are still treated as sensitive (#90).
+ */
+export const RETIRED_SECRETS: readonly RetiredSecret[] = [
   {
-    name: 'SAIP_UI_ADMIN', kind: 'secret', sensitive: true, required: false,
-    purpose: 'Intended as the single admin PASSWORD for the web UI login screen. It is a NAME in config, never the value.',
-    how: 'Generate a long random string yourself, e.g. `openssl rand -base64 24`.',
-    scope: 'NOT ENFORCED YET: PasswordSessionAuth exists in @saip/shared but is never instantiated and no route checks it, so setting this changes no behaviour today. Tracked in #90 — do not rely on it for access control.',
-    docsUrl: `${SITE}/reference/configuration/`,
-    usedBy: ['config init', 'config help'],
+    name: 'SAIP_UI_ADMIN',
+    reason: 'No UI route exists and PasswordSessionAuth is never constructed, so the value guarded nothing. Removed instead of left implying protection (#90).',
+    configPath: 'security.ui.admin_secret',
+    since: '#90',
   },
 ]
+
+export function retiredSecret(name: string): RetiredSecret | undefined {
+  return RETIRED_SECRETS.find((r) => r.name === name)
+}
 
 export function findSecret(name: string): SecretEntry | undefined {
   return SECRET_CATALOG.find((e) => e.name === name)
@@ -164,17 +184,6 @@ export function catalogFor(query: CatalogQuery): SecretEntry[] {
     }))
   }
 
-  const admin: string | undefined = query.config?.security?.ui?.admin_secret
-  if (admin && admin !== 'SAIP_UI_ADMIN') {
-    add(admin, () => ({
-      name: admin, kind: 'secret', sensitive: true, required: false,
-      purpose: 'Password the web UI admin login is intended to check. It is a NAME in config, never the value.',
-      how: 'Generate a long random string yourself.',
-      scope: 'NOT ENFORCED YET — see #90: the guard class exists but no route uses it.',
-      docsUrl: `${SITE}/reference/configuration/`, usedBy: ['config init', 'config help'],
-    }))
-  }
-
   const hf: string | undefined = query.config?.storage?.r2?.token_env
   if (hf && hf !== 'SAIP_HF_TOKEN') add(hf, () => findSecret('SAIP_HF_TOKEN')! ?? { ...SECRET_CATALOG[4], name: hf })
 
@@ -187,5 +196,9 @@ export function catalogFor(query: CatalogQuery): SecretEntry[] {
 export function sensitivityOf(name: string): { sensitive: boolean; declared: boolean } {
   const e = findSecret(name)
   if (e) return { sensitive: e.sensitive, declared: true }
+  // A retired name is still known, not guessed: we are confident it was a credential, which is why
+  // a leftover value must stay masked even though nothing reads it. Falling through to the pattern
+  // would report this as a guess.
+  if (retiredSecret(name)) return { sensitive: true, declared: true }
   return { sensitive: isSensitiveName(name), declared: false }
 }

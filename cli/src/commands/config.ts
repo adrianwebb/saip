@@ -379,6 +379,11 @@ export async function runConfig(
       // how docs and reality drift, which is the disease this issue set has been treating.
       let cfg: any = {}
       try { if (cfgFileForInit().path) cfg = loadYamlConfig(cfgFileForInit().path!) } catch (e) { return fail(`cannot read ${cfgFileForInit().path}: ${(e as Error).message}`) }
+      // Same retirement the gateway reports, so the warning appears whether the user starts the
+      // gateway or runs the wizard.
+      const cfgDeprecations = cfg?.security?.ui?.admin_secret
+        ? [`security.ui.admin_secret ("${cfg.security.ui.admin_secret}") is retired (#90): no UI route enforces it and PasswordSessionAuth is never constructed, so it protects nothing. Remove the key; clear a stored value with: saip config forget ${cfg.security.ui.admin_secret}`]
+        : []
       const hosts = readHostsForInit()
 
       // Saying so beats guessing quietly: with no saip.yaml found the plan is built from an
@@ -411,6 +416,7 @@ export async function runConfig(
       try {
         const r = await runInit({
           store, items, io,
+          deprecations: cfgDeprecations,
           envPath,
           interactive: !nonInteractive,
           answers: nonInteractive ? {} : undefined,

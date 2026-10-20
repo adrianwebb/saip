@@ -8,7 +8,7 @@
  * the name would pass even if the declaration were deleted, so these read the field.
  */
 import { describe, it, expect } from 'vitest'
-import { SECRET_CATALOG, catalogFor, findSecret, sensitivityOf, type SecretEntry } from '../src/index.js'
+import { SECRET_CATALOG, RETIRED_SECRETS, catalogFor, findSecret, sensitivityOf, type SecretEntry } from '../src/index.js'
 
 const names = SECRET_CATALOG.map((e) => e.name)
 
@@ -31,7 +31,7 @@ describe('SecretCatalog shape', () => {
     const plain = SECRET_CATALOG.filter((e) => !e.sensitive).map((e) => e.name).sort()
     expect(sensitive).toEqual([
       'SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_R2_ACCESS_KEY_ID',
-      'SAIP_R2_SECRET_ACCESS_KEY', 'SAIP_SSH_PRIVATE_KEY', 'SAIP_UI_ADMIN',
+      'SAIP_R2_SECRET_ACCESS_KEY', 'SAIP_SSH_PRIVATE_KEY',
     ])
     expect(plain).toEqual(['SAIP_HYPERSTACK_ENVIRONMENT', 'SAIP_R2_BUCKET', 'SAIP_R2_ENDPOINT'])
   })
@@ -49,8 +49,9 @@ describe('SecretCatalog shape', () => {
   it('states the SSH key is not yet enforced where it is declared, not in prose elsewhere', () => {
     const ssh = findSecret('SAIP_SSH_PRIVATE_KEY')!
     expect(ssh.scope).toMatch(/not yet|does not yet|no route/i)
-    const admin = findSecret('SAIP_UI_ADMIN')!
-    expect(admin.scope).toMatch(/not enforced|never instantiated/i)
+    // SAIP_UI_ADMIN used to be asserted here as catalogued-with-a-caveat. It is now retired
+    // entirely (#90); the surviving caveat case is the SSH key above.
+    expect(findSecret('SAIP_UI_ADMIN')).toBeUndefined()
   })
 
   it('lists required-ness so the wizard knows what it may skip', () => {
@@ -90,6 +91,7 @@ describe('catalogFor: per-deployment view built from the user config', () => {
 
   it('sensitivityOf reports declared versus inferred rather than pretending both are facts', () => {
     expect(sensitivityOf('SAIP_R2_BUCKET')).toEqual({ sensitive: false, declared: true })
+    // Retired but still known: the value stays masked because we know it is a credential (#90).
     expect(sensitivityOf('SAIP_UI_ADMIN')).toEqual({ sensitive: true, declared: true })
     // A name the catalog has never seen, that LOOKS like a credential: the heuristic applies,
     // and `declared: false` is what stops the UI presenting a guess as a fact.
@@ -122,5 +124,26 @@ describe('catalogFor: per-deployment view built from the user config', () => {
     expect(e.sensitive).toBe(true)
     expect(e.inferred).toBe(true)
     expect(findSecret('MY_ODD_NAME')).toBeUndefined()
+  })
+})
+
+describe('retired secrets (#90)', () => {
+  it('SAIP_UI_ADMIN is no longer catalogued or asked about', () => {
+    expect(findSecret('SAIP_UI_ADMIN')).toBeUndefined()
+    expect(SECRET_CATALOG.map((e) => e.name)).not.toContain('SAIP_UI_ADMIN')
+    const list = catalogFor({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
+    expect(list.map((e) => e.name)).not.toContain('SAIP_UI_ADMIN')
+  })
+
+  it('names it as retired, with the reason, so tooling can say why it stopped asking', () => {
+    const retired = RETIRED_SECRETS.find((r) => r.name === 'SAIP_UI_ADMIN')
+    expect(retired).toBeTruthy()
+    expect(retired!.reason).toMatch(/no UI route|never constructed|no route/i)
+    expect(retired!.since).toMatch(/#90/)
+  })
+
+  it('still classifies a leftover stored value as sensitive', () => {
+    // Retired does not mean harmless: the value is still a password sitting in the store.
+    expect(sensitivityOf('SAIP_UI_ADMIN').sensitive).toBe(true)
   })
 })

@@ -69,7 +69,7 @@ export function newLineAccumulator(): {
     },
   }
 }
-import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, type SecretEntry, type SecretStore } from '@saip/shared'
+import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, type SecretEntry, type SecretStore } from '@saip/shared'
 
 export interface InitItem {
   readonly name: string
@@ -198,6 +198,8 @@ export interface RunInitOptions {
   env?: NodeJS.ProcessEnv
   /** Re-ask just this one name, clearing it first. */
   reset?: string
+  /** Retired config keys found in saip.yaml; reported before anything else. */
+  deprecations?: string[]
 }
 
 /** Print the catalog with no prompts and no writes — the guidance as a help surface (#82). */
@@ -269,10 +271,15 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   const stored: string[] = []
   const skipped: string[] = []
   const missing: string[] = []
+  const retiredFound: { name: string; reason: string }[] = []
   // Both sinks, always. `emit` writes through io.say so a terminal sees each block BEFORE the
   // prompt it explains, and keeps a copy in `lines` for --non-interactive capture and tests.
   // Previously only the copy existed, so the entire explanation printed after the last prompt.
   const emit = (l: string): void => { lines.push(l); io.say(l) }
+
+  // Reported before the first question: a retired key the user still has in saip.yaml
+  // changes nothing, and they should learn that before being asked to configure more.
+  for (const w of opts.deprecations ?? []) emit(`[saip] WARNING: ${w}`)
 
   emit('[saip] config init — one value at a time, hidden input, paste works')
   emit('[saip] Enter on an optional item skips it; Ctrl+C stops and keeps what is already saved.')
@@ -303,6 +310,19 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     // and a guess must not read the same (#93).
     for (const name of names) {
       if (items.some((i) => i.name === name)) continue
+      // A retired value is still a credential sitting in the store. Say what happened to it and how
+      // to clear it, instead of quietly omitting it from the wizard and leaving it there.
+      const retired = retiredSecret(name)
+      if (retired) {
+        retiredFound.push({ name, reason: retired.reason })
+        items.push({
+          name, kind: 'secret', sensitive: true, required: false,
+          purpose: `RETIRED (${retired.since}): ${retired.reason}`,
+          how: `Nothing reads this any more. Remove it: saip config forget ${name}`,
+          docsUrl: `${SITE}/guides/manage-secrets/`,
+        })
+        continue
+      }
       const sens = sensitivityOf(name)
       items.push({
         name,
@@ -396,6 +416,11 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     if (remaining.length) emit(`[saip] still not set (${remaining.length}): ${remaining.join(', ')}`)
     emit('[saip] re-running `saip config init` continues where this left off.')
     return { code: 130, lines, stored, skipped }
+  }
+
+  if (retiredFound.length) {
+    emit('')
+    for (const r of retiredFound) emit(`[saip] retired value still stored: ${r.name} — ${r.reason}`)
   }
 
   emit('')
