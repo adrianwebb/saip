@@ -16,6 +16,59 @@
  * into the store would report success and change nothing.
  */
 import { existsSync, readFileSync } from 'node:fs'
+
+/** Raised when the user presses Ctrl+C. Distinct from "empty input" on purpose. */
+export class WizardCancelled extends Error { readonly name = 'WizardCancelled' }
+
+/**
+ * Incremental line reader for a raw-mode terminal, kept pure so paste and Ctrl+C are testable
+ * without a TTY.
+ *
+ * Three behaviours that a naive chunk.toString() loop gets wrong:
+ *  - **Bracketed paste.** Terminals wrap a paste in `ESC [ 200 ~ … ESC [ 201 ~`. Filtering only
+ *    control bytes keeps the digits and letters INSIDE the sequence, silently corrupting a pasted
+ *    key (`200AKIA…201`). So CSI/OSC sequences are skipped as sequences, not as characters.
+ *  - **Ctrl+C is not a signal here.** `setRawMode(true)` disables ISIG, so 0x03 arrives as a byte.
+ *    Handling it explicitly is the only way the documented "Ctrl+C stops the wizard" is true.
+ *  - **Ctrl+D is EOF, not a literal.** Accept what was typed, which is what a paste ending in
+ *    Ctrl+D needs.
+ */
+export function newLineAccumulator(): {
+  feed(chunk: string): { value: string; done: boolean; cancelled: boolean }
+} {
+  let value = ''
+  // none -> esc (saw ESC, awaiting the introducer) -> csi (consuming parameters until the final byte)
+  let esc: 'none' | 'esc' | 'csi' = 'none'
+  return {
+    feed(chunk: string) {
+      for (const ch of chunk) {
+        const code = ch.codePointAt(0) ?? 0
+        // ECMA-48: ESC [ is a TWO-byte introducer, then parameter bytes 0x30-0x3F and
+        // intermediates 0x20-0x2F, then a single final byte 0x40-0x7E ends the sequence. Treating
+        // '[' as the final byte is what made an earlier version of this reducer leak "200~" from a
+        // bracketed-paste marker straight into the pasted credential.
+        if (esc === 'esc') { esc = ch === '[' || ch === ']' ? 'csi' : 'none'; continue }
+        if (esc === 'csi') {
+          if (code >= 0x20 && code <= 0x3f) continue
+          esc = 'none'
+          if (code >= 0x40 && code <= 0x7e) continue
+          // Outside both ranges: the sequence ended on an odd byte, so fall through and keep this
+          // character rather than swallowing input the user actually typed.
+        }
+        if (code === 0x1b) { esc = 'esc'; continue }
+        if (ch === '\n' || ch === '\r') return { value, done: true, cancelled: false }
+        if (code === 0x04) return { value, done: true, cancelled: false }
+        if (code === 0x03) return { value: '', done: true, cancelled: true }
+        if (code === 0x7f || code === 0x08) { value = value.slice(0, -1); continue }
+        // Reject other control bytes (bell, vertical tab, NUL from a stray paste) rather than
+        // storing an invisible character that will silently fail authentication later.
+        if (code < 0x20) continue
+        value += ch
+      }
+      return { value, done: false, cancelled: false }
+    },
+  }
+}
 import { envFilePath, setEnvFileValues, type SecretStore } from '@saip/shared'
 
 export interface InitItem {
@@ -181,19 +234,23 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   const lines: string[] = []
   const stored: string[] = []
   const skipped: string[] = []
-  const pendingEnv: Record<string, string> = {}
   const missing: string[] = []
+  // Both sinks, always. `emit` writes through io.say so a terminal sees each block BEFORE the
+  // prompt it explains, and keeps a copy in `lines` for --non-interactive capture and tests.
+  // Previously only the copy existed, so the entire explanation printed after the last prompt.
+  const emit = (l: string): void => { lines.push(l); io.say(l) }
 
-  io.say('[saip] config init — one value at a time, hidden input, paste works')
-  io.say('[saip] Enter on an optional item skips it; Ctrl+C stops and keeps what is already saved.')
+  emit('[saip] config init — one value at a time, hidden input, paste works')
+  emit('[saip] Enter on an optional item skips it; Ctrl+C stops and keeps what is already saved.')
 
+  try {
   for (const item of items) {
     const alreadySecret = item.kind === 'secret' ? await store.get(item.name).catch(() => undefined) : undefined
     const alreadyConfig = item.kind === 'config' ? readEnvValue(envPath, item.name) : undefined
     const already = alreadySecret ?? alreadyConfig
 
     if (already && !force) {
-      io.say(`\n${item.name} — already set (${already.length} chars). Enter keeps it, or type a new value.`)
+      emit(`\n${item.name} — already set (${already.length} chars). Enter keeps it, or type a new value.`)
       const next = interactive ? clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' })) : ''
       if (!next) { stored.push(item.name); continue }
       await writeOne(item, next)
@@ -201,16 +258,16 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     }
 
     if (interactive) {
-      io.say(`\n── ${item.name} ${item.required ? '(required)' : '(optional)'}`)
-      io.say(`   what    : ${item.purpose}`)
-      io.say(`   how     : ${item.how}`)
-      if (item.scope) io.say(`   scoping : ${item.scope}`)
-      io.say(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
-      if (item.docsUrl) io.say(`   docs    : ${item.docsUrl}`)
+      emit(`\n── ${item.name} ${item.required ? '(required)' : '(optional)'}`)
+      emit(`   what    : ${item.purpose}`)
+      emit(`   how     : ${item.how}`)
+      if (item.scope) emit(`   scoping : ${item.scope}`)
+      emit(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
+      if (item.docsUrl) emit(`   docs    : ${item.docsUrl}`)
     } else if (item.required && !answers[item.name]) {
       // Compact for CI and agents: one line per outstanding value, with the teaching text only
       // where a human will read it.
-      io.say(`   missing   : ${item.name} — ${item.purpose}`)
+      emit(`   missing   : ${item.name} — ${item.purpose}`)
     }
 
     // Scripted answers win when provided (CI, --non-interactive, embedding callers); otherwise the
@@ -229,11 +286,11 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
         continue
       }
       if (!item.required) {
-        io.say(`   → skipped; anything needing ${item.name} stays inert until you set it`)
+        emit(`   → skipped; anything needing ${item.name} stays inert until you set it`)
         skipped.push(item.name)
         continue
       }
-      io.say(`   → ${item.name} is required and was left empty. Enter it, or Ctrl+C to stop.`)
+      emit(`   → ${item.name} is required and was left empty. Enter it, or Ctrl+C to stop.`)
       const retry = clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' }))
       if (!retry) {
         lines.push(`[saip] stopped: ${item.name} is required and cannot be empty. Nothing was written for it.`)
@@ -244,35 +301,46 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     await writeOne(item, value)
   }
 
-  if (Object.keys(pendingEnv).length) setEnvFileValues(envPath, pendingEnv)
-
   if (missing.length) {
     lines.push('')
     lines.push(`[saip] not configured (${missing.length} required): ${missing.join(', ')}`)
     lines.push('[saip] run `saip config init` at a terminal for the guided wizard, or set them with:')
     for (const n of missing) {
       const it = items.find((x) => x.name === n)!
-      lines.push(it.kind === 'secret'
+      emit(it.kind === 'secret'
         ? `  printf %s "$${n}" | saip config set ${n} --stdin`
         : `  echo '${n}=...' >> ${envPath}`)
     }
     return { code: 1, lines, stored, skipped }
   }
 
-  lines.push('')
-  lines.push(`[saip] stored ${stored.length} value(s): ${stored.join(', ') || 'none'}`)
-  if (skipped.length) lines.push(`[saip] skipped: ${skipped.join(', ')}`)
-  lines.push(`[saip] secrets → ${store.filePath}; interpolated config → ${envPath}`)
-  lines.push('[saip] NOTE: credentials were NOT verified — the R2 client is separate work, and an unsigned')
-  lines.push('[saip]       request 403s for valid and invalid keys alike, so it would prove nothing.')
-  lines.push('[saip]       `saip config verify` will do it once the storage provider lands.')
+  } catch (e) {
+    if (!(e instanceof WizardCancelled)) throw e
+    const remaining = items.filter((i) => !stored.includes(i.name)).map((i) => i.name)
+    emit('')
+    emit('[saip] stopped by Ctrl+C.')
+    emit(`[saip] stored so far (${stored.length}): ${stored.join(', ') || 'nothing'}`)
+    if (remaining.length) emit(`[saip] still not set (${remaining.length}): ${remaining.join(', ')}`)
+    emit('[saip] re-running `saip config init` continues where this left off.')
+    return { code: 130, lines, stored, skipped }
+  }
+
+  emit('')
+  emit(`[saip] stored ${stored.length} value(s): ${stored.join(', ') || 'none'}`)
+  if (skipped.length) emit(`[saip] skipped: ${skipped.join(', ')}`)
+  emit(`[saip] secrets → ${store.filePath}; interpolated config → ${envPath}`)
+  emit('[saip] NOTE: credentials were NOT verified — the R2 client is separate work, and an unsigned')
+  emit('[saip]       request 403s for valid and invalid keys alike, so it would prove nothing.')
+  emit('[saip]       `saip config verify` will do it once the storage provider lands.')
   return { code: 0, lines, stored, skipped }
 
   async function writeOne(item: InitItem, value: string): Promise<void> {
     if (item.kind === 'secret') await store.set(item.name, value)
-    else pendingEnv[item.name] = value
+    // Written as it is answered, not batched to the end: an interrupt after five answers must not
+    // discard the first four.
+    else setEnvFileValues(envPath, { [item.name]: value })
     stored.push(item.name)
-    io.say(`   → stored ${item.name} (${value.length} chars)`)
+    emit(`   → stored ${item.name} (${value.length} chars)`)
   }
 }
 

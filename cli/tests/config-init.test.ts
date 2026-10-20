@@ -13,7 +13,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { envFilePath, setEnvFileValues, loadEnvFile } from '@saip/shared'
-import { planInitItems, runInit, type Io } from '../src/commands/config-init.js'
+import { planInitItems, runInit, newLineAccumulator, WizardCancelled, type Io } from '../src/commands/config-init.js'
+import { promptTTY } from '../src/commands/config.js'
 import { SecretStore, MemoryKeySource } from '@saip/shared'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'saip-init-'))
@@ -70,6 +71,11 @@ describe('planInitItems: questions are DERIVED, not hardcoded', () => {
   })
 })
 
+const mkStore = (): { d: string; store: SecretStore } => {
+  const d = dir()
+  return { d, store: new SecretStore({ path: join(d, 'keys', 'secrets.enc.json'), keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 3))] }) }
+}
+
 /** Collects prompts and replays scripted answers, so no TTY is needed anywhere in CI. */
 function fakeIo(answers: Record<string, string>): { io: Io; seen: string[]; secretAsked: string[] } {
   const seen: string[] = []
@@ -89,10 +95,6 @@ function fakeIo(answers: Record<string, string>): { io: Io; seen: string[]; secr
 }
 
 describe('runInit: prompts, routing, and refusal', () => {
-  const mkStore = () => {
-    const d = dir()
-    return { d, store: new SecretStore({ path: join(d, 'keys', 'secrets.enc.json'), keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 3))] }) }
-  }
 
   it('writes interpolated config to the env file and credentials to the store — never the reverse', async () => {
     const { d, store } = mkStore()
@@ -256,5 +258,135 @@ describe('the assembled program (#76 rule: test it as a program)', () => {
       encoding: 'utf8', cwd: dir(), env: { ...process.env, SAIP_SECRETS_FILE: join(dir(), 's.json') },
     })
     expect(r.stdout + r.stderr).not.toMatch(/unknown subcommand/)
+  })
+})
+
+describe('the display must inform BEFORE the prompt (#78 follow-up, maintainer-reported)', () => {
+  it('records each item\'s teaching block ahead of the question for that item', async () => {
+    const { d, store } = mkStore()
+    const order: string[] = []
+    const io: Io = {
+      say: (l) => { order.push(`say:${l}`) },
+      ask: async (q) => { order.push(`ask:${q}`); return 'value' },
+    }
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }).slice(0, 2), io, envPath: join(d, '.env') })
+    const bucketAsk = order.findIndex((l) => l.startsWith('ask:SAIP_R2_BUCKET'))
+    const purpose = order.findIndex((l) => l.includes('Object storage for adapters'))
+    const createLink = order.findIndex((l) => l.includes('dash.cloudflare.com'))
+    expect(bucketAsk).toBeGreaterThan(-1)
+    // The whole point of the command: explanation precedes the input it explains.
+    expect(purpose).toBeGreaterThanOrEqual(0)
+    expect(purpose).toBeLessThan(bucketAsk)
+    expect(createLink).toBeLessThan(bucketAsk)
+  })
+
+  it('emits every line through io.say, so a real terminal shows them as they happen', async () => {
+    const { d, store } = mkStore()
+    const said: string[] = []
+    const io: Io = { say: (l) => said.push(l), ask: async () => 'v' }
+    const r = await runInit({ store, items: planInitItems({ config: baseConfig, hosts }).slice(0, 1), io, envPath: join(d, '.env') })
+    expect(said.join(' ')).toMatch(/NOT verified/)
+    expect(r.lines.join(' ')).toMatch(/NOT verified/)
+  })
+})
+
+describe('Ctrl+C during the wizard (#78 follow-up, maintainer-reported)', () => {
+  it('stops cleanly, keeps what was already stored, and names what remains', async () => {
+    const { d, store } = mkStore()
+    let n = 0
+    const io: Io = {
+      say: () => {},
+      ask: async () => { n++; if (n === 3) throw new WizardCancelled(); return `value-${n}` },
+    }
+    const env = join(d, '.env')
+    const r = await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: env })
+    expect(r.code).toBe(130)
+    expect(r.lines.join(' ')).toMatch(/stopped/)
+    // Answers given BEFORE the interrupt are persisted; the earlier batched-env write lost them, and
+    // items 1-2 are the config pair, so the access key id (item 3) is the one left unset.
+    expect(readFileSync(env, 'utf8')).toMatch(/SAIP_R2_BUCKET=value-1/)
+    expect(readFileSync(env, 'utf8')).toMatch(/SAIP_R2_ENDPOINT=value-2/)
+    expect(await store.get('SAIP_R2_ACCESS_KEY_ID')).toBeUndefined()
+    expect(r.lines.join(' ')).toMatch(/still not set/)
+  })
+
+  it('writes nothing for the item that was interrupted', async () => {
+    const { d, store } = mkStore()
+    const env = join(d, '.env')
+    const io: Io = { say: () => {}, ask: async (q) => { if (q.includes('ENDPOINT')) throw new WizardCancelled(); return 'b' } }
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: env })
+    const text = existsSync(env) ? readFileSync(env, 'utf8') : ''
+    expect(text).not.toMatch(/SAIP_R2_ENDPOINT/)
+  })
+})
+
+describe('paste safety: terminal escape sequences must not enter the value', () => {
+  it('strips bracketed-paste wrappers and control bytes, keeping the pasted text', () => {
+    const acc = newLineAccumulator()
+    // Real paste under bracketed paste mode: ESC [ 200 ~ <value> ESC [ 201 ~
+    const out = acc.feed('\u001b[200\u007eAKIAIOSFODNN7EXAMPLE\u001b[201\u007e\r\n')
+    expect(out.value).toBe('AKIAIOSFODNN7EXAMPLE')
+    expect(out.done).toBe(true)
+  })
+
+  it('honours backspace, and Ctrl+D as end-of-input', () => {
+    const a = newLineAccumulator()
+    expect(a.feed('ab\u007fc\r').value).toBe('ac')
+    const b = newLineAccumulator()
+    expect(b.feed('xy\u0004')).toEqual({ value: 'xy', done: true, cancelled: false })
+  })
+
+  it('Ctrl+C cancels', () => {
+    const c = newLineAccumulator()
+    expect(c.feed('partial\u0003')).toEqual({ value: '', done: true, cancelled: true })
+  })
+})
+
+describe('the real terminal reader, driven without a TTY (#78 follow-up)', () => {
+  // promptTTY takes an injectable stream so the production reader — not a reimplementation of it —
+  // is exercised by CI. The ad-hoc pty scripts used during development were flaky enough that
+  // relying on them would leave the two maintainer-reported bugs unguarded.
+  it('resolves a bracketed paste to the pasted value only', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
+    const p = promptTTY('SAIP_R2_ACCESS_KEY_ID: ', stream)
+    stream!.write('\u001b[200\u007eAKIAIOSFODNN7EXAMPLE\u001b[201\u007e\r\n')
+    await expect(p).resolves.toBe('AKIAIOSFODNN7EXAMPLE')
+  })
+
+  it('rejects with WizardCancelled when Ctrl+C is typed', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
+    const p = promptTTY('SAIP_R2_BUCKET: ', stream)
+    stream!.write('half-typed\u0003')
+    await expect(p).rejects.toBeInstanceOf(WizardCancelled)
+  })
+
+  it('treats Ctrl+D as end of input, so a paste terminated by EOF works', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough() as unknown as Parameters<typeof promptTTY>[1]
+    const p = promptTTY('SAIP_R2_BUCKET: ', stream)
+    stream!.write('value-then-eof\u0004')
+    await expect(p).resolves.toBe('value-then-eof')
+  })
+
+  it('runInit propagates a cancel from the reader into the honest stop summary', async () => {
+    const { d, store } = mkStore()
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const io: Io = {
+      say: () => {},
+      ask: async (q) => promptTTY(q, stream as unknown as Parameters<typeof promptTTY>[1]),
+    }
+    const run = runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: join(d, '.env') })
+    // The first prompt is issued; answer it, then cancel at the second.
+    await new Promise((r) => setTimeout(r, 10))
+    stream.write('answered\r')
+    await new Promise((r) => setTimeout(r, 10))
+    stream.write('\u0003')
+    const r = await run
+    expect(r.code).toBe(130)
+    expect(r.lines.join(' ')).toMatch(/stopped by Ctrl\+C/)
+    expect(r.stored).toEqual(['SAIP_R2_BUCKET'])
   })
 })

@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { planInitItems, runInit, type Io } from './config-init.js'
+import { planInitItems, runInit, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -65,30 +65,39 @@ export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
  * /dev/tty; so do we — and with no controlling terminal we refuse outright rather than storing
  * a key that nobody knows, which would look like success and be unrecoverable.
  */
-export function promptTTY(question: string): Promise<string> {
-  let fd: number
-  try { fd = openSync('/dev/tty', 'r+') }
-  catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
-  const stream = new ReadStream(fd)
-  const wasRaw = stream.isRaw
-  stream.setRawMode(true)
-  process.stderr.write(question)
-  let value = ''
-  return new Promise((resolve) => {
-    const done = () => {
-      stream.setRawMode(!!wasRaw)
-      stream.destroy()
-      process.stderr.write('\n')
-      resolve(value)
+export function promptTTY(question: string, stream?: ReadStream): Promise<string> {
+  let own = stream
+  if (!own) {
+    let fd: number
+    try { fd = openSync('/dev/tty', 'r+') }
+    catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
+    own = new ReadStream(fd)
+  }
+  const tty = own
+  const wasRaw = tty.isRaw
+  // Raw mode is what makes echo suppression possible — and it is also why Ctrl+C appeared to do
+  // nothing: setRawMode disables ISIG, so 0x03 arrives as an ordinary byte instead of raising
+  // SIGINT. The reducer below is therefore the cancel handler, not a nicety.
+  try { tty.setRawMode(true) } catch { /* injected stream in tests */ }
+  // Prompt on stdout, same stream as the explanation block, so ordering on screen is the ordering
+  // of the calls. Splitting one to stderr and the other to stdout scrambles it when redirected.
+  process.stdout.write(question)
+  const acc = newLineAccumulator()
+  return new Promise((resolve, reject) => {
+    const finish = (): void => {
+      try { tty.setRawMode(!!wasRaw) } catch { /* not a real tty */ }
+      try { tty.destroy() } catch { /* already closed */ }
+      process.stdout.write('\n')
     }
-    stream.on('data', (chunk: Buffer) => {
-      for (const ch of chunk.toString('utf8')) {
-        if (ch === '\n' || ch === '\r') return done()
-        if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1)
-        else if ((ch.codePointAt(0) ?? 0) >= 0x20) value += ch
-      }
+    tty.on('data', (chunk: Buffer) => {
+      const r = acc.feed(chunk.toString('utf8'))
+      if (!r.done) return
+      finish()
+      if (r.cancelled) reject(new WizardCancelled('cancelled by user'))
+      else resolve(r.value)
     })
-    stream.once('error', done)
+    tty.once('error', () => { finish(); reject(new WizardCancelled('terminal closed')) })
+    tty.once('close', () => { finish(); reject(new WizardCancelled('terminal closed')) })
   })
 }
 
@@ -325,19 +334,26 @@ export async function runConfig(
       // Saying so beats guessing quietly: with no saip.yaml found the plan is built from an
       // empty config, so the user would be asked about R2 only and never about their declared
       // API tokens — and would have no way to know the project file was not read at all.
+      // Written before the io object exists would be awkward, so the warning is emitted here in
+      // the same immediate style the wizard uses, rather than queued into a buffer that prints late.
       if (!cfgFile.path) {
-        lines.push('[saip] WARNING: no saip.yaml found from this directory upward. The questions below')
-        lines.push('[saip]          come only from the built-in defaults; run this from your project,')
-        lines.push('[saip]          or set SAIP_CONFIG=/path/to/saip.yaml.')
+        process.stdout.write('[saip] WARNING: no saip.yaml found from this directory upward. The questions below\n')
+        process.stdout.write('[saip]          come only from the built-in defaults; run this from your project,\n')
+        process.stdout.write('[saip]          or set SAIP_CONFIG=/path/to/saip.yaml.\n')
       }
 
       const items = planInitItems({ config: cfg, hosts })
       const nonInteractive = Boolean(options.nonInteractive)
       const io: Io = {
-        say: (line) => lines.push(line),
-        ask: async (question, askOpts) => {
-          if (nonInteractive) throw new NoTerminalError('not interactive')
-          return askOpts.secret ? promptTTY(question) : (await promptTTY(question))
+        // Immediate. The previous version pushed to `lines`, which the command printed only after
+        // the whole wizard finished — so a user saw "NAME: " with none of the guidance that was
+        // supposed to come first. That is the defect this closes.
+        say: (line) => process.stdout.write(`${line}\n`),
+        // --non-interactive never prompts: runInit only calls `ask` when interactive is true, and
+        // this guard makes that contract fail loudly rather than opening a terminal mid-report.
+        ask: async (question) => {
+          if (nonInteractive) throw new NoTerminalError('non-interactive mode does not prompt')
+          return promptTTY(question)
         },
       }
       let envPath: string | undefined
@@ -350,18 +366,22 @@ export async function runConfig(
           answers: nonInteractive ? {} : undefined,
           force: Boolean(options.force),
         })
-        lines.push(...r.lines)
-        return { code: r.code, lines }
+        // Nothing is appended to `lines` here: io.say already wrote every line to stdout as it
+        // happened. Returning them again would print the whole transcript a second time.
+        return { code: r.code, lines: [] }
       } catch (e) {
         if (e instanceof NoTerminalError) {
-          lines.push('[saip] no controlling terminal: `saip config init` needs one to hide your typing.')
-          lines.push('[saip] set values non-interactively instead, e.g.:')
-          for (const i of items.filter((x) => x.required)) {
-            lines.push(i.kind === 'secret'
+          return { code: 1, lines: [
+            '[saip] no controlling terminal: `saip config init` needs one to hide your typing.',
+            '[saip] set values non-interactively instead, e.g.:',
+            ...items.filter((x) => x.required).map((i) => i.kind === 'secret'
               ? `  printf %s "$${i.name}" | saip config set ${i.name} --stdin`
-              : `  echo '${i.name}=...' >> ${envPath ?? '.env'}`)
-          }
-          return { code: 1, lines }
+              : `  echo '${i.name}=...' >> ${envPath ?? '.env'}`),
+          ] }
+        }
+        if (e instanceof WizardCancelled) {
+          // Ctrl+C reaches here when it happens on the passphrase prompt, before the store exists.
+          return { code: 130, lines: ['[saip] cancelled. Nothing further was written.'] }
         }
         return fail((e as Error).message)
       }
