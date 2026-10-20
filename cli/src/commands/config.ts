@@ -167,6 +167,15 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
   return new SecretStore({ path: storePath, keySources: sources })
 }
 
+/**
+ * Cordis hands positionals as strings, so an omitted optional can arrive as the literal
+ * 'undefined' or an empty string. Treated as absent, or bare `saip config help` reads as a
+ * lookup for a name that does not exist and prints the not-found message instead of the catalog.
+ */
+function cleanArg(v: string | undefined): string | undefined {
+  return !v || v === 'undefined' ? undefined : v
+}
+
 function cfgFileForInit() { return resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' }) }
 function readConfigForInit(): any {
   const f = cfgFileForInit()
@@ -267,10 +276,12 @@ export async function runConfig(
     }
 
     case 'help': {
-      const io: Io = { say: (line) => lines.push(line), ask: async () => '' }
       const items = planInitItems({ config: readConfigForInit(), hosts: readHostsForInit() })
-      const r = await runHelp({ store, items, envPath: envFilePath(process.env), env, only: name, io })
-      return { code: r.code, lines: [...lines, ...r.lines] }
+      // A `say` that collects into the shared buffer AND a returned copy produced a transcript
+      // printed twice — found only by running the command, since every unit test called runHelp
+      // directly and read only its return value.
+      const io: Io = { say: () => {}, ask: async () => '' }
+      return await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io })
     }
 
     case 'doctor': {

@@ -257,6 +257,35 @@ describe('the assembled program (#76 rule: test it as a program)', () => {
     expect(existsSync(join(d, '.env'))).toBe(false)
   })
 
+  it.skipIf(!built)('`saip config help` prints the whole catalog once, with no prompting', () => {
+    const d = dir()
+    const r = spawnSync(process.execPath, [distBin, 'config', 'help'], {
+      encoding: 'utf8', cwd: d,
+      env: { ...process.env, SAIP_SECRETS_FILE: join(d, 's.json'), SAIP_ENV_FILE: join(d, '.env'), SAIP_CONFIG: join(repoRoot, 'saip.yaml') },
+    })
+    expect(r.status).toBe(0)
+    const entries = (r.stdout.match(/── SAIP_/g) ?? []).length
+    expect(entries).toBeGreaterThanOrEqual(8)
+    // Duplicate transcript was the bug: the same header must appear exactly once.
+    expect((r.stdout.match(/── SAIP_HF_TOKEN/g) ?? []).length).toBe(1)
+    expect(r.stdout).not.toMatch(/no guidance entry/)
+    // Integration keys are listed even with no hosts.yaml and an empty store.
+    for (const n of ['SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_SSH_PRIVATE_KEY']) {
+      expect(r.stdout).toContain(n)
+    }
+    expect(existsSync(join(d, '.env'))).toBe(false)
+  })
+
+  it.skipIf(!built)('`saip config help NAME` narrows to that entry', () => {
+    const d = dir()
+    const r = spawnSync(process.execPath, [distBin, 'config', 'help', 'SAIP_R2_ACCESS_KEY_ID'], {
+      encoding: 'utf8', cwd: d,
+      env: { ...process.env, SAIP_SECRETS_FILE: join(d, 's.json'), SAIP_ENV_FILE: join(d, '.env'), SAIP_CONFIG: join(repoRoot, 'saip.yaml') },
+    })
+    expect(r.stdout).toMatch(/Access Key ID half/)
+    expect(r.stdout).not.toMatch(/Object storage for adapters/)
+  })
+
   it.skipIf(!built)('the wizard is dispatched at all — `init` is not an unknown subcommand', () => {
     const r = spawnSync(process.execPath, [distBin, 'config', 'init', '--non-interactive'], {
       encoding: 'utf8', cwd: dir(), env: { ...process.env, SAIP_SECRETS_FILE: join(dir(), 's.json') },
