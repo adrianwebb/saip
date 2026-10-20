@@ -178,12 +178,23 @@ export function defaultKeyfilePath(env: NodeJS.ProcessEnv = process.env): string
 /** Sources in preference order; keyring only when a runner was actually supplied. */
 export function defaultKeySources(
   env: NodeJS.ProcessEnv = process.env,
-  opts: { prompt?: (q: string) => Promise<string>; toolRunner?: SecretToolRunner; allowUnattended?: boolean } = {},
+  opts: {
+    prompt?: (q: string) => Promise<string>
+    toolRunner?: SecretToolRunner
+    allowUnattended?: boolean
+    /**
+     * Store this source list is for. The unattended key file must sit beside THAT store:
+     * deriving it from the environment alone silently breaks any store relocated with
+     * `SAIP_SECRETS_FILE` or an injected path, because the wrap exists but its key is looked
+     * for in the default home directory and never found.
+     */
+    storePath?: string
+  } = {},
 ): KeySource[] {
   const sources: KeySource[] = []
   if (opts.toolRunner) sources.push(new SecretToolKey(opts.toolRunner))
   sources.push(new PassphraseKey(env, opts.prompt))
-  if (opts.allowUnattended) sources.push(new KeyFileKey(defaultKeyfilePath(env)))
+  if (opts.allowUnattended) sources.push(new KeyFileKey(opts.storePath ? join(dirname(opts.storePath), 'keys', 'unattended.key') : defaultKeyfilePath(env)))
   return sources
 }
 

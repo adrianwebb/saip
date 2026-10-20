@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - security: both key sources are now actually reachable from the CLI. Previously `defaultKeySources()` was called with no prompt and no keychain runner, so an injected test double was the only thing that could unlock a store and every real `saip config set` failed — green tests, unusable binary (#73)
 - cli: `saip config set` reads stdin only with `--stdin`. The earlier auto-detect-when-not-a-TTY made any non-interactive invocation hang indefinitely waiting for input (#73)
 
+- security: an `unattended` wrap could be created but **never used** — the CLI built its key sources without that tier, and the key path was derived from the environment instead of from the store it belongs to, so any store relocated with `SAIP_SECRETS_FILE` could not find its own key. Reading now offers every tier that may exist on disk while creation stays opt-in, and there is a single store-construction site in the CLI instead of two (#73)
+
 ### Changed
 - config: the shipped `saip.yaml` uses `${VAR:-}` for the R2 bucket/endpoint so platform config stays readable without cloud credentials — strict `${VAR}` would make offline hardware inspection demand credentials just to load a file. An unset value loads as empty and the storage provider is responsible for refusing it (#65)
 - config: four hand-rolled YAML readers (inference, `cli status`, `cli profiles`, shared host registry) replaced by the single shared loader. Config errors are matched by `name`, not `instanceof` — `@saip/shared` loads from `dist/` in packages and `src/` in tests, and a dual-identity class silently downgrades a real config error to defaults (#65)
