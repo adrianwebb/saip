@@ -733,3 +733,97 @@ describe('the wizard reports retired config keys (#90)', () => {
     expect(warn).toBeLessThan(firstAsk)   // told before being asked, not after
   })
 })
+
+describe('paste handling and cursor placement (#99 follow-up, maintainer-reported)', () => {
+  it('treats a newline inside a bracketed paste as content, not as Enter', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const p = promptTTY('SAIP_R2_SECRET_ACCESS_KEY: ', { stream, secret: true })
+    // Real bracketed paste: markers around text that itself ends with a newline.
+    stream.write('\u001b[200\u007every-long-secret-value\n\u001b[201\u007e')
+    await new Promise((r) => setImmediate(r))
+    // Still waiting: the newline belonged to the paste, not to the prompt.
+    let settled = false
+    void p.then(() => { settled = true })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).toBe(false)
+    stream.write('\r')                                  // the user's actual Enter, after the paste
+    // The pasted newline is content, not a submission; the wizard's clean() strips trailing
+    // whitespace before storing (asserted in the CRLF test above). Preserving it here is what
+    // lets a legitimately multi-line value survive.
+    await expect(p).resolves.toBe('very-long-secret-value\n')
+  })
+
+  it('does not deadlock when a single chunk carries two answers (no lost input)', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const first = promptTTY('SAIP_R2_BUCKET: ', { stream, secret: false })
+    stream.write('visible-bucket\rhttps://endpoint\r')   // typed-ahead / pasted twice
+    await expect(first).resolves.toBe('visible-bucket')
+    const second = promptTTY('SAIP_R2_ENDPOINT: ', { stream, secret: false })
+    await expect(second).resolves.toBe('https://endpoint')   // would hang forever if input were dropped
+  })
+
+  it('moves to column zero after a hidden prompt, so the next line is not indented', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const writes: string[] = []
+    const real = process.stdout.write.bind(process.stdout)
+    ;(process.stdout as any).write = (c: any) => { writes.push(String(c)); return true }
+    try {
+      const p = promptTTY('SAIP secret store passphrase: ', { stream, secret: true })
+      stream.write('hunter2\r')
+      await p
+    } finally { (process.stdout as any).write = real }
+    const after = writes.join('')
+    // Raw mode disables OPOST, so the line break must carry its own carriage return.
+    const promptAt = after.indexOf('SAIP secret store passphrase: ')
+    expect(promptAt).toBeGreaterThanOrEqual(0)
+    // The terminal is left in its prior state (bracketed paste off) and THEN the line is closed,
+    // so the last thing written is a CRLF: cursor back to column zero, not under the prompt.
+    expect(writes[writes.length - 1]).toBe('\r\n')
+    expect(after.lastIndexOf('\r\n')).toBeGreaterThan(promptAt)
+    expect(after).toContain('\u001b[?2004h')
+    expect(after).toContain('\u001b[?2004l')
+  })
+
+  it('enables and disables bracketed paste mode around the read', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const writes: string[] = []
+    const real = process.stdout.write.bind(process.stdout)
+    ;(process.stdout as any).write = (c: any) => { writes.push(String(c)); return true }
+    try {
+      const p = promptTTY('X: ', { stream, secret: true })
+      stream.write('v\r')
+      await p
+    } finally { (process.stdout as any).write = real }
+    const all = writes.join('')
+    expect(all).toContain('\u001b[?2004h')
+    expect(all.indexOf('\u001b[?2004l')).toBeGreaterThan(all.indexOf('\u001b[?2004h'))
+  })
+})
+
+describe('a paste trailing blank line must not answer the next prompt (#99)', () => {
+  it('discards a leftover made only of newlines, but keeps real typed-ahead text', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const a = promptTTY('SAIP_R2_BUCKET: ', { stream, secret: false })
+    stream.write('b\r\r')                        // clipboard carried a blank line, then Enter
+    await expect(a).resolves.toBe('b')
+    const b = promptTTY('SAIP_R2_ACCESS_KEY_ID: ', { stream, secret: false })
+    stream.write('AKIA\r')                       // the user's own answer must still be needed
+    await expect(b).resolves.toBe('AKIA')
+  })
+
+  it('does not swallow a value that legitimately follows on the same chunk', async () => {
+    const { PassThrough } = await import('node:stream')
+    const stream = new PassThrough()
+    const a = promptTTY('SAIP_R2_BUCKET: ', { stream, secret: false })
+    stream.write('one\rtwo\r')
+    await expect(a).resolves.toBe('one')
+    const b = promptTTY('SAIP_R2_ENDPOINT: ', { stream, secret: false })
+    // 'two' is real content, not a terminator, so it must arrive without further input.
+    await expect(b).resolves.toBe('two')
+  })
+})
