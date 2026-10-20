@@ -5,6 +5,29 @@ description: Reference for writing SAIP plugins using the Cordis framework
 
 SAIP services are built as [Cordis](https://github.com/cordiverse/cordis) plugins. This page documents the plugin contract, lifecycle, event system, and dependency injection as implemented in the vendored Cordis core at `examples/cordis/packages/core/`.
 
+### `ui` — terminal presentation seam (#106)
+
+`UiService` is how anything in SAIP talks to a human. Commands never format for a terminal
+themselves and never import Ink directly; they ask the service for a card, a table or a prompt, and
+the service picks a renderer from the **capability of the attached stream**:
+
+| Situation | Renderer | Why |
+|---|---|---|
+| TTY, UTF-8, colour permitted | Ink | widgets, redraws, cursor handling, the shared vocabulary every later screen uses |
+| Not a TTY (piped, CI, agent, log capture) | plain `label: value` lines | a compiled Ink binary writes **nothing** to a pipe; a fallback is required, not optional |
+| `TERM=dumb`, non-UTF-8 locale, `NO_COLOR` | plain | Ink does not degrade for these; the selection has to, and the measurement is recorded in #88/#103 |
+
+Selection is capability-based and never a flag a user must know about. Two invariants the seam must
+preserve through migration, because each cost a bug report already (see #99, #73):
+
+1. **Secrets are typed on the controlling terminal, not stdin** — `--stdin` owns stdin for values.
+2. **Interrupt and cleanup**: `Ctrl+C` must be handled explicitly (raw mode disables `ISIG`), and
+   nothing may be left on screen or in the input buffer afterwards.
+
+The migration is deliberate and incremental: the seam lands selecting the plain renderer everywhere,
+screens move to Ink one at a time, and the hand-rolled box renderer is deleted only when every
+screen that used it has passed its tests on Ink.
+
 ## Plugin Signature
 
 A plugin is a function, class constructor, or object with an `apply` method:
