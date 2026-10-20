@@ -69,7 +69,7 @@ export function newLineAccumulator(): {
     },
   }
 }
-import { envFilePath, setEnvFileValues, type SecretStore } from '@saip/shared'
+import { envFilePath, setEnvFileValues, removeEnvValues, type SecretStore } from '@saip/shared'
 
 export interface InitItem {
   readonly name: string
@@ -145,22 +145,56 @@ export function planInitItems(input: { config: any; hosts: any[] }): InitItem[] 
     },
   ]
 
-  const hfEnv: string | undefined = config?.storage?.r2?.token_env
-  if (hfEnv) {
-    items.push({
-      name: hfEnv,
+  // These four are ALWAYS listed. Gating them on config discovery (a `token_env` key, a
+  // `hyperstack` host in hosts.yaml) meant a new user could never see the credentials the next
+  // integrations need — and hosts.yaml is not committed, so they never appeared at all. Optional
+  // answers are fine; invisible requirements are not.
+  const extras: InitItem[] = [
+    {
+      name: 'SAIP_HF_TOKEN',
       kind: 'secret',
       required: false,
-      purpose: 'Hugging Face token, used when pulling base weights or gated checkpoints.',
-      how: 'huggingface.co → Settings → Access Tokens → New token. Read only for public models.',
-      scope: 'Skip this if you only use public checkpoints. "read" is enough; fine-grained and scoped to the repos you actually pull.',
+      purpose: 'Hugging Face token, used when pulling base weights or gated repositories during training and serving.',
+      how: 'huggingface.co → Settings → Access Tokens → New token. Name it after this deployment so it can be revoked alone.',
+      scope: 'Read is enough for public checkpoints. For gated repos, grant read on the specific repository rather than writing or "all" scopes.',
       providerUrl: 'https://huggingface.co/settings/tokens',
-      docsUrl: `${HF_DOCS}`,
-    })
-  }
+      docsUrl: HF_DOCS,
+    },
+    {
+      name: 'SAIP_HYPERSTACK_API_KEY',
+      kind: 'secret',
+      required: false,
+      purpose: 'Credentials for provisioning and controlling remote GPU instances. Not needed to run locally.',
+      how: 'Sign in to the Hyperstack console → API Keys → Generate a New API Key. The value is shown ONCE; there is no way to recover it, only to issue another.',
+      scope: 'Issue a key per deployment, not a personal all-purpose key, so a leak can be revoked without disabling your own console access. Mind the billing surface: this credential can create billable GPUs.',
+      providerUrl: HS_DOCS,
+      docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
+    },
+    {
+      name: 'SAIP_HYPERSTACK_ENVIRONMENT',
+      kind: 'config',
+      required: false,
+      purpose: 'Selects which Hyperstack environment (project/region grouping) the provider operates in.',
+      how: 'Copy the environment identifier from the console. Leave blank unless your account uses named environments.',
+      providerUrl: HS_DOCS,
+    },
+    {
+      name: 'SAIP_SSH_PRIVATE_KEY',
+      kind: 'secret',
+      required: false,
+      purpose: 'The private half of the key pair used to log into a provisioned instance as ubuntu.',
+      how: 'Download the private key when you create the key pair in the console (it is delivered once), then store its contents here.',
+      // Stated rather than omitted: the provider does not yet read this value. Documenting the
+      // credential as though it worked would send the user chasing a phantom misconfiguration.
+      scope: 'KNOWN GAP: the provider currently builds `-i /run/secrets/<key_secret>`, treating the secret NAME as a file path that nothing populates, so storing this value does NOT yet make remote SSH work. Tracked separately; deploy over a mounted key or from a host with the file in place until then.',
+      docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
+    },
+  ]
+  const seen = new Set(items.map((i) => i.name))
+  for (const e of extras) if (!seen.has(e.name)) { items.push(e); seen.add(e.name) }
 
   for (const t of config?.security?.api_tokens ?? []) {
-    if (!t?.token_secret) continue
+    if (!t?.token_secret || seen.has(t.token_secret)) continue
     items.push({
       name: t.token_secret,
       kind: 'secret',
@@ -170,10 +204,11 @@ export function planInitItems(input: { config: any; hosts: any[] }): InitItem[] 
       scope: 'One secret per client, so a leak can be revoked without locking everyone else out.',
       docsUrl: `${SITE}/reference/configuration/`,
     })
+    seen.add(t.token_secret)
   }
 
   const admin: string | undefined = config?.security?.ui?.admin_secret
-  if (admin) {
+  if (admin && !seen.has(admin)) {
     items.push({
       name: admin,
       kind: 'secret',
@@ -184,29 +219,44 @@ export function planInitItems(input: { config: any; hosts: any[] }): InitItem[] 
       docsUrl: `${SITE}/reference/configuration/`,
     })
   }
-
-  if ((hosts ?? []).some((h: any) => h?.kind === 'hyperstack')) {
-    items.push({
-      name: 'SAIP_HYPERSTACK_API_KEY',
-      kind: 'secret',
-      required: false,
-      purpose: 'Credentials for provisioning remote GPU hosts. Only needed to deploy to cloud, never to run locally.',
-      how: 'Sign in to the Hyperstack console → API Keys → Generate a New API Key. Shown once.',
-      scope: 'Skip it if you have no hyperstack host in use; `saip awake --host <name>` will refuse until it exists.',
-      providerUrl: HS_DOCS,
-      docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
-    })
-    items.push({
-      name: 'SAIP_HYPERSTACK_ENVIRONMENT',
-      kind: 'config',
-      required: false,
-      purpose: 'Optional deployment environment selector for the Hyperstack provider.',
-      how: 'Leave blank unless your account uses named environments.',
-      providerUrl: HS_DOCS,
-    })
-  }
-
   return items
+}
+
+/** Where a value currently comes from. Only some of these the CLI can clear. */
+export type ValueSource = 'shell' | '.env' | 'store'
+
+export async function valueSource(
+  name: string,
+  ctx: { env?: NodeJS.ProcessEnv; envPath: string; store: SecretStore },
+): Promise<ValueSource | undefined> {
+  const env = ctx.env ?? process.env
+  if ((env[name] ?? '') !== '') return 'shell'
+  if (readEnvValue(ctx.envPath, name)) return '.env'
+  try { if ((await ctx.store.get(name)) !== undefined) return 'store' } catch { /* unreadable store is reported by the caller */ }
+  return undefined
+}
+
+const sourceNote = (name: string, src: ValueSource): string[] => {
+  if (src !== 'shell') return [`   current : already set — source: (${src})`]
+  return [
+    `   current : already set — source: (shell)`,
+    `   note    : this comes from your shell environment, which the CLI cannot clear.`,
+    `             Remove it yourself:  unset ${name}   and delete the line from your shell profile,`,
+    `             otherwise it reappears next session and wins over anything stored here.`,
+  ]
+}
+
+/** The teaching block. Printed for EVERY item, set or unset — see #82. */
+function guidanceLines(item: InitItem): string[] {
+  const out = [
+    `── ${item.name} ${item.required ? '(required)' : '(optional)'}`,
+    `   what    : ${item.purpose}`,
+    `   how     : ${item.how}`,
+  ]
+  if (item.scope) out.push(`   scoping : ${item.scope}`)
+  out.push(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
+  if (item.docsUrl) out.push(`   docs    : ${item.docsUrl}`)
+  return out
 }
 
 export interface RunInitOptions {
@@ -218,6 +268,62 @@ export interface RunInitOptions {
   answers?: Record<string, string>
   interactive?: boolean
   force?: boolean
+  /** Environment consulted for the shell-vs-file-vs-store report. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv
+  /** Re-ask just this one name, clearing it first. */
+  reset?: string
+}
+
+/** Print the catalog with no prompts and no writes — the guidance as a help surface (#82). */
+export async function runHelp(opts: {
+  store: SecretStore
+  items: InitItem[]
+  envPath?: string
+  only?: string
+  io: Io
+  env?: NodeJS.ProcessEnv
+}): Promise<{ code: number; lines: string[] }> {
+  const envPath = opts.envPath ?? envFilePath()
+  const ctx = { env: opts.env, envPath, store: opts.store }
+  const lines: string[] = []
+  const emit = (l: string): void => { lines.push(l); opts.io.say(l) }
+  const wanted = opts.only ? opts.items.filter((i) => i.name === opts.only) : opts.items
+  if (opts.only && !wanted.length) {
+    emit(`[saip] no guidance entry for ${opts.only}. Known: ${opts.items.map((i) => i.name).join(', ')}`)
+    return { code: 1, lines }
+  }
+  for (const item of wanted) {
+    for (const l of guidanceLines(item)) emit(l)
+    const src = await valueSource(item.name, ctx)
+    emit(src ? `   state   : ${src === 'store' ? 'stored (encrypted)' : src === '.env' ? 'set in .env' : 'set in your shell'} — ${item.required ? 'required' : 'optional'}` : `   state   : not set — ${item.required ? 'REQUIRED, must be provided' : 'optional, safe to skip'}`)
+    emit('')
+  }
+  emit('[saip] set any of these with `saip config init` (guided) or `saip config set NAME`.')
+  return { code: 0, lines }
+}
+
+/** Remove a value from every surface the CLI controls, reporting what it touched (#82). */
+export async function forgetValue(opts: {
+  store: SecretStore
+  name: string
+  envPath?: string
+  env?: NodeJS.ProcessEnv
+}): Promise<{ cleared: string[]; stillFromShell: boolean; lines: string[] }> {
+  const envPath = opts.envPath ?? envFilePath()
+  const env = opts.env ?? process.env
+  const cleared: string[] = []
+  const lines: string[] = []
+  if (removeEnvValues(envPath, [opts.name]).length) cleared.push('.env')
+  try { if (await opts.store.unset(opts.name)) cleared.push('store') }
+  catch (e) { lines.push(`[saip] could not open the store to clear ${opts.name}: ${(e as Error).message}`) }
+  const stillFromShell = (env[opts.name] ?? '') !== ''
+  if (cleared.length) lines.push(`[saip] forgot ${opts.name} from: ${cleared.join(', ')}`)
+  else lines.push(`[saip] ${opts.name} was not set in the store or ${envPath}`)
+  if (stillFromShell) {
+    lines.push(`[saip] WARNING: ${opts.name} is ALSO set in your shell environment, which takes precedence —`)
+    lines.push(`[saip]          the CLI cannot clear it. Run: unset ${opts.name}  and remove it from your shell profile.`)
+  }
+  return { cleared, stillFromShell, lines }
 }
 
 export interface InitResult { code: number; lines: string[]; stored: string[]; skipped: string[] }
@@ -229,8 +335,9 @@ const clean = (v: string): string => v.replace(/\r?\n$/g, '').replace(/[\r\n]+/g
  * the real command path still exercises this same function — the split #73/#76 taught us to make.
  */
 export async function runInit(opts: RunInitOptions): Promise<InitResult> {
-  const { store, items, io, answers = {}, interactive = true, force = false } = opts
+  const { store, items, io, answers = {}, interactive = true, force = false, reset } = opts
   const envPath = opts.envPath ?? envFilePath()
+  const ctx = { env: opts.env, envPath, store }
   const lines: string[] = []
   const stored: string[] = []
   const skipped: string[] = []
@@ -245,29 +352,26 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
 
   try {
   for (const item of items) {
-    const alreadySecret = item.kind === 'secret' ? await store.get(item.name).catch(() => undefined) : undefined
-    const alreadyConfig = item.kind === 'config' ? readEnvValue(envPath, item.name) : undefined
-    const already = alreadySecret ?? alreadyConfig
+    const src = await valueSource(item.name, ctx)
+    if (reset && reset !== item.name) { if (src) stored.push(item.name); continue }
 
-    if (already && !force) {
-      emit(`\n${item.name} — already set (${already.length} chars). Enter keeps it, or type a new value.`)
-      const next = interactive ? clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' })) : ''
+    // Guidance first, ALWAYS — including for values already set. Hiding it once something exists
+    // conceals it from precisely the user whose existing value is wrong, which is the case where
+    // the explanation is worth the most.
+    for (const l of interactive ? guidanceLines(item) : (item.required && !answers[item.name] ? [`   missing   : ${item.name} — ${item.purpose}`] : [])) emit(l)
+    if (src) for (const l of sourceNote(item.name, src)) emit(l)
+
+    if (reset === item.name) {
+      // The user asked to redo this one; clear it first so "already set" cannot shadow the answer.
+      await forgetValue({ store, name: item.name, envPath, env: opts.env })
+      emit(`   → forgetting ${item.name} so it can be set again`)
+    } else if (src && !force) {
+      if (!interactive) { stored.push(item.name); continue }
+      emit(`   → Enter keeps it; type a new value to replace it; or: saip config forget ${item.name}`)
+      const next = clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' }))
       if (!next) { stored.push(item.name); continue }
       await writeOne(item, next)
       continue
-    }
-
-    if (interactive) {
-      emit(`\n── ${item.name} ${item.required ? '(required)' : '(optional)'}`)
-      emit(`   what    : ${item.purpose}`)
-      emit(`   how     : ${item.how}`)
-      if (item.scope) emit(`   scoping : ${item.scope}`)
-      emit(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
-      if (item.docsUrl) emit(`   docs    : ${item.docsUrl}`)
-    } else if (item.required && !answers[item.name]) {
-      // Compact for CI and agents: one line per outstanding value, with the teaching text only
-      // where a human will read it.
-      emit(`   missing   : ${item.name} — ${item.purpose}`)
     }
 
     // Scripted answers win when provided (CI, --non-interactive, embedding callers); otherwise the

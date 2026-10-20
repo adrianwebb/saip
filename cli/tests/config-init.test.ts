@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { envFilePath, setEnvFileValues, loadEnvFile } from '@saip/shared'
-import { planInitItems, runInit, newLineAccumulator, WizardCancelled, type Io } from '../src/commands/config-init.js'
+import { planInitItems, runInit, runHelp, forgetValue, newLineAccumulator, WizardCancelled, type Io } from '../src/commands/config-init.js'
 import { promptTTY } from '../src/commands/config.js'
 import { SecretStore, MemoryKeySource } from '@saip/shared'
 
@@ -52,17 +52,21 @@ describe('planInitItems: questions are DERIVED, not hardcoded', () => {
     expect(names).toContain('SAIP_UI_ADMIN')
   })
 
-  it('omits declared-token questions when the config declares none, and omits hyperstack for local hosts', () => {
+  it('omits per-token questions the config does not declare, while always listing the integration keys', () => {
     const cfg = { storage: baseConfig.storage, security: { api_tokens: [], ui: {} } }
     const names = planInitItems({ config: cfg, hosts }).map((i) => i.name)
     expect(names).not.toContain('SAIP_TOKEN_ALICE')
     expect(names).not.toContain('SAIP_UI_ADMIN')
-    expect(names).not.toContain('SAIP_HYPERSTACK_API_KEY')
+    // #82 reversed the old rule for these: gating Hyperstack/HF on discovery meant a new user
+    // never saw the credentials the next integrations need, and hosts.yaml is not committed.
+    expect(names).toContain('SAIP_HYPERSTACK_API_KEY')
   })
 
-  it('asks for the Hyperstack key only when a hyperstack host exists', () => {
-    const withCloud = planInitItems({ config: baseConfig, hosts: [{ name: 'hs', kind: 'hyperstack' }] })
-    expect(withCloud.map((i) => i.name)).toContain('SAIP_HYPERSTACK_API_KEY')
+  it('still lists the Hyperstack key for local-only hosts, marked optional', () => {
+    const items = planInitItems({ config: baseConfig, hosts })
+    const hs = items.find((i) => i.name === 'SAIP_HYPERSTACK_API_KEY')!
+    expect(hs.required).toBe(false)
+    expect(hs.purpose).toMatch(/remote GPU/i)
   })
 
   it('never reuses one name twice, which would silently overwrite an earlier answer', () => {
@@ -388,5 +392,121 @@ describe('the real terminal reader, driven without a TTY (#78 follow-up)', () =>
     expect(r.code).toBe(130)
     expect(r.lines.join(' ')).toMatch(/stopped by Ctrl\+C/)
     expect(r.stored).toEqual(['SAIP_R2_BUCKET'])
+  })
+})
+
+describe('guidance prints regardless of state (#82, maintainer-reported)', () => {
+  it('shows purpose, scoping and provider links for an ALREADY-SET value', async () => {
+    const { d, store } = mkStore()
+    const env = join(d, '.env')
+    const seeded = { SAIP_R2_BUCKET: 'stale-value', SAIP_R2_ENDPOINT: 'https://stale', SAIP_R2_ACCESS_KEY_ID: 'stalekey', SAIP_R2_SECRET_ACCESS_KEY: 'stalesecret' }
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io: fakeIo(seeded).io, envPath: env })
+
+    const order: string[] = []
+    const io: Io = { say: (l) => order.push(l), ask: async (q) => { order.push(q); return '' } }
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io, envPath: env })
+    const said = order.join('\n')
+    // This is the branch every earlier test skipped: values already set must still be explained.
+    expect(said).toMatch(/already set/)
+    expect(said).toMatch(/Object storage for adapters/)
+    expect(said).toMatch(/Object Read & Write/)
+    expect(said).toMatch(/dash\.cloudflare\.com/)
+    // And the explanation must precede the prompt for that same item.
+    expect(order.findIndex((l) => l.includes('Object storage for adapters')))
+      .toBeLessThan(order.findIndex((l) => l.startsWith('SAIP_R2_BUCKET: ')))
+  })
+
+  it('names the SOURCE of an existing value, because only some sources can be cleared', async () => {
+    const { d, store } = mkStore()
+    const env = join(d, '.env')
+    await runInit({ store, items: planInitItems({ config: baseConfig, hosts }), io: fakeIo({ SAIP_R2_BUCKET: 'b' }).io, envPath: env })
+    const said: string[] = []
+    await runInit({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: env,
+      io: { say: (l) => said.push(l), ask: async () => '' },
+      env: { SAIP_R2_ENDPOINT: 'from-shell' },
+    })
+    const text = said.join('\n')
+    expect(text).toMatch(/SAIP_R2_BUCKET.*source: \.env|source: \.env.*SAIP_R2_BUCKET|from \.\.env|\(\.env\)/s)
+    // A shell value is un-clearable by the CLI and must say so, not just display it.
+    expect(text).toMatch(/shell/); expect(text).toMatch(/cannot be cleared|clear it yourself|unset SAIP_/)
+  })
+})
+
+describe('catalog always lists HF and Hyperstack (#82)', () => {
+  it('lists them even with no token_env, no hyperstack host, and no hosts file at all', () => {
+    const names = planInitItems({ config: { storage: {}, security: {} }, hosts: [] }).map((i) => i.name)
+    for (const n of ['SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_HYPERSTACK_ENVIRONMENT', 'SAIP_SSH_PRIVATE_KEY']) {
+      expect(names).toContain(n)
+    }
+  })
+
+  it('marks them optional but still teaches scope and where to get them', () => {
+    const items = planInitItems({ config: {}, hosts: [] })
+    const hs = items.find((i) => i.name === 'SAIP_HYPERSTACK_API_KEY')!
+    expect(hs.required).toBe(false)
+    expect(hs.purpose.length).toBeGreaterThan(20)
+    expect(hs.how).toMatch(/API Key/i)
+    expect(hs.providerUrl || hs.docsUrl).toBeTruthy()
+  })
+
+  it('states the SSH provider defect instead of implying the key will work', () => {
+    const ssh = planInitItems({ config: {}, hosts: [] }).find((i) => i.name === 'SAIP_SSH_PRIVATE_KEY')!
+    expect(ssh.scope).toMatch(/does not yet|not yet work|\/run\/secrets/)
+  })
+
+  it('does not duplicate a name when the config already references it', () => {
+    const names = planInitItems({ config: baseConfig, hosts: [{ name: 'hs', kind: 'hyperstack' }] }).map((i) => i.name)
+    expect(new Set(names).size).toBe(names.length)
+  })
+})
+
+describe('saip config help and forget (#82)', () => {
+  it('help prints the catalog without prompting or writing anything', async () => {
+    const { d, store } = mkStore()
+    const env = join(d, '.env')
+    let asked = 0
+    const r = await runHelp({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: env,
+      io: { say: () => {}, ask: async () => { asked++; return '' } },
+    })
+    expect(asked).toBe(0)
+    expect(r.code).toBe(0)
+    expect(existsSync(env)).toBe(false)
+    expect(store.exists()).toBe(false)
+    expect(r.lines.join('\n')).toMatch(/Object Read & Write/)
+  })
+
+  it('help for one name prints just that entry', async () => {
+    const { d, store } = mkStore()
+    const r = await runHelp({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: join(d, '.env'),
+      only: 'SAIP_R2_ACCESS_KEY_ID', io: { say: () => {}, ask: async () => '' },
+    })
+    expect(r.lines.join('\n')).toMatch(/Access Key ID half/)
+    expect(r.lines.join('\n')).not.toMatch(/Object storage for adapters/)
+  })
+
+  it('forget clears the store AND .env, reporting each source', async () => {
+    const { d, store } = mkStore()
+    const env = join(d, '.env')
+    writeFileSync(env, '# notes\nSAIP_R2_BUCKET=to-remove\nOTHER=keep\n')
+    await store.set('SAIP_HF_TOKEN', 'hf-to-remove')
+    const r = await forgetValue({ store, name: 'SAIP_R2_BUCKET', envPath: env, env: {} })
+    expect(r.cleared).toContain('.env')
+    expect(readFileSync(env, 'utf8')).toContain('OTHER=keep')
+    expect(readFileSync(env, 'utf8')).toContain('# notes')
+    expect(readFileSync(env, 'utf8')).not.toMatch(/^SAIP_R2_BUCKET=/m)
+
+    const r2 = await forgetValue({ store, name: 'SAIP_HF_TOKEN', envPath: env, env: {} })
+    expect(r2.cleared).toContain('store')
+    expect(await store.get('SAIP_HF_TOKEN')).toBeUndefined()
+  })
+
+  it('forget tells you when a shell value is what remains', async () => {
+    const { d, store } = mkStore()
+    const r = await forgetValue({ store, name: 'SAIP_R2_BUCKET', envPath: join(d, '.env'), env: { SAIP_R2_BUCKET: 'live-shell-value' } })
+    expect(r.stillFromShell).toBe(true)
+    expect(r.lines.join(' ')).toMatch(/shell/)
   })
 })
