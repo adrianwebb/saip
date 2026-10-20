@@ -14,6 +14,7 @@ import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
 import { SAIP_VERSION } from './version.js'
 import { DisplayService } from './lib/display.js'
+import { UiService } from './lib/ui.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
 import awakePlugin from './commands/awake.js'
@@ -37,6 +38,9 @@ export async function buildProgram(): Promise<Command> {
   await ctx.plugin(CommandRegistryService)
   // Cards for humans, plain lines for pipes — the choice is made once, here (#88).
   await ctx.plugin(DisplayService, {})
+  // The #106 seam. Registered alongside DisplayService rather than replacing it: screens move to
+  // `ui` one at a time, and the old path stays live until the last one has gone.
+  await ctx.plugin(UiService, {})
 
   // Load every command plugin so they self-register.
   for (const plugin of COMMAND_PLUGINS) {
