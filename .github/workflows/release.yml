@@ -1,0 +1,153 @@
+name: Release
+
+# Publishes the per-platform binaries the install docs promise (#111). Releases before this workflow
+# existed were created by hand and carry no assets, so `releases/latest/download/saip-linux-x64`
+# 404s until the first tag cut after it lands — which the docs now say outright.
+
+on:
+  push:
+    tags: ['*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. 0.6.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the tag is releasable
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      # On a manual dispatch the default branch is what you get otherwise, and then the version check
+      # below compares the tag against the wrong manifest — so name the ref explicitly for both paths.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: pnpm/action-setup@v4
+        with: { version: latest }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: pnpm }
+      - name: Resolve the tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME:-$INPUT_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+      - name: Tag must equal the CLI version the binary will report
+        # A binary embeds its version (#108), so a mismatched tag is a release that lies about what
+        # it contains — the operator's only provenance once the source is gone.
+        run: |
+          set -euo pipefail
+          V=$(node -p "JSON.parse(require('node:fs').readFileSync('./cli/package.json','utf8')).version")
+          test "${{ steps.v.outputs.version }}" = "$V" \
+            || { echo "::error::tag '${{ steps.v.outputs.version }}' != cli/package.json version '$V'"; exit 1; }
+      - name: Install and test
+        run: |
+          pnpm install --frozen-lockfile || pnpm install
+          pnpm -r build
+          pnpm -r test
+
+  # Every platform is COMPILED AND EXECUTED on a native runner before anything is uploaded. A
+  # cross-compiled artifact that was never run is a file, not a release.
+  artifact:
+    name: ${{ matrix.name }}
+    needs: verify
+    permissions: { contents: read }
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64,    runs-on: ubuntu-latest,     target: bun-linux-x64,    bin: saip-linux-x64 }
+          - { name: linux-arm64,  runs-on: ubuntu-24.04-arm,  target: bun-linux-arm64,  bin: saip-linux-arm64 }
+          - { name: darwin-x64,   runs-on: macos-15-intel,    target: bun-darwin-x64,   bin: saip-darwin-x64 }
+          - { name: darwin-arm64, runs-on: macos-15,          target: bun-darwin-arm64, bin: saip-darwin-arm64 }
+          - { name: windows-x64,  runs-on: windows-latest,    target: bun-windows-x64,  bin: saip-windows-x64.exe }
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: pnpm/action-setup@v4
+        with: { version: latest }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: pnpm }
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install
+      - name: Build the workspace
+        run: pnpm --filter @saip/shared build
+      - name: Compile ${{ matrix.target }}
+        run: node ./cli/scripts/build-binaries.mjs --target=${{ matrix.target }}
+      - name: Execute the artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL=$(./cli/dist/binaries/${{ matrix.bin }} --version)
+          test "$ACTUAL" = "${{ needs.verify.outputs.version }}" \
+            || { echo "::error::${{ matrix.name }} reports $ACTUAL, release is ${{ needs.verify.outputs.version }}"; exit 1; }
+          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  config"
+          # Piped output must carry no box characters and no ANSI: this is what log collectors get.
+          if ./cli/dist/binaries/${{ matrix.bin }} --help | grep -q $'\xe2\x94\x80'; then
+            echo "::error::${{ matrix.name }} emitted box-drawing characters into a pipe"; exit 1
+          fi
+          echo "${{ matrix.name }} executes as $ACTUAL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: cli/dist/binaries/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish release assets
+    needs: [verify, artifact]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download every platform artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+          merge-multiple: true
+      - name: Refuse a partial release
+        # A missing platform must fail the release rather than publish a set where one download 404s
+        # and the user cannot tell "not built" from "not needed".
+        run: |
+          set -euo pipefail
+          for f in saip-linux-x64 saip-linux-arm64 saip-darwin-x64 saip-darwin-arm64 saip-windows-x64.exe; do
+            test -s "dist-assets/$f" || { echo "::error::missing artifact $f"; exit 1; }
+          done
+      - name: One checksum file for the whole release
+        run: |
+          set -euo pipefail
+          cd dist-assets
+          rm -f SHA256SUMS
+          sha256sum saip-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create or update the release, then attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          BODY="Binaries for ${VERSION}. Verify before running:
+          
+          \`\`\`bash
+          sha256sum -c SHA256SUMS --ignore-missing
+          \`\`\`
+          
+          \`saip --version\` must print ${VERSION}. Platforms: linux-x64/-arm64, darwin-x64/-arm64, windows-x64.exe."
+          # Upload onto a hand-written release when one exists (the maintainer's name and notes are
+          # not overwritten); otherwise create one so the tag is never left asset-less.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist-assets/* --clobber
+            echo "assets attached to existing release $VERSION"
+          else
+            gh release create "$VERSION" dist-assets/* --title "$VERSION" --notes "$BODY"
+            echo "release $VERSION created with assets"
+          fi

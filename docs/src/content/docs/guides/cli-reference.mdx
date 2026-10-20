@@ -35,7 +35,12 @@ until then, install from a checkout.
 
 ### Installing a released binary
 
-Releases ship one self-contained executable per platform — **no Node.js, no pnpm, no source
+> **Which releases carry binaries.** Per-platform executables are attached automatically to
+> releases tagged **after** this workflow landed (`#111`). Releases before that were created by hand
+> and have no assets — `0.5.0` included — so `releases/latest/download/…` can 404 until the next
+> tag. If it does, use the from-source path below rather than assuming the download is broken.
+
+Each release publishes one self-contained executable per platform — **no Node.js, no pnpm, no source
 checkout** on the server:
 
 | Artifact | Platform |
@@ -47,13 +52,18 @@ checkout** on the server:
 | `saip-windows-x64.exe` | Windows |
 
 ```bash
-curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
-curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/SHA256SUMS
+BASE=https://github.com/adrianwebb/saip/releases/latest/download
+curl -fLO $BASE/saip-linux-x64
+curl -fLO $BASE/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing          # verify before running anything
 chmod +x saip-linux-x64
 mv saip-linux-x64 ~/.local/bin/saip
-saip --version
+saip --version                                    # must print the release's version
 ```
+
+A release that publishes no assets is a failed release, not an empty one: CI runs each platform's
+binary and refuses to publish if any artifact or its `--version` check is missing, so a partially
+uploaded release cannot be produced silently.
 
 macOS blocks an unsigned download on first run: `xattr -d com.apple.quarantine ./saip-darwin-arm64`
 **after** checking the checksum, or approve it in System Settings. The binary reports the version it
