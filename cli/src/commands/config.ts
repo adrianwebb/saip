@@ -19,8 +19,9 @@ import { statSync, openSync } from 'node:fs'
 import { ReadStream } from 'node:tty'
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, type SecretToolRunner, type WrapId } from '@saip/shared'
+import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { planInitItems, runInit, type Io } from './config-init.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -166,7 +167,7 @@ export async function runConfig(
   const [action, name] = positional
   const env = deps.env ?? process.env
   const fail = (msg: string): RunResult => ({ code: 1, lines: [`[saip] ${msg}`] })
-  if (!action) return fail('usage: saip config <list|get|set|unset|doctor> [name]')
+  if (!action) return fail('usage: saip config <init|list|get|set|unset|key|doctor> [name]')
 
   switch (action) {
     case 'list': {
@@ -309,20 +310,79 @@ export async function runConfig(
       return fail(`unknown key subcommand "${sub}" (expected list|add|remove)`)
     }
 
+    case 'init': {
+      const lines: string[] = []
+      // The onboarding path. Questions come from the user's own saip.yaml/hosts.yaml so a config
+      // that declares no API tokens is never asked for token secrets — a hardcoded checklist is
+      // how docs and reality drift, which is the disease this issue set has been treating.
+      const cfgFile = resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' })
+      let cfg: any = {}
+      let hosts: any[] = []
+      try { if (cfgFile.path) cfg = loadYamlConfig(cfgFile.path) } catch (e) { return fail(`cannot read ${cfgFile.path}: ${(e as Error).message}`) }
+      const hostsFile = resolveConfigFile('hosts.yaml', { envVar: 'SAIP_HOSTS_FILE' })
+      try { if (hostsFile.path) hosts = (loadYamlConfig<{ hosts?: any[] }>(hostsFile.path).hosts ?? []) } catch { /* absent is fine */ }
+
+      // Saying so beats guessing quietly: with no saip.yaml found the plan is built from an
+      // empty config, so the user would be asked about R2 only and never about their declared
+      // API tokens — and would have no way to know the project file was not read at all.
+      if (!cfgFile.path) {
+        lines.push('[saip] WARNING: no saip.yaml found from this directory upward. The questions below')
+        lines.push('[saip]          come only from the built-in defaults; run this from your project,')
+        lines.push('[saip]          or set SAIP_CONFIG=/path/to/saip.yaml.')
+      }
+
+      const items = planInitItems({ config: cfg, hosts })
+      const nonInteractive = Boolean(options.nonInteractive)
+      const io: Io = {
+        say: (line) => lines.push(line),
+        ask: async (question, askOpts) => {
+          if (nonInteractive) throw new NoTerminalError('not interactive')
+          return askOpts.secret ? promptTTY(question) : (await promptTTY(question))
+        },
+      }
+      let envPath: string | undefined
+      try { envPath = envFilePath(process.env) } catch { envPath = undefined }
+      try {
+        const r = await runInit({
+          store, items, io,
+          envPath,
+          interactive: !nonInteractive,
+          answers: nonInteractive ? {} : undefined,
+          force: Boolean(options.force),
+        })
+        lines.push(...r.lines)
+        return { code: r.code, lines }
+      } catch (e) {
+        if (e instanceof NoTerminalError) {
+          lines.push('[saip] no controlling terminal: `saip config init` needs one to hide your typing.')
+          lines.push('[saip] set values non-interactively instead, e.g.:')
+          for (const i of items.filter((x) => x.required)) {
+            lines.push(i.kind === 'secret'
+              ? `  printf %s "$${i.name}" | saip config set ${i.name} --stdin`
+              : `  echo '${i.name}=...' >> ${envPath ?? '.env'}`)
+          }
+          return { code: 1, lines }
+        }
+        return fail((e as Error).message)
+      }
+    }
+
     default:
-      return fail(`unknown subcommand "${action}" (expected list|get|set|unset|key|doctor)`)
+      return fail(`unknown subcommand "${action}" (expected init|list|get|set|unset|key|doctor)`)
   }
 }
 
 const spec: CommandSpec = {
   name: 'config',
-  description: 'Manage the encrypted local secret store (list|get|set|unset|key|doctor)',
+  description: 'Manage the encrypted local secret store (init|list|get|set|unset|key|doctor)',
   positional: '<action> [name] [arg]',
   positionalDescription: 'subcommand, secret name, and wrap id for `key add|remove`',
   options: [
     { flag: '--value <v>', description: 'Value for `set` (prefer --stdin or the prompt; arguments are visible in ps)' },
     { flag: '--stdin', description: 'Read the value from standard input' },
     { flag: '--reveal', description: 'Print the actual value for `get` (off by default)' },
+    { flag: '--force', description: 'With `init`, re-ask values that are already set' },
+    { flag: '--non-interactive', description: 'With `init`, report what is missing without prompting or writing anything' },
   ],
   action: async () => { /* replaced at registration */ },
 }
