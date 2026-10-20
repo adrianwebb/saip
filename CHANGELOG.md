@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- ci: smoke gate that launches the **built CLI through PATH** and asserts output plus exit codes, failing on the silent-success signature (exit 0, no output) that hid #70. Proven against its own target: reintroducing the entry-guard bug makes it fail; `node cli/dist/index.js` does not, which is why the step uses a symlink (#76)
 - shared,cli: secret store v2 with **wrapped keys** — a random KEK encrypts the store and is held separately under each unlock method, so adding or removing a method never re-encrypts secrets and rotating a passphrase re-wraps only the KEK. There is no password hash: the GCM tag on the wrapped KEK is the check. `saip config key list\|add\|remove` exposes the methods, `doctor` reports which wrap unlocked and warns while an opt-in `unattended` wrap exists, and creation now prompts and confirms over the controlling terminal (#73)
 - cli: `saip` is now installable and runs however it is launched. The entry guard compared `import.meta.url` against the raw `process.argv[1]`, which is false for a symlinked launcher — the CLI loaded, ran nothing, and exited 0 in silence; it now resolves realpath. Config discovery walks up from the current directory for `saip.yaml` and `hosts.yaml`, honours `SAIP_CONFIG` / `SAIP_HOSTS_FILE` (a bad explicit path is an error naming it, never a silent fallback), and commands print the file they loaded so a global install cannot quietly read another project. The build sets the bin executable bit, `pnpm --filter @saip/cli install:local` links the CLI onto PATH, and `engines.node` is declared (#70)
 - cli: `saip config list|get|set|unset|doctor` for the encrypted store — values masked by default, `--reveal` to print one, and piped stdin read automatically so a secret never has to be a process argument (#67)
@@ -39,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Issue templates and GitHub labels (#1)
 - Agent loop guard and HTTPS remote protocol in workflow (#1)
 - Changelog convention and monorepo guidance (#1)
+
+- security: `defaultSecretsProvider(env)` passed `env` to the environment link only, while the store fell back to `process.env` — so an embedder supplying its own environment got a provider that could not unlock the store it was pointed at, and the library default silently reproduced #73's unreachable-prompt bug (#76)
+- inference: the adapter alias index was snapshotted once at boot, so a newly promoted adapter stayed invisible until restart, contradicting `architecture.mdx`'s "the next request uses it without any client-side change". The initial read is now awaited and a miss triggers a refresh (#76)
 
 ### Fixed
 - XML context pack now strict well-formed (parsableStyle) — raw doc content no longer breaks XML parsers (#16)

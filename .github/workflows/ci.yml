@@ -57,3 +57,43 @@ jobs:
 
       - name: Test cli
         run: pnpm --filter @saip/cli test
+      # Acceptance smoke gate. The rungs above build and unit-test the parts, which is exactly
+      # what stayed green while `saip` could not be executed at all (#70) and while a documented
+      # ${VAR} interpolation was implemented nowhere. This runs the assembled artifact and fails
+      # on the silent-success signature: exit 0 with empty output.
+      - name: Smoke test the built CLI
+        run: |
+          set -euo pipefail
+          # Launch through PATH, the way a user does. `node cli/dist/index.js` was tried first
+          # and is worthless here: it resolves argv[1] to the real file, so it passes even with
+          # the #70 entry-guard bug reintroduced (verified). The symlink is what gives this gate
+          # its teeth.
+          BIN=$(mktemp -d)
+          chmod +x cli/dist/index.js
+          ln -s "$PWD/cli/dist/index.js" "$BIN/saip"
+          export PATH="$BIN:$PATH"
+          command -v saip >/dev/null || { echo "::error::saip not launchable from PATH"; exit 1; }
+
+          OUT=$(saip --version)
+          test -n "$OUT" || { echo "::error::saip --version produced no output (silent no-op: the #70 symptom)"; exit 1; }
+          echo "version: $OUT"
+
+          saip --help | grep -q "profiles" || { echo "::error::profiles command not wired into the CLI"; exit 1; }
+          saip --help | grep -q "config"   || { echo "::error::config command not wired into the CLI"; exit 1; }
+
+          # On a GPU-less runner profiles must FAIL CLOSED with a named reason and exit 2, never
+          # invent a tier and never hang.
+          set +e
+          PROFILES_OUT=$(saip profiles --json 2>&1)
+          CODE=$?
+          set -e
+          echo "profiles exit=$CODE"
+          test -n "$PROFILES_OUT" || { echo "::error::saip profiles produced no output"; exit 1; }
+          if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+            echo "::error::saip profiles exited $CODE (expected 0 with a GPU, 2 when none is present)"; exit 1
+          fi
+
+          # config doctor must always describe its state, including having no store.
+          saip config doctor | grep -qi "secret store" \
+            || { echo "::error::saip config doctor did not report store state"; exit 1; }
+          echo "smoke: assembled CLI executes and reports"

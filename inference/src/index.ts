@@ -45,14 +45,30 @@ async function makeLatestVersion(
 ): Promise<(name: string) => number | undefined> {
   if (override) return override
   let aliases: Record<string, string> = {}
-  try {
-    const raw = await storage.get('adapters/_index.json')
-    if (raw) aliases = (JSON.parse(raw).aliases ?? {})
-  } catch {
-    /* no index yet */
+  let loaded = false
+  const load = async (): Promise<void> => {
+    try {
+      const raw = await storage.get('adapters/_index.json')
+      if (raw) aliases = (JSON.parse(raw).aliases ?? {})
+    } catch {
+      /* no index yet */
+    }
+    loaded = true
   }
+  // Resolution is synchronous for callers, so the index is refreshed lazily: read once up
+  // front, and re-read once when a name misses. A boot-time-only snapshot meant a newly
+  // promoted adapter was invisible until restart, contradicting the documented promise that
+  // "when a new adapter version is trained and promoted, the alias updates atomically ... and
+  // the next request uses it without any client-side change".
+  await load()
   return (name: string) => {
-    const concrete = aliases[`${name}@latest`]
+    const lookup = () => aliases[`${name}@latest`]
+    let concrete = lookup()
+    if (!concrete && loaded) {
+      // Fire a refresh and, since we cannot await here, resolve from the next request onward.
+      void load()
+      return undefined
+    }
     if (!concrete) return undefined
     const m = concrete.match(/@(\d+)$/)
     return m ? Number.parseInt(m[1], 10) : undefined
