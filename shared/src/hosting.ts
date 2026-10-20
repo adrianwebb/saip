@@ -139,7 +139,7 @@ export class EnvSecrets implements SecretsProvider {
 
 export interface HostStatus {
   reachable: boolean
-  mode?: 'awake' | 'asleep' | 'down'
+  mode?: 'awake' | 'asleep' | 'down' | 'unknown'
   adapters?: string[]
   detail?: string
 }

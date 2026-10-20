@@ -31,7 +31,7 @@ describe('SecretCatalog shape', () => {
     const plain = SECRET_CATALOG.filter((e) => !e.sensitive).map((e) => e.name).sort()
     expect(sensitive).toEqual([
       'SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_R2_ACCESS_KEY_ID',
-      'SAIP_R2_SECRET_ACCESS_KEY', 'SAIP_SSH_PRIVATE_KEY',
+      'SAIP_R2_SECRET_ACCESS_KEY',
     ])
     expect(plain).toEqual(['SAIP_HYPERSTACK_ENVIRONMENT', 'SAIP_R2_BUCKET', 'SAIP_R2_ENDPOINT'])
   })
@@ -46,12 +46,16 @@ describe('SecretCatalog shape', () => {
     }
   })
 
-  it('states the SSH key is not yet enforced where it is declared, not in prose elsewhere', () => {
-    const ssh = findSecret('SAIP_SSH_PRIVATE_KEY')!
-    expect(ssh.scope).toMatch(/not yet|does not yet|no route/i)
-    // SAIP_UI_ADMIN used to be asserted here as catalogued-with-a-caveat. It is now retired
-    // entirely (#90); the surviving caveat case is the SSH key above.
+  it('retires both hand-managed credentials, with the reason recorded where it is declared', () => {
+    // #89 replaced SAIP_SSH_PRIVATE_KEY with SAIP-managed keypairs; #90 removed SAIP_UI_ADMIN.
+    // Both retirements live in the catalog's retirement registry, so any surface can explain them
+    // rather than leaving prose to drift from behaviour.
+    expect(findSecret('SAIP_SSH_PRIVATE_KEY')).toBeUndefined()
     expect(findSecret('SAIP_UI_ADMIN')).toBeUndefined()
+    const ssh = RETIRED_SECRETS.find((r) => r.name === 'SAIP_SSH_PRIVATE_KEY')!
+    expect(ssh.reason).toMatch(/\/run\/secrets|#83/)
+    expect(ssh.since).toBe('#89')
+    expect(catalogFor({ config: {}, hosts: [] }).map((e) => e.name)).not.toContain('SAIP_SSH_PRIVATE_KEY')
   })
 
   it('lists required-ness so the wizard knows what it may skip', () => {
