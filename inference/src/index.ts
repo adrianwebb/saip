@@ -93,6 +93,12 @@ function backendFromEnv(): VllmBackend | undefined {
 
 export async function createApp(opts: CreateAppOptions = {}) {
   const loaded = opts.config ?? loadConfig(opts.configPath)
+  // Retired keys are announced where the config is read. Computing a deprecation and printing it
+  // nowhere is the described-vs-wired defect again — the value would keep looking configured while
+  // doing nothing, which is exactly the #90 problem restated one layer down.
+  for (const warning of loaded.deprecations ?? []) {
+    process.stderr.write(`[saip] WARNING: ${warning}\n`)
+  }
   // Defensive: a hand-built config may omit newer optional sections.
   const config: SaipRuntimeConfig = { ...loaded, security: loaded.security ?? { dev_mode: false, api_tokens: [] } }
   const storage = opts.storage ?? new MemoryStorage()

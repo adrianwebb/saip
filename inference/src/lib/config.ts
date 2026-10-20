@@ -20,7 +20,11 @@ export interface Message {
 export interface SecurityConfig {
   dev_mode: boolean
   api_tokens: ApiTokenConfig[]
-  ui?: { admin_secret?: string }
+  /**
+   * `ui.admin_secret` is deliberately absent (#90). The type previously accepted it, which is how
+   * a field that guards nothing kept looking configured: the value was read, typed, and never
+   * checked by anything. Retired keys are reported through `deprecations` instead.
+   */
 }
 
 export interface ModelConfig {
@@ -34,6 +38,12 @@ export interface ModelConfig {
 }
 
 export interface SaipRuntimeConfig {
+  /**
+   * Retired config keys found in this file, each with what to do instead. Old files load — a
+   * removed field must not break a working deployment — but silently ignoring a security-shaped
+   * key leaves the owner believing it does something (#90).
+   */
+  deprecations?: string[]
   model: ModelConfig
   /** Active service profile name; undefined means auto-resolve from the probed GPU. */
   profile?: string
@@ -87,7 +97,21 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
   const inf = raw.inference ?? {}
   const kto = raw.training?.methods?.weighted_kto
   const m = raw.model ?? {}
+  // Retired keys are reported, never silently dropped: the file still loads, but the owner is
+  // told a security-shaped setting they set does nothing. Silence here is what made #90 a
+  // liability for two releases.
+  const deprecations: string[] = []
+  const legacyAdmin = raw.security?.ui?.admin_secret
+  if (legacyAdmin) {
+    deprecations.push(
+      `security.ui.admin_secret ("${legacyAdmin}") is retired (#90): no UI route enforces it and ` +
+      `PasswordSessionAuth is never constructed, so this value protects nothing. Remove the key. ` +
+      `If you stored the value, clear it with: saip config forget ${legacyAdmin}`,
+    )
+  }
+
   return {
+    deprecations,
     model: {
       base: m.base ?? '',
       quantization: m.quantization,
@@ -121,7 +145,7 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
       api_tokens: Array.isArray(raw.security?.api_tokens)
         ? raw.security.api_tokens.map((t: any) => ({ caller: String(t.caller), token_secret: String(t.token_secret ?? t.secret ?? '') }))
         : [],
-      ui: raw.security?.ui ? { admin_secret: raw.security.ui.admin_secret } : undefined,
+
     },
   }
 }

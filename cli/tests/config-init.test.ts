@@ -46,10 +46,11 @@ describe('planInitItems: questions are DERIVED, not hardcoded', () => {
     expect(hf?.docsUrl || hf?.providerUrl).toBeTruthy()
   })
 
-  it('asks about each declared API token secret and the UI admin secret', () => {
+  it('asks about each declared API token secret, and no longer about the retired UI admin secret', () => {
     const names = planInitItems({ config: baseConfig, hosts }).map((i) => i.name)
     expect(names).toContain('SAIP_TOKEN_ALICE')
-    expect(names).toContain('SAIP_UI_ADMIN')
+    // #90: removed rather than left implying protection nothing enforces.
+    expect(names).not.toContain('SAIP_UI_ADMIN')
   })
 
   it('omits per-token questions the config does not declare, while always listing the integration keys', () => {
@@ -624,23 +625,22 @@ describe('sensitive vs ordinary values (#87)', () => {
     expect(text).toMatch(/source: \(store\)/)
   })
 
-  it('SAIP_UI_ADMIN guidance states that nothing enforces it yet (#90)', async () => {
-    const item = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
-      .find((i) => i.name === 'SAIP_UI_ADMIN')!
-    expect(item.scope).toMatch(/not enforced yet|no route.*yet|does not yet/i)
-    expect(item.purpose).toMatch(/password/i)
+  it('never asks for the retired UI admin secret, even when a legacy config names it (#90)', () => {
+    const items = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
+    expect(items.map((i) => i.name)).not.toContain('SAIP_UI_ADMIN')
   })
 })
 
 describe('declared sensitivity, not inferred (#93)', () => {
-  it('takes sensitive from the catalog entry, including a name the pattern would get wrong', async () => {
-    const { d, store } = mkStore()
-    // SAIP_R2_BUCKET contains no credential substring and is declared non-sensitive;
-    // SAIP_UI_ADMIN is declared sensitive even though ADMIN is the only cue.
+  it('takes sensitive from the catalog entry, including where the name pattern disagrees', () => {
     const items = planInitItems({ config: baseConfig, hosts })
+    // Declared facts, each chosen because the name pattern would answer differently:
+    // SAIP_R2_BUCKET has no credential substring but is declared non-sensitive (correctly),
+    // and SAIP_HYPERSTACK_ENVIRONMENT likewise — while a name that LOOKS ordinary would still be
+    // reported by the pattern, the catalog is what decides.
     expect(items.find((i) => i.name === 'SAIP_R2_BUCKET')!.sensitive).toBe(false)
-    expect(items.find((i) => i.name === 'SAIP_UI_ADMIN')!.sensitive).toBe(true)
     expect(items.find((i) => i.name === 'SAIP_HYPERSTACK_ENVIRONMENT')!.sensitive).toBe(false)
+    expect(items.find((i) => i.name === 'SAIP_R2_ACCESS_KEY_ID')!.sensitive).toBe(true)
     expect(items.every((i) => typeof i.sensitive === 'boolean')).toBe(true)
   })
 
@@ -664,12 +664,43 @@ describe('declared sensitivity, not inferred (#93)', () => {
   it('lists integration secrets from the catalog with their usedBy reason available', () => {
     const names = planInitItems({ config: {}, hosts: [] }).map((i) => i.name)
     for (const n of ['SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_HYPERSTACK_ENVIRONMENT', 'SAIP_SSH_PRIVATE_KEY']) expect(names).toContain(n)
-    // #93: the catalog holds the declaration; applicability is decided per deployment, so the
-    // unenforced admin secret is only asked about when the config references one.
+    // #90 removed the credential outright, so no config shape asks for it.
     expect(planInitItems({ config: {}, hosts: [] }).map((i) => i.name)).not.toContain('SAIP_UI_ADMIN')
-    const admin = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
-      .find((i) => i.name === 'SAIP_UI_ADMIN')!
-    expect(admin.sensitive).toBe(true)
-    expect(admin.scope).toMatch(/NOT ENFORCED YET/i)
+    const legacy = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
+    expect(legacy.map((i) => i.name)).not.toContain('SAIP_UI_ADMIN')
+  })
+})
+
+describe('retired values are surfaced, not hidden (#90)', () => {
+  it('tells the user a stored SAIP_UI_ADMIN is retired and how to remove it', async () => {
+    const { d, store } = mkStore()
+    await store.set('SAIP_UI_ADMIN', 'stale-admin-password')
+    const said: string[] = []
+    await runInit({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: join(d, '.env'),
+      io: { say: (l) => said.push(l), ask: async () => 'x' },
+    })
+    const text = said.join('\n')
+    expect(text).toMatch(/RETIRED \(#90\)/)
+    expect(text).toMatch(/saip config forget SAIP_UI_ADMIN/)
+    expect(text).not.toMatch(/stale-admin-password/)   // never echoed
+    // And it is never presented as something to configure fresh.
+    expect(planInitItems({ config: baseConfig, hosts }).map((i) => i.name)).not.toContain('SAIP_UI_ADMIN')
+  })
+})
+
+describe('the wizard reports retired config keys (#90)', () => {
+  it('warns before the first question when saip.yaml still sets ui.admin_secret', async () => {
+    const { d, store } = mkStore()
+    const said: string[] = []
+    await runInit({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: join(d, '.env'),
+      io: { say: (l) => said.push(l), ask: async () => 'x' },
+      deprecations: ['security.ui.admin_secret ("SAIP_UI_ADMIN") is retired (#90): it protects nothing'],
+    })
+    const warn = said.findIndex((l) => /WARNING.*security\.ui\.admin_secret/.test(l))
+    const firstAsk = said.findIndex((l) => /── SAIP_R2_BUCKET/.test(l))
+    expect(warn).toBeGreaterThanOrEqual(0)
+    expect(warn).toBeLessThan(firstAsk)   // told before being asked, not after
   })
 })
