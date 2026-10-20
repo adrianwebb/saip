@@ -26,6 +26,7 @@ import {
   type UtilizationResult,
 } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { jsonModeOn } from '../lib/json-mode.js'
 
 export interface TierRow {
   name: string
@@ -210,9 +211,28 @@ export default {
         // checkouts on one machine, a silent wrong-config read is the dangerous case.
         if (!config.profiles) {
           const from = resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' }).path
-          if (from) console.log(`[saip] config: ${from}`)
+          // Provenance is diagnostics, not payload. The shipped defect: this line landed on stdout
+          // immediately before the JSON body of `profiles --json`, making the stream unparseable while
+          // the JSON itself was fine (#113). stderr in both modes.
+          if (from) console.error(`[saip] config: ${from}`)
         }
-        console.log(report.text)
+        if (jsonModeOn()) {
+          // The invariant is "valid JSONL on stdout", which means the FAILURE path must emit a record
+          // too. CI caught this: on a GPU-less runner `profiles --json` exited 2 and wrote nothing,
+          // because only the success branch had a structured path — an empty machine stream is
+          // indistinguishable from a broken one, which is the exact thing #113 exists to prevent.
+          const body = report.text.trimStart().startsWith('{')
+            ? JSON.stringify(JSON.parse(report.text))
+            : JSON.stringify({
+                kind: 'line',
+                level: report.exitCode === 0 ? 'info' : 'error',
+                text: report.text.replace(/^\[saip\]\s*/, ''),
+                data: { code: 'profile_report', exitCode: report.exitCode },
+              })
+          process.stdout.write(`${body}\n`)
+        } else {
+          console.log(report.text)
+        }
         process.exitCode = report.exitCode
       },
     })

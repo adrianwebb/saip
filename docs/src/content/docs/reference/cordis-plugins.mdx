@@ -24,6 +24,36 @@ preserve through migration, because each cost a bug report already (see #99, #73
 2. **Interrupt and cleanup**: `Ctrl+C` must be handled explicitly (raw mode disables `ISIG`), and
    nothing may be left on screen or in the input buffer afterwards.
 
+### Components are a module; the **renderer** is the plugin (#113)
+
+The obvious move — make each widget (`Card`, `Columns`, `Rule`) a Cordis plugin so the UI is
+"pluggable" — was considered and rejected, and the reasoning is the useful part. Cordis buys
+discovery, lifecycle and dependency injection, which are worth paying for where an implementation can
+be **substituted**. A `Card` has nothing to substitute: its props already are its interface. Wrapping it
+in a string-keyed widget registry trades compile-time prop checking for runtime lookup, so UI bugs
+degrade from "does not typecheck" to "renders nothing". #91 already removed one UI abstraction
+(`SAIP_UI_ADMIN`, a guard that was never constructed); indirection with no second implementation is cost
+without benefit.
+
+So pluggability sits one level up, at the boundary that genuinely varies:
+
+| Layer | Shape | varies when |
+|---|---|---|
+| `cli/src/ui/components.tsx` | plain typed exports | never |
+| `Renderer` (`card`, `keyValues`, `columns`, `rule`, `line`) | **plugin seam**: `ctx.ui.registerRenderer(r)` | per stream and per target |
+
+`PlainRenderer` serves pipes/CI/agents, `InkRenderer` serves a UTF-8 TTY, and the seam earns its keep
+immediately: `--json` today is hand-rolled per command (`status --json`, `profiles --json`, `ssh --json`
+each invent their own object), which is the same divergence #87/#93 fixed for *values*. A
+`JsonlRenderer` makes structured output a registered target instead of a per-command invention — and a
+future dashboard renderer needs no command changes at all.
+
+Both renderers consume one **block model** (`cli/src/ui/blocks.ts`), so content has a single source of
+truth and every component carries a **parity test**: strip box-drawing and ANSI from the Ink frame and
+assert the plain output contains the same fields. Parity is asserted per component, not per screen,
+because a card that renders prettily while dropping a field in log mode is exactly the silent divergence
+this project keeps having to repair.
+
 The migration is deliberate and incremental: the seam lands selecting the plain renderer everywhere,
 screens move to Ink one at a time, and the hand-rolled box renderer is deleted only when every
 screen that used it has passed its tests on Ink.
