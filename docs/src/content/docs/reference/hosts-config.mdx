@@ -37,7 +37,7 @@ At least one host must cover the `inference` role and one must cover the `traini
 |-------|------|-------------|
 | `host` | string | IP or hostname (often an OpenTofu output) |
 | `user` | string | SSH user (e.g. `ubuntu`) |
-| `key_secret` | string | Name of the secret holding the private key |
+| `key_secret` | string | Name of the secret holding the private key **material** (the PEM itself, not a path). Leave it out to use SAIP's managed key for this host, `SAIP_SSH_KEY_<host>` — see [Managing SSH keys](#managing-ssh-keys-saip-ssh) |
 
 ### `tofu`
 
@@ -74,14 +74,14 @@ hosts:
     kind: hyperstack
     role: inference
     tofu: { workspace: infra/tofu/hyperstack }
-    ssh: { host: "203.0.113.10", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    ssh: { host: "203.0.113.10", user: ubuntu }   # managed key: SAIP_SSH_KEY_lab-inference
     secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
 
   - name: cloud-training
     kind: hyperstack
     role: training
     tofu: { workspace: infra/tofu/hyperstack }
-    ssh: { host: "203.0.113.11", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    ssh: { host: "203.0.113.11", user: ubuntu }   # managed key: SAIP_SSH_KEY_lab-training
     secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
 ```
 
@@ -90,3 +90,33 @@ hosts:
 - [Hosting Model explanation](/saip/explanation/hosting/) — why the seams look like this
 - [Deploy to Hyperstack (cloud)](/saip/guides/deploy-hyperstack-cloud/) — walkthrough
 - [CLI Reference](/saip/guides/cli-reference/) — `--host` targeting
+
+## Managing SSH keys (`saip ssh`)
+
+SAIP generates and keeps its own keypairs, so you never download, chmod, or point at a private key.
+
+```bash
+saip ssh generate --host lab-inference     # create a keypair for this host
+saip ssh show     --host lab-inference     # print the PUBLIC key to paste into your provider
+saip ssh verify   --host lab-inference     # prove the managed key authenticates
+saip ssh rotate   --host lab-inference     # new keypair; the old one is revoked locally
+saip ssh remove   --host lab-inference     # delete the managed key
+saip ssh migrate                           # move a legacy SAIP_SSH_PRIVATE_KEY into a managed key
+```
+
+Where things live:
+
+| Part | Location | Secret? |
+|---|---|---|
+| Private key (PEM) | encrypted store, name `SAIP_SSH_KEY_<host>` | yes — never written to disk at rest |
+| Public key | `~/.saip/keys/<host>.ed25519.pub` | no, and safe to share |
+
+**How a key reaches `ssh`.** OpenSSH needs a file, so for the duration of a command SAIP writes the
+private key into a private directory (`0700`) as a `0600` file, passes that path with `-i`, and
+deletes it afterwards — including when the command throws, is interrupted with `Ctrl+C`, or the
+process dies from a signal. Previously the provider built `-i /run/secrets/<key_secret>`, using the
+secret's *name* as a path that nothing created, so remote SSH could never authenticate (#83).
+
+Algorithms: Ed25519 via `node:crypto`, no `ssh-keygen` on the host. Measured against OpenSSH before
+committing to it: a PKCS#8 PEM from `generateKeyPairSync('ed25519')` is accepted by
+`ssh-keygen -y`, which is what makes the temporary file usable by `ssh -i`.
