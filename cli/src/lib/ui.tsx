@@ -1,28 +1,39 @@
 /**
- * `ui` — the terminal presentation seam (#106).
+ * `ui` — the terminal presentation seam (#106, #113).
  *
  * Why a seam at all: SAIP's hand-rolled terminal code produced five bug reports in one session
- * (prompt-before-explanation twice, paste lockup, cursor on the wrong line, leftover input
- * shifting answers). The maintainer's call was to build on a maintained TUI framework rather than
- * keep re-fixing the same layer, and to do it while exactly one screen uses it.
+ * (prompt-before-explanation twice, paste lockup, cursor on the wrong line, leftover input shifting
+ * answers), and every command also formatted its own output, so the same idea had six implementations.
+ * The maintainer's call was to build on a maintained TUI framework and to abstract the layer while only
+ * one screen used it.
  *
- * Two renderers, chosen by what the attached stream can do — never by a flag a user has to know:
+ * What is pluggable, and what is not (#113):
+ *   - `Renderer` IS the plugin seam — it is the layer that genuinely varies by stream (TTY vs pipe) and
+ *     by target (a future `--json` or dashboard renderer needs no command changes).
+ *   - the components are plain exports. A `Card` has nothing to substitute; putting it behind a
+ *     string-keyed registry would trade typechecking for runtime lookup and turn "does not compile" into
+ *     "renders nothing". #91 already removed one UI indirection that had no second implementation.
  *
- *   ink     a real TTY: widgets, redraws, cursor handling, the shared vocabulary later screens use
- *   plain   pipes, CI, agents, log capture: `label: value` lines
+ * Renderer selection is by **capability of the attached stream**, never a flag a user has to know:
  *
- * The plain renderer is not a courtesy. Measured on the Ink spike (#88/#103): a **compiled** Ink
- * binary writes nothing at all to a pipe, and Ink does not degrade under `TERM=dumb`. So selection
- * has to live somewhere, and "somewhere" is this service.
+ *   ink    a real TTY with a UTF-8 locale
+ *   plain  pipes, CI, agents, log capture, `TERM=dumb`, non-UTF-8 locales
  *
- * Staging of the migration, so no PR is both a refactor and a behaviour change: this commit adds the
- * service and registers it; screens keep using `DisplayService` until each is moved deliberately, and
- * the hand-rolled box renderer is deleted only after the last of them passes on Ink.
+ * The plain path is load-bearing, not a courtesy: #88/#103 measured that a COMPILED Ink binary writes
+ * nothing at all to a pipe, and that Ink does not degrade under `TERM=dumb`.
+ *
+ * Migration staging, so no PR is both a refactor and a behaviour change: screens move to this service
+ * one at a time (`status`, then `config`/`ssh`, then the wizard), and `DisplayService` is retired only
+ * after the last one has gone.
  */
 import { Service, type Context } from 'cordis'
-import React from 'react'
-import { Box, Text, render, type RenderOptions } from 'ink'
-import { detectDisplay, renderCard, type CardSpec, type DisplayOptions } from './display.js'
+import type { CardSpec, DisplayOptions } from './display.js'
+import { detectDisplay } from './display.js'
+import { kvBlock, columnsBlock, lineBlock, ruleBlock, type Block, type KvRow } from '../ui/blocks.js'
+import type { Renderer } from '../ui/renderer.js'
+import { plainRenderer } from '../ui/plain.js'
+import { inkRenderer } from '../ui/ink.js'
+import { jsonlRenderer } from '../ui/json.js'
 
 declare module 'cordis' {
   interface Context { ui?: UiService }
@@ -31,98 +42,104 @@ declare module 'cordis' {
 export const UI_SERVICE = 'ui'
 export type UiMode = 'ink' | 'plain'
 
+export { renderInkToString, inkRenderer } from '../ui/ink.js'
+export { Card, Columns, KeyValues, Line, Rule } from '../ui/components.js'
+export { CardView } from '../ui/compat.js'
+export type { Renderer } from '../ui/renderer.js'
+export type { Block, KvRow } from '../ui/blocks.js'
+
 /** Capability test, kept separate so it can be asserted without a terminal. */
 export function chooseMode(env: NodeJS.ProcessEnv = process.env, isTTY = false, inkEnabled = true): UiMode {
   const d = detectDisplay(env, isTTY)
-  // detectDisplay already encodes "UTF-8 locale and not TERM=dumb" as `unicode`; Ink's box drawing
-  // is exactly the thing that assumption protects.
+  // detectDisplay encodes "UTF-8 locale and not TERM=dumb" as `unicode`; Ink's box drawing is exactly
+  // the thing that assumption protects.
   if (!isTTY || !d.unicode) return 'plain'
   return inkEnabled ? 'ink' : 'plain'
 }
 
-/** A card in Ink. One row per field, label in bold, value wrapped by Ink itself. */
-export function CardView(props: { spec: CardSpec }): React.ReactElement {
-  const { spec } = props
-  return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} borderDimColor>
-      <Text bold wrap="truncate">
-        {spec.badge ? `${spec.title}  (${spec.badge})` : spec.title}
-      </Text>
-      {spec.fields.map((f) => (
-        <Text key={f.label} wrap="wrap">
-          <Text dimColor>{`${f.label}: `}</Text>
-          {f.value}
-        </Text>
-      ))}
-    </Box>
-  )
+export interface UiConfig {
+  /**
+   * Where rendered text goes. Defaults to stdout. Injectable because a screen that writes to the
+   * process cannot be asserted without replacing the process — which is how this repo's tests ended up
+   * monkey-patching `console.log`, and why the seam owns the sink instead.
+   */
+  out?: (text: string) => void
+  env?: NodeJS.ProcessEnv
+  isTTY?: boolean
+  /** Set false to force the plain path even on a TTY (used by tests and by `--no-color`-style escapes). */
+  ink?: boolean
+  /** Replace the renderer entirely — the plugin seam (#113). */
+  renderer?: Renderer
 }
-
-/**
- * Render an element to a string.
- *
- * Ink writes frames to whatever stream it is handed, so a collecting fake is enough — and doing it
- * this way is what lets the ink path be *tested* rather than only observed by a human at a
- * terminal. Non-TTY here is deliberate: it is also the case where a real Ink process is expected to
- * produce nothing, so a test that captures frames proves the component itself is sound separately
- * from that runtime behaviour.
- */
-export function renderInkToString(el: React.ReactElement, columns = 80): string {
-  const written: string[] = []
-  const stdout = {
-    write: (s: string | Uint8Array) => { written.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf8')); return true },
-    columns,
-    isTTY: false as const,
-    setEncoding: () => stdout,
-    on: () => stdout, once: () => stdout, off: () => stdout, removeListener: () => stdout,
-    emit: () => false,
-    // Ink asks for a raw-mode capable stdin; without a TTY it must not be asked to hide a cursor.
-  }
-  const stdin = {
-    isTTY: false as const, setRawMode: () => stdin, setEncoding: () => stdin, resume: () => stdin, pause: () => stdin,
-    on: () => stdin, once: () => stdin, off: () => stdin, removeListener: () => stdin, emit: () => false,
-    read: () => null,
-  }
-  const options = { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, debug: true, exitOnCtrlC: false } as unknown as RenderOptions
-  const instance = render(el, options)
-  const frame = written.join('')
-  try { instance.unmount() } catch { /* teardown of a synthetic render must never throw outward */ }
-  return frame
-}
-
-export interface UiConfig { env?: NodeJS.ProcessEnv; isTTY?: boolean; ink?: boolean }
 
 export class UiService extends Service {
   static readonly provide = UI_SERVICE
   readonly mode: UiMode
   readonly display: DisplayOptions
+  private readonly out: (text: string) => void
+  private active: Renderer
+  private readonly registry = new Map<string, Renderer>()
 
   constructor(ctx: Context, config: UiConfig = {}) {
     super(ctx, UI_SERVICE)
     const isTTY = config.isTTY ?? Boolean(process.stdout.isTTY)
+    this.out = config.out ?? ((t: string) => { process.stdout.write(t) })
     this.mode = chooseMode(config.env ?? process.env, isTTY, config.ink ?? true)
     this.display = detectDisplay(config.env ?? process.env, isTTY)
+    this.active = config.renderer ?? (this.mode === 'ink' ? inkRenderer : plainRenderer)
+    this.registry.set(plainRenderer.kind, plainRenderer)
+    this.registry.set(inkRenderer.kind, inkRenderer)
+    // Registered but never the default: a machine target is chosen, not inferred from the stream
+    // (#113). `--json` activates it; nothing about the terminal can silently switch an agent's output.
+    this.registry.set(jsonlRenderer.kind, jsonlRenderer)
   }
 
-  /** A card, rendered by whichever engine this stream gets. */
-  card(spec: CardSpec): string {
-    if (this.mode === 'ink') {
-      return renderInkToString(<CardView spec={spec} />, this.display.columns)
+  /** Which renderer is currently producing output. */
+  get rendererKind(): string { return this.active.kind }
+
+  /** True when the active renderer produces machine records, so commands skip decoration. */
+  get structured(): boolean { return this.active.kind === 'jsonl' }
+
+  /** Registered renderer names — plain, ink, jsonl, and anything a plugin adds. */
+  rendererNames(): string[] { return [...this.registry.keys()] }
+
+  /**
+   * Register (or replace) a renderer. Validated rather than trusted, because a renderer that is
+   * missing its `render` would otherwise fail at the first command that printed something — far from
+   * the mistake, and only in the environment that loaded the plugin.
+   */
+  registerRenderer(renderer: Renderer, options: { activate?: boolean } = {}): void {
+    if (!renderer || typeof renderer.kind !== 'string' || renderer.kind === '') {
+      throw new TypeError('registerRenderer: renderer.kind must be a non-empty string')
     }
-    // Deferred import would dodge the whole module graph; keep it static so a missing dependency is
-    // a build failure rather than a runtime surprise in the plain path.
-    return plainCard(spec, this.display)
+    if (typeof renderer.render !== 'function') {
+      throw new TypeError(`registerRenderer: renderer "${renderer.kind}" has no render() function`)
+    }
+    this.registry.set(renderer.kind, renderer)
+    if (options.activate) this.active = renderer
   }
 
-  show(spec: CardSpec): void { process.stdout.write(`${this.card(spec)}\n`) }
-}
+  /** Activate a registered renderer by name (e.g. from a flag or a host configuration). */
+  useRenderer(kind: string): void {
+    const r = this.registry.get(kind)
+    if (!r) throw new TypeError(`no renderer named "${kind}"; registered: ${this.rendererNames().join(', ')}`)
+    this.active = r
+  }
 
-/**
- * Plain card. `display.ts` already owns width/clamp/unicode-vs-ascii behaviour and is what the
- * existing screens render through, so the plain path here calls it rather than growing a second
- * implementation to drift. (An earlier draft of this file wrapped the call in an indirection that
- * claimed to avoid an import cycle; there is no cycle, and the wrapper was dead cleverness.)
- */
-function plainCard(spec: CardSpec, opts: DisplayOptions): string {
-  return renderCard(spec, opts)
+  /** Render any block. Commands may use this directly when a convenience method does not fit. */
+  render(block: Block): string { return this.active.render(block) }
+
+  card(spec: CardSpec): string { return this.active.render({ kind: 'card', spec }) }
+  keyValues(rows: KvRow[]): string { return this.active.render(kvBlock(rows)) }
+  columns(header: string[], rows: string[][]): string { return this.active.render(columnsBlock(header, rows)) }
+  line(text: string, level: 'info' | 'warn' | 'error' = 'info'): string { return this.active.render(lineBlock(text, level)) }
+  rule(width = this.display.columns): string { return this.active.render(ruleBlock(width)) }
+
+  /** Write a block to the configured sink. Commands that print should call these, not `console.log`. */
+  show(block: Block): void { this.out(`${this.active.render(block)}\n`) }
+  showLine(text: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    this.out(`${this.line(text, level)}\n`)
+  }
+  /** Render and write several blocks in order — the common "print a report" shape. */
+  showAll(blocks: Block[]): void { for (const b of blocks) this.show(b) }
 }

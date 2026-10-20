@@ -1,14 +1,5 @@
-# Changelog
+- cli: **shared UI component library behind a pluggable renderer seam** (#113) — commands now build blocks (`card`, `keyValues`, `columns`, `line`, `rule`) and a `Renderer` draws them: `plain` for pipes/CI/agents, `ink` for a UTF-8 TTY, and a new `jsonl` renderer that `--json` selects so **every** command can be driven by scripts and agents without Ink in the path. Components stay plain typed exports rather than Cordis plugins (a `Card` has nothing to substitute; a widget registry would trade typechecking for runtime lookup) while the renderer — the layer that genuinely varies — is the registered, validated seam. Content parity between renderers is asserted per component. `saip status` is the first command migrated, and its `--json` is the first use of the seam
 
-All notable changes to this project are documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
-
-
-## [Unreleased]
-
-### Added
 - cli: `saip config init`, a guided first-time credential wizard — one value at a time with echo off, paste accepted, each prompt explaining what the value is for, where to create it and how to scope it. Questions are derived from the user's own `saip.yaml`/`hosts.yaml`, so undeclared features are never asked about. Secrets go to the encrypted store; interpolated values (bucket, endpoint) go to `.env`, because interpolation reads shell and `.env` and never the store. `--non-interactive` reports what is missing and writes nothing, for CI and agents (#78)
 - ci: smoke gate that launches the **built CLI through PATH** and asserts output plus exit codes, failing on the silent-success signature (exit 0, no output) that hid #70. Proven against its own target: reintroducing the entry-guard bug makes it fail; `node cli/dist/index.js` does not, which is why the step uses a symlink (#76)
 - shared,cli: secret store v2 with **wrapped keys** — a random KEK encrypts the store and is held separately under each unlock method, so adding or removing a method never re-encrypts secrets and rotating a passphrase re-wraps only the KEK. There is no password hash: the GCM tag on the wrapped KEK is the check. `saip config key list\|add\|remove` exposes the methods, `doctor` reports which wrap unlocked and warns while an opt-in `unattended` wrap exists, and creation now prompts and confirms over the controlling terminal (#73)
