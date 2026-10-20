@@ -97,15 +97,6 @@ export const SECRET_CATALOG: readonly SecretEntry[] = [
     providerUrl: HS_DOCS, docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
     usedBy: ['config init', 'saip awake'],
   },
-  {
-    name: 'SAIP_SSH_PRIVATE_KEY', kind: 'secret', sensitive: true, required: false,
-    purpose: 'Private half of the key pair used to log into a provisioned instance as ubuntu.',
-    how: 'Downloaded once when the key pair is created in the console, then stored here.',
-    // Declared where the fact belongs: the guidance and the access policy read the same entry.
-    scope: 'NOT ENFORCED YET: the provider builds `-i /run/secrets/<key_secret>`, treating the secret NAME as a path nothing populates, so storing this value does not yet make remote SSH work. Superseded by #89 (SAIP-managed keypairs).',
-    docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
-    usedBy: ['config init', 'config help', 'saip awake (pending #83/#89)'],
-  },
 ]
 
 export interface RetiredSecret {
@@ -124,6 +115,12 @@ export interface RetiredSecret {
  * Values a user already stored are still treated as sensitive (#90).
  */
 export const RETIRED_SECRETS: readonly RetiredSecret[] = [
+  {
+    name: 'SAIP_SSH_PRIVATE_KEY',
+    reason: 'Superseded by SAIP-managed keypairs (#89): `saip ssh generate --host X` creates and stores the key. The old variable was a hand-managed file path the provider never resolved, which is why remote SSH could not authenticate (#83).',
+    configPath: 'hosts.yaml ssh.key_secret',
+    since: '#89',
+  },
   {
     name: 'SAIP_UI_ADMIN',
     reason: 'No UI route exists and PasswordSessionAuth is never constructed, so the value guarded nothing. Removed instead of left implying protection (#90).',
