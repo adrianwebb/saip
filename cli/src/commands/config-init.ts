@@ -350,6 +350,25 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   emit('[saip] config init — one value at a time, hidden input, paste works')
   emit('[saip] Enter on an optional item skips it; Ctrl+C stops and keeps what is already saved.')
 
+  // One unlock for the whole command (#86). Previously every write re-derived the key, which meant
+  // every write re-prompted: four credentials cost four passphrase prompts plus four scrypt runs,
+  // and nothing said why. Unlocking first also separates "your passphrase is wrong" from a value
+  // prompt, so the two are never confused.
+  if (interactive && store.exists()) {
+    const names = items.map((i) => i.name)
+    emit('')
+    emit(`[saip] this command uses ${names.length} stored values: ${names.join(', ')}`)
+    emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
+    try {
+      const wrap = await store.ensureUnlocked()
+      emit(`[saip] store unlocked (via ${wrap}) — you will not be asked again in this command.`)
+    } catch (e) {
+      emit(`[saip] ${(e as Error).message}`)
+      emit('[saip] nothing was changed. Re-run with a different passphrase, or `saip config doctor`.')
+      return { code: 1, lines, stored, skipped }
+    }
+  }
+
   try {
   for (const item of items) {
     const src = await valueSource(item.name, ctx)

@@ -539,3 +539,49 @@ describe('saip config help and forget (#82)', () => {
     expect(r.lines.join(' ')).toMatch(/shell/)
   })
 })
+
+describe('one unlock per command (#86)', () => {
+  it('prompts for the key exactly once across a multi-value wizard run', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'saip-unlock-'))
+    const path = join(d, 's.enc.json')
+    const key = Buffer.alloc(32, 61)
+    let derivations = 0
+    class Counting implements KeySource {
+      readonly id = 'passphrase' as const
+      async wrapKey(): Promise<Buffer | null> { derivations++; return key }
+      async provision() { derivations++; return { key, salt: null } }
+    }
+    const seed = new SecretStore({ path, keySources: [new Counting()] })
+    await seed.set('SAIP_R2_BUCKET', 'existing')
+    derivations = 0
+
+    const answers: Record<string, string> = { SAIP_R2_ENDPOINT: 'https://e', SAIP_R2_ACCESS_KEY_ID: 'a', SAIP_R2_SECRET_ACCESS_KEY: 's' }
+    const io = fakeIo(answers)
+    const r = await runInit({
+      store: new SecretStore({ path, keySources: [new Counting()] }),
+      items: planInitItems({ config: baseConfig, hosts }),
+      io: io.io, envPath: join(d, '.env'),
+    })
+    expect(r.code).toBe(0)
+    expect(derivations).toBe(1)
+    // And it told the user why it was unlocking.
+    expect(io.seen.join(' ')).toMatch(/this command uses \d+ stored values/)
+    expect(io.seen.join(' ')).toMatch(/you will not be asked again/)
+  })
+
+  it('refuses to start asking values when the existing store cannot be unlocked', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'saip-unlock-'))
+    const path = join(d, 's.enc.json')
+    await new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 62))] }).set('A', 'v')
+    const said: string[] = []
+    const r = await runInit({
+      store: new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 63))] }),
+      items: planInitItems({ config: baseConfig, hosts }),
+      io: { say: (l) => said.push(l), ask: async () => 'x' },
+      envPath: join(d, '.env'),
+    })
+    expect(r.code).toBe(1)
+    expect(said.join(' ')).toMatch(/cannot unlock/)
+    expect(said.join(' ')).not.toMatch(/stored SAIP_R2_ENDPOINT/)
+  })
+})

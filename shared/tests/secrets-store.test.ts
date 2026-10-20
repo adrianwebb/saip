@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync, chmodSy
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
-  SecretStore, MemoryKeySource, PassphraseKey, KeyFileKey,
+  SecretStore, MemoryKeySource, PassphraseKey, KeyFileKey, KeySource,
   SecretToolKey, ChainSecrets, EncryptedSecretsProvider, defaultKeySources,
 } from '../src/secrets-store.js'
 import { EnvSecrets, MissingSecretError } from '../src/hosting.js'
@@ -264,5 +264,74 @@ describe('provider chain', () => {
     await new SecretStore({ path: p, keySources: [pass('raw')] }).set('SAIP_R2_ACCESS_KEY_ID', 'x')
     const wrong = new SecretStore({ path: p, keySources: [pass('other')] })
     await expect(new EncryptedSecretsProvider(wrong).get('SAIP_R2_ACCESS_KEY_ID')).rejects.toThrow(/cannot unlock/)
+  })
+})
+
+describe('unlock happens once per store (#86)', () => {
+  it('derives the key exactly once across many reads and writes', async () => {
+    let derivations = 0
+    class CountingKey implements KeySource {
+      readonly id = 'passphrase' as const
+      constructor(private readonly key: Buffer) {}
+      async wrapKey(): Promise<Buffer | null> { derivations++; return this.key }
+      async provision() { derivations++; return { key: this.key, salt: null } }
+    }
+    const path = pathIn()
+    const key = Buffer.alloc(32, 21)
+    const s = new SecretStore({ path, keySources: [new CountingKey(key)] })
+    await s.set('A', '1'); await s.set('B', '2'); await s.set('C', '3')
+    expect(await s.get('A')).toBe('1'); expect(await s.names()).toEqual(['A', 'B', 'C'])
+    // Create-time derivation plus a single unlock; before #86 this scaled with every operation.
+    expect(derivations).toBeLessThanOrEqual(2)
+
+    // Cache must not survive a change to the wrap set, or a rotated method would be bypassed.
+    derivations = 0
+    await s.addWrap(new MemoryKeySource('keyring', Buffer.alloc(32, 22)))
+    await s.get('A')
+    expect(derivations).toBeGreaterThan(0)
+  })
+
+  it('does not share an unlocked key between stores pointing at different files', async () => {
+    const a = pathIn(); const b = pathIn()
+    const k1 = Buffer.alloc(32, 31); const k2 = Buffer.alloc(32, 32)
+    await new SecretStore({ path: a, keySources: [new MemoryKeySource('passphrase', k1)] }).set('A', 'x')
+    await new SecretStore({ path: b, keySources: [new MemoryKeySource('passphrase', k2)] }).set('A', 'y')
+    expect(await new SecretStore({ path: a, keySources: [new MemoryKeySource('passphrase', k1)] }).get('A')).toBe('x')
+    await expect(new SecretStore({ path: a, keySources: [new MemoryKeySource('passphrase', k2)] }).get('A')).rejects.toThrow(/cannot unlock/)
+  })
+
+  it('ensureUnlocked() prompts once and later operations never prompt again', async () => {
+    const path = pathIn()
+    const key = Buffer.alloc(32, 41)
+    const seed = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', key)] })
+    await seed.set('A', 'v')
+
+    let prompts = 0
+    class PromptCounting implements KeySource {
+      readonly id = 'passphrase' as const
+      async wrapKey(): Promise<Buffer | null> { prompts++; return key }
+    }
+    const s = new SecretStore({ path, keySources: [new PromptCounting()] })
+    await s.ensureUnlocked()
+    await s.get('A'); await s.set('B', 'w'); await s.names(); await s.activeWrap()
+    expect(prompts).toBe(1)
+  })
+})
+
+describe('cached unlock reports the wrap that actually unlocked (#86)', () => {
+  it('names the surviving method after a cache hit, not a default', async () => {
+    const path = pathIn()
+    const passKey = Buffer.alloc(32, 51)
+    const ringKey = Buffer.alloc(32, 52)
+    const seed = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', passKey)] })
+    await seed.set('A', 'v')
+    await seed.addWrap(new MemoryKeySource('keyring', ringKey))
+
+    // Only the keyring is available; two reads exercise a cache hit on the second.
+    const s = new SecretStore({ path, keySources: [new MemoryKeySource('keyring', ringKey)] })
+    expect(await s.get('A')).toBe('v')
+    expect(await s.activeWrap()).toBe('keyring')
+    expect(await s.get('A')).toBe('v')
+    expect(await s.activeWrap()).toBe('keyring')
   })
 })
