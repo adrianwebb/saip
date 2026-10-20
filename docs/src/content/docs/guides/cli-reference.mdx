@@ -409,6 +409,9 @@ saip config <init|list|get|set|unset|key|doctor> [name] [value] [--value <v>] [-
 | `saip config set <name> --value <v>` | Non-interactive. Prefer piping: `printf %s "$V" \| saip config set NAME --stdin`. |
 | `saip config unset <name>` | Removes it; reports whether it was present. |
 | `saip config init` | Guided first-time setup: one value at a time, echo off, paste accepted, each prompt explaining purpose, scope, and where to create it. Questions are derived from your `saip.yaml`/`hosts.yaml`. `--force` re-asks everything. |
+| `saip config help [name]` | Prints the credential catalog — purpose, how to create it, required scope, provider page — without prompting or writing anything. |
+| `saip config forget <name>` | Removes the value from the encrypted store **and** `.env`, reporting each source. Use it when a stored value is wrong. |
+| `saip config init --reset <name>` | Forgets one value and re-asks just that one. |
 | `saip config key list` | Which unlock methods the store accepts and which one opened it just now. |
 | `saip config key add <keyring\|unattended>` | Adds an unlock method. Never called for you. |
 | `saip config key remove <id>` | Drops one; refuses to remove the last usable method, and deletes the `unattended` key file. |

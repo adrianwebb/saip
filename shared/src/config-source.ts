@@ -244,3 +244,34 @@ export function setEnvFileValues(path: string, values: Record<string, string>): 
   chmodSync(tmp, 0o600)
   renameSync(tmp, path)
 }
+
+/**
+ * Remove KEY lines from an env file. `saip config forget` needs this because interpolated values
+ * (bucket, endpoint) live in `.env`, not the store — a store-only "forget" would report success
+ * while the value stayed exactly where it was, which is how #82's user got stuck.
+ *
+ * Comments and unrelated keys are preserved, including a commented template line for the same key:
+ * `# SAIP_R2_BUCKET=...` stays as the hint it is, since it carries no value. Atomic + 0600, same
+ * as the writer. Returns the names actually removed, so the caller can say what it did.
+ */
+export function removeEnvValues(path: string, keys: string[]): string[] {
+  if (!existsSync(path)) return []
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/)
+  const removed: string[] = []
+  const kept = lines.filter((l) => {
+    const m = l.match(/^\s*(#)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)
+    if (!m) return true
+    // A commented line is a template, not a value: keep it.
+    if (m[1]) return true
+    if (!keys.includes(m[2])) return true
+    removed.push(m[2])
+    return false
+  })
+  if (removed.length) {
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, kept.join('\n'), { mode: 0o600 })
+    chmodSync(tmp, 0o600)
+    renameSync(tmp, path)
+  }
+  return [...new Set(removed)]
+}

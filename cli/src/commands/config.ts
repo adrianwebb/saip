@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { planInitItems, runInit, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { planInitItems, runInit, runHelp, forgetValue, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -167,6 +167,16 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
   return new SecretStore({ path: storePath, keySources: sources })
 }
 
+function cfgFileForInit() { return resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' }) }
+function readConfigForInit(): any {
+  const f = cfgFileForInit()
+  try { return f.path ? loadYamlConfig(f.path) : {} } catch { return {} }
+}
+function readHostsForInit(): any[] {
+  const f = resolveConfigFile('hosts.yaml', { envVar: 'SAIP_HOSTS_FILE' })
+  try { return f.path ? (loadYamlConfig<{ hosts?: any[] }>(f.path).hosts ?? []) : [] } catch { return [] }
+}
+
 export async function runConfig(
   store: SecretStore,
   options: Record<string, unknown> = {},
@@ -175,8 +185,9 @@ export async function runConfig(
 ): Promise<RunResult> {
   const [action, name] = positional
   const env = deps.env ?? process.env
+  const lines: string[] = []
   const fail = (msg: string): RunResult => ({ code: 1, lines: [`[saip] ${msg}`] })
-  if (!action) return fail('usage: saip config <init|list|get|set|unset|key|doctor> [name]')
+  if (!action) return fail('usage: saip config <init|help|list|get|set|unset|forget|key|doctor> [name]')
 
   switch (action) {
     case 'list': {
@@ -242,13 +253,24 @@ export async function runConfig(
       return { code: 0, lines: [`[saip] stored ${name} (${value.length} chars)`] }
     }
 
-    case 'unset': {
-      if (!name) return fail('unset requires a name')
-      let removed = false
-      try { removed = await store.unset(name) } catch (e) { return fail((e as Error).message) }
-      return removed
-        ? { code: 0, lines: [`[saip] removed ${name}`] }
-        : fail(`${name} was not set`)
+    case 'unset':
+    case 'forget': {
+      if (!name) return fail(`${action} requires a name`)
+      // One verb, one meaning: `unset` used to clear only the encrypted store, so forgetting an
+      // interpolated value (bucket, endpoint) reported "not in the store" while the value stayed
+      // in .env and kept winning at resolution. Both names now clear every surface we control and
+      // say which ones they touched.
+      const r = await forgetValue({ store, name, envPath: envFilePath(process.env), env })
+      // Nothing removed is a failure to report, not a success: the old `unset` said
+      // "not in the store" for a value sitting in .env, which read like a clean no-op.
+      return { code: r.cleared.length ? 0 : 1, lines: r.lines }
+    }
+
+    case 'help': {
+      const io: Io = { say: (line) => lines.push(line), ask: async () => '' }
+      const items = planInitItems({ config: readConfigForInit(), hosts: readHostsForInit() })
+      const r = await runHelp({ store, items, envPath: envFilePath(process.env), env, only: name, io })
+      return { code: r.code, lines: [...lines, ...r.lines] }
     }
 
     case 'doctor': {
@@ -320,23 +342,19 @@ export async function runConfig(
     }
 
     case 'init': {
-      const lines: string[] = []
       // The onboarding path. Questions come from the user's own saip.yaml/hosts.yaml so a config
       // that declares no API tokens is never asked for token secrets — a hardcoded checklist is
       // how docs and reality drift, which is the disease this issue set has been treating.
-      const cfgFile = resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' })
       let cfg: any = {}
-      let hosts: any[] = []
-      try { if (cfgFile.path) cfg = loadYamlConfig(cfgFile.path) } catch (e) { return fail(`cannot read ${cfgFile.path}: ${(e as Error).message}`) }
-      const hostsFile = resolveConfigFile('hosts.yaml', { envVar: 'SAIP_HOSTS_FILE' })
-      try { if (hostsFile.path) hosts = (loadYamlConfig<{ hosts?: any[] }>(hostsFile.path).hosts ?? []) } catch { /* absent is fine */ }
+      try { if (cfgFileForInit().path) cfg = loadYamlConfig(cfgFileForInit().path!) } catch (e) { return fail(`cannot read ${cfgFileForInit().path}: ${(e as Error).message}`) }
+      const hosts = readHostsForInit()
 
       // Saying so beats guessing quietly: with no saip.yaml found the plan is built from an
       // empty config, so the user would be asked about R2 only and never about their declared
       // API tokens — and would have no way to know the project file was not read at all.
       // Written before the io object exists would be awkward, so the warning is emitted here in
       // the same immediate style the wizard uses, rather than queued into a buffer that prints late.
-      if (!cfgFile.path) {
+      if (!cfgFileForInit().path) {
         process.stdout.write('[saip] WARNING: no saip.yaml found from this directory upward. The questions below\n')
         process.stdout.write('[saip]          come only from the built-in defaults; run this from your project,\n')
         process.stdout.write('[saip]          or set SAIP_CONFIG=/path/to/saip.yaml.\n')
@@ -365,6 +383,7 @@ export async function runConfig(
           interactive: !nonInteractive,
           answers: nonInteractive ? {} : undefined,
           force: Boolean(options.force),
+          reset: typeof options.reset === 'string' ? options.reset : undefined,
         })
         // Nothing is appended to `lines` here: io.say already wrote every line to stdout as it
         // happened. Returning them again would print the whole transcript a second time.
@@ -388,13 +407,13 @@ export async function runConfig(
     }
 
     default:
-      return fail(`unknown subcommand "${action}" (expected init|list|get|set|unset|key|doctor)`)
+      return fail(`unknown subcommand "${action}" (expected init|help|list|get|set|unset|forget|key|doctor)`)
   }
 }
 
 const spec: CommandSpec = {
   name: 'config',
-  description: 'Manage the encrypted local secret store (init|list|get|set|unset|key|doctor)',
+  description: 'Manage credentials (init|help|list|get|set|unset|forget|key|doctor)',
   positional: '<action> [name] [arg]',
   positionalDescription: 'subcommand, secret name, and wrap id for `key add|remove`',
   options: [
@@ -403,6 +422,7 @@ const spec: CommandSpec = {
     { flag: '--reveal', description: 'Print the actual value for `get` (off by default)' },
     { flag: '--force', description: 'With `init`, re-ask values that are already set' },
     { flag: '--non-interactive', description: 'With `init`, report what is missing without prompting or writing anything' },
+    { flag: '--reset <name>', description: 'With `init`, clear one value first and re-ask just that one' },
   ],
   action: async () => { /* replaced at registration */ },
 }
