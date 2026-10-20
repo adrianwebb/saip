@@ -12,6 +12,7 @@ import { Context } from 'cordis'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
+import { SAIP_VERSION } from './version.js'
 import { DisplayService } from './lib/display.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
@@ -45,7 +46,7 @@ export async function buildProgram(): Promise<Command> {
   const program = new Command()
     .name('saip')
     .description('Simple AI Platform — manage inference and training services')
-    .version('0.5.0')
+    .version(SAIP_VERSION)
 
   for (const spec of ctx.commandRegistry!.list()) {
     const cmd = new Command(spec.name).description(spec.description)

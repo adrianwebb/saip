@@ -1,0 +1,134 @@
+name: Binaries
+
+# Single-file distributions (#71). Kept out of ci.yml because this workflow's job is to prove an
+# ARTIFACT RUNS, not that the source is correct.
+on:
+  pull_request:
+    paths:
+      - 'cli/**'
+      - 'shared/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/binaries.yml'
+  push:
+    branches: [staging, main]
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # PR gate: build and EXECUTE the binary for the runner's own architecture. Cheap, and it is the
+  # only check that catches "compiles fine, does not run".
+  host-binary:
+    name: Build & run host binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install
+      - name: Build the workspace (binaries bundle from source against built @saip/shared)
+        run: pnpm --filter @saip/shared build
+      - name: Compile
+        run: pnpm --filter @saip/cli build:bin
+      - name: Execute the artifact
+        # --version must match the manifest: an operator comparing a server's `saip --version` to a
+        # release note is the only provenance they have once the source is gone.
+        run: |
+          set -euo pipefail
+          EXPECTED=$(node -p "require('./cli/package.json').version")
+          ACTUAL=$(./cli/dist/binaries/saip-linux-x64 --version)
+          test "$ACTUAL" = "$EXPECTED" || { echo "::error::binary reports $ACTUAL, manifest says $EXPECTED"; exit 1; }
+          # Assert the command names as commander prints them (unprefixed), not "saip config" —
+          # the first version of this check grepped for a string the help output never contains and
+          # failed a healthy artifact. The Compile step above had already executed it successfully.
+          ./cli/dist/binaries/saip-linux-x64 --help | grep -qE "^  config"
+          ./cli/dist/binaries/saip-linux-x64 --help | grep -qE "^  profiles"
+          # GPU-less runner: fail closed with a named reason, never hang and never invent a tier.
+          set +e
+          ./cli/dist/binaries/saip-linux-x64 profiles --json >/dev/null 2>&1
+          CODE=$?
+          set -e
+          test "$CODE" = "0" -o "$CODE" = "2" || { echo "::error::profiles exited $CODE (expected 0 or 2)"; exit 1; }
+          test -s cli/dist/binaries/SHA256SUMS || { echo "::error::no checksums produced"; exit 1; }
+          echo "binary executes: $ACTUAL"
+      - name: Upload host artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: saip-host-binary
+          path: |
+            cli/dist/binaries/saip-*
+            cli/dist/binaries/SHA256SUMS
+          if-no-files-found: error
+
+  # Full matrix on pushes that matter: each architecture is COMPILED AND RUNNED on a native runner,
+  # because a cross-compiled binary that was never executed is an unverified file, and #71's whole
+  # acceptance argument is that "built" is not evidence.
+  all-targets:
+    if: github.event_name != 'pull_request'
+    name: ${{ matrix.name }}
+    needs: host-binary
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            runs-on: ubuntu-latest
+            target: bun-linux-x64
+            bin: saip-linux-x64
+          - name: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            bin: saip-linux-arm64
+          - name: darwin-x64
+            runs-on: macos-15-intel
+            target: bun-darwin-x64
+            bin: saip-darwin-x64
+          - name: darwin-arm64
+            runs-on: macos-14
+            target: bun-darwin-arm64
+            bin: saip-darwin-arm64
+          - name: windows-x64
+            runs-on: windows-latest
+            target: bun-windows-x64
+            bin: saip-windows-x64.exe
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install
+      - name: Build the workspace
+        run: pnpm --filter @saip/shared build
+      - name: Compile for ${{ matrix.target }}
+        run: node ./cli/scripts/build-binaries.mjs --target=${{ matrix.target }}
+      - name: Execute on native architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED=$(node -p "require('./cli/package.json').version")
+          ACTUAL=$(./cli/dist/binaries/${{ matrix.bin }} --version)
+          test "$ACTUAL" = "$EXPECTED" || { echo "::error::${{ matrix.name }} reports $ACTUAL, manifest says $EXPECTED"; exit 1; }
+          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  config"
+          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  profiles"
+          echo "${{ matrix.name }} executes: $ACTUAL"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: saip-${{ matrix.name }}
+          path: cli/dist/binaries/*
+          if-no-files-found: error

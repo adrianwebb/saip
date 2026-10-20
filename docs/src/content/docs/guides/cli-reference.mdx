@@ -33,6 +33,32 @@ package (as opposed to a link) cannot work while that dependency uses the `works
 protocol. Standalone single-file binaries for each architecture are tracked separately;
 until then, install from a checkout.
 
+### Installing a released binary
+
+Releases ship one self-contained executable per platform — **no Node.js, no pnpm, no source
+checkout** on the server:
+
+| Artifact | Platform |
+|---|---|
+| `saip-linux-x64` | Linux, x86-64 |
+| `saip-linux-arm64` | Linux, ARM64 (cloud ARM instances, Raspberry Pi 4/5) |
+| `saip-darwin-x64` | macOS on Intel |
+| `saip-darwin-arm64` | macOS on Apple Silicon |
+| `saip-windows-x64.exe` | Windows |
+
+```bash
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing          # verify before running anything
+chmod +x saip-linux-x64
+mv saip-linux-x64 ~/.local/bin/saip
+saip --version
+```
+
+macOS blocks an unsigned download on first run: `xattr -d com.apple.quarantine ./saip-darwin-arm64`
+**after** checking the checksum, or approve it in System Settings. The binary reports the version it
+was built from; a build whose embedded version does not match the release refuses to compile.
+
 ### Where it looks for configuration
 
 `saip` locates `saip.yaml` and `hosts.yaml` by **walking up from the current directory**, so
@@ -113,6 +139,27 @@ So the hand-rolled renderer ships for a weaker but honest reason: no dependencie
 behaviour in every row above, and a deliberate plain-text path for non-TTY output. If Bun becomes
 the packager ([#71](https://github.com/adrianwebb/saip/issues/71)), Ink for interactive use with
 this as the fallback is a live option rather than a rejected one.
+
+### Building a binary yourself
+
+```bash
+pnpm --filter @saip/shared build          # binaries bundle from source against built @saip/shared
+pnpm --filter @saip/cli build:bin         # this host's architecture, then executes it as proof
+pnpm --filter @saip/cli build:bin:all     # all five targets from one machine
+```
+
+Output lands in `cli/dist/binaries/` with `SHA256SUMS`. Notes that matter when changing this:
+
+- **Bun is pinned and invoked through `npx`, not added as a dependency.** `pnpm add -D bun` did
+  something worse than installing a package: pnpm wrote `devEngines.packageManager = "bun"` into
+  `cli/package.json`, declaring Bun as this project's package manager. A build tool must not be able
+  to change that by being installed.
+- **Only the host target is executed by the build script.** Cross-compiled binaries are labelled
+  `NOT executed (foreign architecture)`, and CI's matrix job runs each architecture on a native
+  runner. "Built" is not evidence that a binary runs.
+- The compiled entry point is `src/bin.ts`, and it must stay unconditional. #101 removed entry
+  detection because a compiled binary's `process.argv[1]` is a virtual `/$bunfs/...` path, which no
+  path comparison can resolve.
 
 ## Global Options
 

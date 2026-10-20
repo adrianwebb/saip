@@ -7,14 +7,30 @@ This tutorial walks you through deploying SAIP on your local machine, starting t
 
 ## Install the CLI
 
+Two ways, same tool either way.
+
+**A. Release binary** — no Node needed, best for a server:
+
+```bash
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x saip-linux-x64 && mv saip-linux-x64 ~/.local/bin/saip
+```
+
+Artifacts exist for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` and `windows-x64.exe`.
+
+**B. From a checkout** — needed when you are developing the platform:
+
 ```bash
 pnpm install && pnpm -r build
 pnpm --filter @saip/cli install:local
 saip --version
 ```
 
-`saip` is not published to npm, so `npx saip` will not find it — install from a checkout.
+`saip` is not published to npm, so `npx saip` will not find it — use a release binary or a checkout.
 See [CLI Reference → Installing the CLI](/saip/guides/cli-reference/#installing-the-cli).
+
 
 ## Prerequisites
 

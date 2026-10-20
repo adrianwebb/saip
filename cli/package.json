@@ -12,7 +12,9 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "clean": "rm -rf dist",
-    "install:local": "node scripts/install-link.mjs"
+    "install:local": "node scripts/install-link.mjs",
+    "build:bin": "node scripts/build-binaries.mjs",
+    "build:bin:all": "node scripts/build-binaries.mjs --all"
   },
   "dependencies": {
     "@saip/shared": "workspace:*",
