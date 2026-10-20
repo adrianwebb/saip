@@ -13,7 +13,7 @@ import { Context } from 'cordis'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
-import { EnvSecrets } from '@saip/shared'
+import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
@@ -30,8 +30,10 @@ const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin, dep
 export async function buildProgram(): Promise<Command> {
   const ctx = new Context()
   await ctx.plugin(AdapterRegistryService)
-  await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  await ctx.plugin(SecretsService, {})
   await ctx.plugin(HostRegistryService, {})
+  // The gateway that owns unlocking and the audit record (#93). One per process.
+  await ctx.plugin(SecretAccessService, {})
   await ctx.plugin(CommandRegistryService)
 
   // Load every command plugin so they self-register.

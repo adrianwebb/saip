@@ -565,7 +565,7 @@ describe('one unlock per command (#86)', () => {
     expect(r.code).toBe(0)
     expect(derivations).toBe(1)
     // And it told the user why it was unlocking.
-    expect(io.seen.join(' ')).toMatch(/this command uses \d+ stored values/)
+    expect(io.seen.join(' ')).toMatch(/this command reads \d+ value\(s\)/)
     expect(io.seen.join(' ')).toMatch(/you will not be asked again/)
   })
 
@@ -629,5 +629,47 @@ describe('sensitive vs ordinary values (#87)', () => {
       .find((i) => i.name === 'SAIP_UI_ADMIN')!
     expect(item.scope).toMatch(/not enforced yet|no route.*yet|does not yet/i)
     expect(item.purpose).toMatch(/password/i)
+  })
+})
+
+describe('declared sensitivity, not inferred (#93)', () => {
+  it('takes sensitive from the catalog entry, including a name the pattern would get wrong', async () => {
+    const { d, store } = mkStore()
+    // SAIP_R2_BUCKET contains no credential substring and is declared non-sensitive;
+    // SAIP_UI_ADMIN is declared sensitive even though ADMIN is the only cue.
+    const items = planInitItems({ config: baseConfig, hosts })
+    expect(items.find((i) => i.name === 'SAIP_R2_BUCKET')!.sensitive).toBe(false)
+    expect(items.find((i) => i.name === 'SAIP_UI_ADMIN')!.sensitive).toBe(true)
+    expect(items.find((i) => i.name === 'SAIP_HYPERSTACK_ENVIRONMENT')!.sensitive).toBe(false)
+    expect(items.every((i) => typeof i.sensitive === 'boolean')).toBe(true)
+  })
+
+  it('surfaces a hand-set store name the catalog never saw and labels it inferred', async () => {
+    const { d, store } = mkStore()
+    await store.set('SAIP_LEGACY_ODD_THING', 'value')
+    const said: string[] = []
+    // Required values are answered, or the wizard correctly stops at the first one and the
+    // hand-set name — appended last, since required items come first — is never reached.
+    await runInit({
+      store, items: planInitItems({ config: baseConfig, hosts }), envPath: join(d, '.env'),
+      io: { say: (l) => said.push(l), ask: async () => 'answer' },
+    })
+    const text = said.join('\n')
+    expect(text).toMatch(/SAIP_LEGACY_ODD_THING/)
+    expect(text).toMatch(/the store already holds 1/)
+    expect(text).toMatch(/not described in the catalog/i)
+    expect(text).toMatch(/inferred from the name/i)
+  })
+
+  it('lists integration secrets from the catalog with their usedBy reason available', () => {
+    const names = planInitItems({ config: {}, hosts: [] }).map((i) => i.name)
+    for (const n of ['SAIP_HF_TOKEN', 'SAIP_HYPERSTACK_API_KEY', 'SAIP_HYPERSTACK_ENVIRONMENT', 'SAIP_SSH_PRIVATE_KEY']) expect(names).toContain(n)
+    // #93: the catalog holds the declaration; applicability is decided per deployment, so the
+    // unenforced admin secret is only asked about when the config references one.
+    expect(planInitItems({ config: {}, hosts: [] }).map((i) => i.name)).not.toContain('SAIP_UI_ADMIN')
+    const admin = planInitItems({ config: { security: { ui: { admin_secret: 'SAIP_UI_ADMIN' } } }, hosts: [] })
+      .find((i) => i.name === 'SAIP_UI_ADMIN')!
+    expect(admin.sensitive).toBe(true)
+    expect(admin.scope).toMatch(/NOT ENFORCED YET/i)
   })
 })

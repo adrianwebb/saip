@@ -8,7 +8,7 @@
 
 import { Context } from 'cordis'
 import { AdapterRegistryService, SecretsService } from '@saip/shared/services'
-import { EnvSecrets, MetricsService } from '@saip/shared'
+import { EnvSecrets, MetricsService, SecretAccessService } from '@saip/shared'
 import { AdapterCompilerService } from './plugins/adapter-compiler.js'
 import { GatewayStateService } from './plugins/gateway-state.js'
 import { UserResolverService } from './plugins/user-resolver.js'
@@ -112,7 +112,13 @@ export async function createApp(opts: CreateAppOptions = {}) {
     throw new Error(`invalid adapter registry: ${codes}`)
   }
 
-  await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  // No provider override: SecretsService defaults to the env -> encrypted-store chain. Passing a
+  // bare EnvSecrets here silently defeated the store — the config command would save credentials
+  // that the running gateway could never read. Discovered while wiring #93, and it is the
+  // composition-root failure #76 exists to catch: the seam worked in tests because tests inject
+  // providers, while production wiring overrode the one behaviour users were promised.
+  await ctx.plugin(SecretsService, {})
+  await ctx.plugin(SecretAccessService, {})
   await ctx.plugin(MetricsService, { provider: opts.monitoring })
   await ctx.plugin(AdapterCompilerService)
   await ctx.plugin(GatewayStateService, { config, storage, vllm })

@@ -69,10 +69,14 @@ export function newLineAccumulator(): {
     },
   }
 }
-import { envFilePath, setEnvFileValues, removeEnvValues, isSensitiveName, type SecretStore } from '@saip/shared'
+import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, type SecretEntry, type SecretStore } from '@saip/shared'
 
 export interface InitItem {
   readonly name: string
+  /** Declared by the catalog. Never recomputed for a catalogued name (#93). */
+  readonly sensitive: boolean
+  /** True when the name is not catalogued and sensitivity was inferred from it. */
+  readonly inferred?: boolean
   /** `config` → written to `.env` (interpolated into saip.yaml). `secret` → written to the store. */
   readonly kind: 'config' | 'secret'
   /** Blank aborts the wizard for this item; otherwise Enter skips it with a note. */
@@ -101,126 +105,23 @@ const HS_DOCS = 'https://docs.hyperstack.cloud/docs/api-reference/authentication
  * testable without a terminal, a store, or a filesystem.
  */
 export function planInitItems(input: { config: any; hosts: any[] }): InitItem[] {
-  const { config, hosts } = input
-  const items: InitItem[] = [
-    {
-      name: 'SAIP_R2_BUCKET',
-      kind: 'config',
-      required: true,
-      purpose: 'Object storage for adapters, knowledge, sessions and feedback. Everything the platform persists lives here.',
-      how: 'Cloudflare dashboard → R2 Object Storage → Overview → Create bucket. The name is the bucket title, not a URL.',
-      scope: 'One private bucket per deployment is enough. Do not make it public: adapter weights and user data go in it.',
-      providerUrl: 'https://dash.cloudflare.com/?to=/:account/r2/overview',
-      docsUrl: `${SITE}/guides/manage-secrets/`,
-    },
-    {
-      name: 'SAIP_R2_ENDPOINT',
-      kind: 'config',
-      required: true,
-      purpose: 'The S3-compatible endpoint SAIP talks to. R2 is not addressed by the AWS endpoint.',
-      how: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com — find the account ID in the dashboard header. ${CF_ACCOUNT}`,
-      scope: 'Buckets created in a jurisdiction need that jurisdiction’s endpoint (…​.eu. / …​.us. / …​.fedramp.), and a client cannot mix them.',
-      providerUrl: R2_DOCS,
-      docsUrl: `${SITE}/guides/manage-secrets/`,
-    },
-    {
-      name: 'SAIP_R2_ACCESS_KEY_ID',
-      kind: 'secret',
-      required: true,
-      purpose: 'The Access Key ID half of the credential SAIP signs storage requests with.',
-      how: 'R2 → Overview → Account Details → API Tokens → Manage → Create Account (or User) API token, then copy the Access Key ID shown once.',
-      scope: 'Permission "Object Read & Write", scoped to the bucket above. Not Admin Read & Write, and not an account-wide token: SAIP only reads and writes objects.',
-      providerUrl: R2_DOCS,
-      docsUrl: `${SITE}/guides/manage-secrets/`,
-    },
-    {
-      name: 'SAIP_R2_SECRET_ACCESS_KEY',
-      kind: 'secret',
-      required: true,
-      purpose: 'The signing secret half. Together with the ID above it grants write access to all your platform data.',
-      how: 'Shown exactly once at token creation. If it was not copied, create a new token — there is no way to recover it.',
-      scope: 'Treat rotation as cheap: revoke the token in the dashboard and run this wizard again.',
-      providerUrl: R2_DOCS,
-      docsUrl: `${SITE}/guides/manage-secrets/`,
-    },
-  ]
+  // One source of truth: the runtime catalog. The wizard's guidance, the access policy and the
+  // sensitivity flags all come from the same entries, so help text and enforcement cannot drift —
+  // which is what happened when this file held its own copy of the descriptions.
+  const entries: SecretEntry[] = catalogFor({ config: input.config, hosts: input.hosts })
+  const items: InitItem[] = entries.map((e) => ({
+    name: e.name,
+    kind: e.kind,
+    sensitive: e.sensitive,
+    inferred: e.inferred,
+    required: e.required,
+    purpose: e.purpose,
+    how: e.how,
+    scope: e.scope,
+    providerUrl: e.providerUrl,
+    docsUrl: e.docsUrl,
+  }))
 
-  // These four are ALWAYS listed. Gating them on config discovery (a `token_env` key, a
-  // `hyperstack` host in hosts.yaml) meant a new user could never see the credentials the next
-  // integrations need — and hosts.yaml is not committed, so they never appeared at all. Optional
-  // answers are fine; invisible requirements are not.
-  const extras: InitItem[] = [
-    {
-      name: 'SAIP_HF_TOKEN',
-      kind: 'secret',
-      required: false,
-      purpose: 'Hugging Face token, used when pulling base weights or gated repositories during training and serving.',
-      how: 'huggingface.co → Settings → Access Tokens → New token. Name it after this deployment so it can be revoked alone.',
-      scope: 'Read is enough for public checkpoints. For gated repos, grant read on the specific repository rather than writing or "all" scopes.',
-      providerUrl: 'https://huggingface.co/settings/tokens',
-      docsUrl: HF_DOCS,
-    },
-    {
-      name: 'SAIP_HYPERSTACK_API_KEY',
-      kind: 'secret',
-      required: false,
-      purpose: 'Credentials for provisioning and controlling remote GPU instances. Not needed to run locally.',
-      how: 'Sign in to the Hyperstack console → API Keys → Generate a New API Key. The value is shown ONCE; there is no way to recover it, only to issue another.',
-      scope: 'Issue a key per deployment, not a personal all-purpose key, so a leak can be revoked without disabling your own console access. Mind the billing surface: this credential can create billable GPUs.',
-      providerUrl: HS_DOCS,
-      docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
-    },
-    {
-      name: 'SAIP_HYPERSTACK_ENVIRONMENT',
-      kind: 'config',
-      required: false,
-      purpose: 'Selects which Hyperstack environment (project/region grouping) the provider operates in.',
-      how: 'Copy the environment identifier from the console. Leave blank unless your account uses named environments.',
-      providerUrl: HS_DOCS,
-    },
-    {
-      name: 'SAIP_SSH_PRIVATE_KEY',
-      kind: 'secret',
-      required: false,
-      purpose: 'The private half of the key pair used to log into a provisioned instance as ubuntu.',
-      how: 'Download the private key when you create the key pair in the console (it is delivered once), then store its contents here.',
-      // Stated rather than omitted: the provider does not yet read this value. Documenting the
-      // credential as though it worked would send the user chasing a phantom misconfiguration.
-      scope: 'KNOWN GAP: the provider currently builds `-i /run/secrets/<key_secret>`, treating the secret NAME as a file path that nothing populates, so storing this value does NOT yet make remote SSH work. Tracked separately; deploy over a mounted key or from a host with the file in place until then.',
-      docsUrl: `${SITE}/guides/deploy-hyperstack-cloud/`,
-    },
-  ]
-  const seen = new Set(items.map((i) => i.name))
-  for (const e of extras) if (!seen.has(e.name)) { items.push(e); seen.add(e.name) }
-
-  for (const t of config?.security?.api_tokens ?? []) {
-    if (!t?.token_secret || seen.has(t.token_secret)) continue
-    items.push({
-      name: t.token_secret,
-      kind: 'secret',
-      required: false,
-      purpose: `Bearer token for API client "${t.name ?? t.id}". That client cannot authenticate until it is set.`,
-      how: 'Generate your own long random string (e.g. `openssl rand -hex 32`) — there is no provider page, this value is yours.',
-      scope: 'One secret per client, so a leak can be revoked without locking everyone else out.',
-      docsUrl: `${SITE}/reference/configuration/`,
-    })
-    seen.add(t.token_secret)
-  }
-
-  const admin: string | undefined = config?.security?.ui?.admin_secret
-  if (admin && !seen.has(admin)) {
-    items.push({
-      name: admin,
-      kind: 'secret',
-      required: false,
-      purpose: 'Intended as the single admin PASSWORD for the web UI login screen. It is a NAME in config, never the value.',
-      how: 'Generate a long random string yourself (e.g. `openssl rand -base64 24`).',
-      // Said plainly because it is true: the guard class exists and is tested, but nothing
-      // constructs it, so the value currently protects nothing. A user must not believe otherwise.
-      scope: 'NOT ENFORCED YET: PasswordSessionAuth exists in @saip/shared but is never instantiated, and no route checks it. Setting this changes no behaviour today. Tracked in #90; do not rely on it for access control.',
-      docsUrl: `${SITE}/reference/configuration/`,
-    })
-  }
   return items
 }
 
@@ -319,7 +220,7 @@ export async function runHelp(opts: {
   }
   for (const item of wanted) {
     for (const l of guidanceLines(item)) emit(l)
-    const sensitive = isSensitiveName(item.name)
+    const sensitive = item.sensitive
   const src = await valueSource(item.name, ctx)
     emit(src ? `   state   : ${src === 'store' ? 'stored (encrypted)' : src === '.env' ? 'set in .env' : 'set in your shell'} — ${item.required ? 'required' : 'optional'}` : `   state   : not set — ${item.required ? 'REQUIRED, must be provided' : 'optional, safe to skip'}`)
     emit('')
@@ -376,28 +277,50 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   emit('[saip] config init — one value at a time, hidden input, paste works')
   emit('[saip] Enter on an optional item skips it; Ctrl+C stops and keeps what is already saved.')
 
-  // One unlock for the whole command (#86). Previously every write re-derived the key, which meant
-  // every write re-prompted: four credentials cost four passphrase prompts plus four scrypt runs,
-  // and nothing said why. Unlocking first also separates "your passphrase is wrong" from a value
-  // prompt, so the two are never confused.
+  // One unlock for the whole command (#86). Previously every write re-derived the key, so every
+  // write re-prompted: four credentials cost four passphrase prompts and four scrypt runs, and
+  // nothing said why. Unlocking first separates "wrong passphrase" from a value prompt, and hands
+  // us the name list, which is the only reliable way to see variables set outside the catalog.
   if (interactive && store.exists()) {
-    const names = items.map((i) => i.name)
-    emit('')
-    emit(`[saip] this command uses ${names.length} stored values: ${names.join(', ')}`)
-    emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
+    let names: string[] = []
     try {
       const wrap = await store.ensureUnlocked()
+      names = await store.names()
+      emit('')
+      emit(`[saip] this command reads ${items.length} value(s): ${items.map((i) => i.name).join(', ')}`)
+      if (names.length) emit(`[saip] the store already holds ${names.length}: ${names.join(', ')}`)
+      emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
       emit(`[saip] store unlocked (via ${wrap}) — you will not be asked again in this command.`)
     } catch (e) {
       emit(`[saip] ${(e as Error).message}`)
       emit('[saip] nothing was changed. Re-run with a different passphrase, or `saip config doctor`.')
       return { code: 1, lines, stored, skipped }
     }
+
+    // Names the catalog has never seen are surfaced here rather than in planInitItems, because
+    // reading the store is async and a synchronous stub would have been dead code that looked like
+    // a feature. They stay visible, and their sensitivity is labelled as inferred — a declared fact
+    // and a guess must not read the same (#93).
+    for (const name of names) {
+      if (items.some((i) => i.name === name)) continue
+      const sens = sensitivityOf(name)
+      items.push({
+        name,
+        kind: 'secret',
+        sensitive: sens.sensitive,
+        inferred: !sens.declared,
+        required: false,
+        purpose: 'Present in the store but not described in the catalog, so SAIP does not know what it is for.',
+        how: `Enter a new value to replace it, or remove it: saip config forget ${name}`,
+        scope: sens.declared ? undefined : 'Sensitivity inferred from the name — not a declared fact (#93).',
+        docsUrl: `${SITE}/guides/manage-secrets/`,
+      })
+    }
   }
 
   try {
   for (const item of items) {
-    const sensitive = isSensitiveName(item.name)
+    const sensitive = item.sensitive
   const src = await valueSource(item.name, ctx)
     if (reset && reset !== item.name) { if (src) stored.push(item.name); continue }
 
@@ -492,7 +415,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     stored.push(item.name)
     // Recomputed here: `writeOne` is shared by every branch, so relying on a loop-local variable
     // would silently mask the wrong way for one of them.
-    emit(isSensitiveName(item.name) ? `   → stored ${item.name} (${value.length} chars)` : `   → stored ${item.name} = ${value}`)
+    emit(item.sensitive ? `   → stored ${item.name} (${value.length} chars)` : `   → stored ${item.name} = ${value}`)
   }
 }
 
