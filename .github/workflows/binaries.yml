@@ -47,7 +47,11 @@ jobs:
           EXPECTED=$(node -p "require('./cli/package.json').version")
           ACTUAL=$(./cli/dist/binaries/saip-linux-x64 --version)
           test "$ACTUAL" = "$EXPECTED" || { echo "::error::binary reports $ACTUAL, manifest says $EXPECTED"; exit 1; }
-          ./cli/dist/binaries/saip-linux-x64 --help | grep -q "saip config"
+          # Assert the command names as commander prints them (unprefixed), not "saip config" —
+          # the first version of this check grepped for a string the help output never contains and
+          # failed a healthy artifact. The Compile step above had already executed it successfully.
+          ./cli/dist/binaries/saip-linux-x64 --help | grep -qE "^  config"
+          ./cli/dist/binaries/saip-linux-x64 --help | grep -qE "^  profiles"
           # GPU-less runner: fail closed with a named reason, never hang and never invent a tier.
           set +e
           ./cli/dist/binaries/saip-linux-x64 profiles --json >/dev/null 2>&1
@@ -119,7 +123,8 @@ jobs:
           EXPECTED=$(node -p "require('./cli/package.json').version")
           ACTUAL=$(./cli/dist/binaries/${{ matrix.bin }} --version)
           test "$ACTUAL" = "$EXPECTED" || { echo "::error::${{ matrix.name }} reports $ACTUAL, manifest says $EXPECTED"; exit 1; }
-          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -q "saip config"
+          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  config"
+          ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  profiles"
           echo "${{ matrix.name }} executes: $ACTUAL"
       - name: Upload
         uses: actions/upload-artifact@v4
