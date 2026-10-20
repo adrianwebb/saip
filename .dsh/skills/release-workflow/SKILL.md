@@ -110,6 +110,55 @@ Open PR, wait for CI green, merge to `staging`. For production, follow the Relea
 
 **Why this order:** documentation written after code describes what *was* built, not what *should* be — it captures implementation detail instead of intent and is perpetually behind. Tests written after code verify the implementation, not the specification. The docs ARE the spec, the tests validate the spec, the code satisfies the tests.
 
+## ⚠️ MANDATORY: Testing Tiers and the Composition Root
+
+Outside-in testing only works if the **outer** rung exists. Unit tests of injected, isolated
+modules do not substitute for it, and in a plugin/seam architecture they cannot:
+
+> **Dependency injection moves bugs from the module into the composition root. It does not
+> eliminate them.**
+
+A test that injects a fake collaborator cannot observe the code that supplies the real one. That
+is the location of `createApp()`, provider defaults, factory functions, CLI entry points, and
+build wiring — exactly where "works in tests, broken when installed" defects live.
+
+Rules, per change that touches a seam or a user-runnable surface:
+
+1. **Default construction path gets a test.** For each injectable dependency, at least one test
+   runs the wiring itself with nothing injected — the factory, the provider default, the app
+   composition root. Injected-collaborator tests may be numerous; they may not be the only ones.
+2. **Anything run as a program is tested as a program.** Spawn the built artifact and assert on
+   output and exit code. Importing exported functions proves the library, never the command; a
+   CLI that dies silently under a symlink, a relative path, or an options-object position passes
+   every library-level test.
+3. **A documented capability needs a failing test at the level a user observes it, before
+   implementation.** Documentation describes an interface; if nothing executable asserts the
+   behaviour, the description is a claim about the docs, not the product.
+4. **A green suite is not the gate.** Report the gate honestly: unit/integration green, build
+   clean, CI green, *and* assembled-artifact smoke-tested. If a rung is missing, say so instead
+   of writing "tests pass".
+
+CI must include the smoke rung where a repo ships a binary, CLI, or container — see the smoke step
+in the Pre-PR checklist. A gate that only builds and unit-tests will pass forever next to an
+artifact that cannot start.
+
+## ⚠️ MANDATORY: Process Self-Evaluation
+
+Working *in* the process is the best opportunity to improve it. Raise a process review — as an
+issue, with evidence — when any of these occurs or is anticipated:
+
+- a defect reaches a merged branch despite green tests;
+- the same class of mistake appears twice, or you find the next gap while fixing the last one;
+- a documented promise has no executable check behind it;
+- a step is manual or skippable enough that it will eventually be skipped.
+
+State the pattern, what it cost, and **the cheapest change that would have caught it**. Prefer
+making the correct thing *checked* over making it *documented* — prose has no failing state, and
+every "just write it in the docs" fix above was bought with a shipped defect that the docs did not
+prevent. Process edits to instruction files are valid PR content but must be their own reviewable
+change with real incidents cited, never opportunistic scope inside a feature PR. Propose; do not
+unilaterally expand.
+
 ## Branch Model
 
 | Branch | Purpose | Protection |
@@ -489,6 +538,8 @@ Run this every time, immediately before opening the PR (this is the artifact the
 - [ ] Documentation updated **and committed** before code (diff shows the doc files changed)
 - [ ] Tests written outside-in and committed per layer; `<test command>` run now → 0 failures
 - [ ] `<typecheck command>` and `<build command>` run now → clean / exit 0
+- [ ] Seams and user-runnable surfaces have ≥1 test on the **default construction path**, nothing injected (see Testing Tiers and the Composition Root)
+- [ ] Where the change ships a CLI/binary/container, the **built artifact was executed this session** and its output plus exit code are pasted in the PR — library-level tests alone do not clear this gate
 - [ ] All acceptance criteria checked in the **issue body**, plus a progress comment posted
 - [ ] `origin/staging` merged into this branch; conflicts resolved here, pushed
 - [ ] Cross-links present: `(#<issue>)` in commits and in the PR title, `Part of #<issue>` in a staging PR body (`Closes #<issue>` only on an RC or hotfix)
@@ -775,6 +826,9 @@ These mean you have left the workflow; fix it before continuing:
 - Approving or merging a PR to `main` as an agent
 - Tagging anything other than `main`, or reusing an existing tag
 - Long-lived branch that has not synced `staging` recently
+- Reporting "tests pass" when the assembled artifact was never executed
+- A seam or CLI whose only tests inject fakes, leaving production wiring untested
+- A documented capability with no failing test written before its implementation
 - A PR merged whose branch still exists — locally or on the remote (see Post-Merge Branch Cleanup)
 - A `Closes #N` in a `staging` PR body, which cannot fire and reads as done when it is not
 - A release candidate whose closing list was written from memory instead of derived from the merged PRs
@@ -798,6 +852,8 @@ These mean you have left the workflow; fix it before continuing:
 | Delete merged branch (remote + local) | `git push origin --delete <branch> && git branch -D <branch> && git fetch --prune` |
 | List branches that are safe to delete | merged ∩ remote − open, via `gh pr list --state merged/open` + `git ls-remote --heads` |
 | Confirm what actually exists remotely | `git ls-remote --heads origin` *(not `git branch -r`, which is stale until pruned)* |
+| Prove the artifact runs, not just the library | build, then execute the binary and assert output + exit code |
+| Find the composition root of a seam | grep the factory/default-provider call sites, then test those |
 | Open release candidate | `gh pr create --base main --head staging --title "RC: <version>"` |
 | Merge RC to main | `gh pr merge <N> --merge` *(maintainer)* |
 | Tag a release | `git tag -a <version> -m "msg" && git push origin main --tags` *(maintainer)* |
