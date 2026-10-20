@@ -19,8 +19,6 @@ security:
   api_tokens:                # caller → bearer-token secret mapping
     - caller: alice
       token_secret: SAIP_TOKEN_ALICE   # SECRET NAME, never the value
-  ui:
-    admin_secret: SAIP_UI_ADMIN        # SECRET NAME guarding web UIs
 ```
 
 :::caution[Secrets by name only]
