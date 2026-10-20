@@ -3,6 +3,7 @@ import type { CommandSpec } from '../lib/command-registry.js'
 import { withHost } from '../lib/host-command.js'
 import { providerFor } from '../lib/providers/index.js'
 import { parseParams, renderDeployPlan } from '../lib/deploy.js'
+import { uiOr } from '../ui/output.js'
 
 const spec: CommandSpec = {
   name: 'deploy',
@@ -24,16 +25,16 @@ const spec: CommandSpec = {
     const params = parseParams(options.param as string[] | undefined)
 
     const plan = renderDeployPlan(source, target, params, { revealParams: !!options.revealParams })
-    console.log(`[saip] ${plan.detail}`)
+    uiOr(ctx).showLine(String(plan.detail))
 
-    if (options.dryRun) { console.log('[saip] dry-run: nothing applied'); return }
+    if (options.dryRun) { uiOr(ctx).showLine('dry-run: nothing applied'); return }
 
     const provider = providerFor(target.kind)
     if (!provider.deploy) {
       console.error(`[saip] deployment provider "${target.kind}" cannot apply deploys (not implemented)`); process.exitCode = 1; return
     }
     const result = await provider.deploy(source, target, params)
-    console.log(`[saip] deploy ${result.applied ? 'applied' : 'planned'}${result.detail ? ` — ${result.detail}` : ''}`)
+    uiOr(ctx).showLine(`deploy ${result.applied ? 'applied' : 'planned'}${result.detail ? ` — ${result.detail}` : ''}`)
   },
 }
 

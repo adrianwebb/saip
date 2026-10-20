@@ -8,6 +8,7 @@ import type { Context } from 'cordis'
 import type { HostConfig } from '@saip/shared'
 import { resolveTargetHost } from './host-target.js'
 import { providerFor } from './providers/index.js'
+import { uiOr } from '../ui/output.js'
 
 export function withHost(ctx: Context, requested: string | undefined): HostConfig {
   const hosts = (ctx as any).hosts?.list() ?? []
@@ -26,6 +27,6 @@ export async function runVerb(
   else if (verb === 'down') await provider.down(host, opts)
   else {
     const st = await provider.status(host)
-    console.log(`[saip] ${host.name} (${host.kind}): reachable=${st.reachable} mode=${st.mode ?? '?'}${st.detail ? ` — ${st.detail}` : ''}`)
+    uiOr(ctx).showLine(`${host.name} (${host.kind}): reachable=${st.reachable} mode=${st.mode ?? '?'}${st.detail ? ` — ${st.detail}` : ''}`)
   }
 }
