@@ -19,7 +19,7 @@ import { statSync, openSync } from 'node:fs'
 import { ReadStream } from 'node:tty'
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
+import { SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { planInitItems, runInit, runHelp, forgetValue, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 
@@ -65,29 +65,33 @@ export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
  * /dev/tty; so do we — and with no controlling terminal we refuse outright rather than storing
  * a key that nobody knows, which would look like success and be unrecoverable.
  */
-export function promptTTY(question: string, stream?: ReadStream): Promise<string> {
-  let own = stream
-  if (!own) {
+export function promptTTY(question: string, opts: { echo?: boolean; stream?: ReadStream } = {}): Promise<string> {
+  let own: ReadStream | undefined
+  if (!opts.stream) {
     let fd: number
     try { fd = openSync('/dev/tty', 'r+') }
     catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
     own = new ReadStream(fd)
   }
-  const tty = own
+  const tty: ReadStream = opts.stream ?? (own as ReadStream)
+  const echo = opts.echo ?? false
   const wasRaw = tty.isRaw
   // Raw mode is what makes echo suppression possible — and it is also why Ctrl+C appeared to do
   // nothing: setRawMode disables ISIG, so 0x03 arrives as an ordinary byte instead of raising
   // SIGINT. The reducer below is therefore the cancel handler, not a nicety.
-  try { tty.setRawMode(true) } catch { /* injected stream in tests */ }
+  // Raw mode is entered only when echo must be suppressed. Ordinary values are read with echo ON
+  // so the user can see and correct what they type, and the trailing newline below is then skipped:
+  // the terminal already advanced, and writing another one is what made prompts look misaligned.
+  if (!echo) { try { tty.setRawMode(true) } catch { /* injected stream in tests */ } }
   // Prompt on stdout, same stream as the explanation block, so ordering on screen is the ordering
   // of the calls. Splitting one to stderr and the other to stdout scrambles it when redirected.
   process.stdout.write(question)
   const acc = newLineAccumulator()
   return new Promise((resolve, reject) => {
     const finish = (): void => {
-      try { tty.setRawMode(!!wasRaw) } catch { /* not a real tty */ }
+      if (!echo) { try { tty.setRawMode(!!wasRaw) } catch { /* not a real tty */ } }
       try { tty.destroy() } catch { /* already closed */ }
-      process.stdout.write('\n')
+      if (!echo) process.stdout.write('\n')
     }
     tty.on('data', (chunk: Buffer) => {
       const r = acc.feed(chunk.toString('utf8'))
@@ -101,30 +105,6 @@ export function promptTTY(question: string, stream?: ReadStream): Promise<string
   })
 }
 
-/** Prompt with echo disabled, used when no value was supplied and stdin is not a pipe. */
-async function promptHidden(question: string): Promise<string> {
-  const ttyMod = await import('node:tty')
-  const tty = !!ttyMod.isatty(0)
-  const wasRaw = process.stdin.isRaw
-  if (tty) process.stdin.setRawMode(true)
-  process.stderr.write(question)
-  let value = ''
-  return new Promise((resolve) => {
-    const onData = (chunk: Buffer) => {
-      for (const ch of chunk.toString('utf8')) {
-        if (ch === '\n' || ch === '\r') {
-          process.stdin.removeListener('data', onData)
-          if (tty) process.stdin.setRawMode(!!wasRaw)
-          process.stderr.write('\n')
-          return resolve(value)
-        }
-        if (ch === '') value = value.slice(0, -1)
-        else if (ch.codePointAt(0)! >= 0x20) value += ch
-      }
-    }
-    process.stdin.on('data', onData)
-  })
-}
 
 /** True when the libsecret CLI exists. Probed, never assumed (see #68, #73). */
 export function hasSecretTool(): boolean {
@@ -235,7 +215,7 @@ export async function runConfig(
         value = (await (deps.readStdin ?? readStdinLine)()).replace(/\r?\n$/, '')
       }
       if (value === undefined) {
-        try { value = (await (deps.prompt ?? ((q) => promptTTY(q)))(`${name}: `)).replace(/\r?\n$/, '') }
+        try { value = (await (deps.prompt ?? ((q) => promptTTY(q, { echo: !isSensitiveName(name) })))(`${name}: `)).replace(/\r?\n$/, '') }
         catch (e) { return fail((e as Error).message) }
       }
       if (!value) return fail('refusing to store an empty value — unset the name instead')
@@ -243,7 +223,7 @@ export async function runConfig(
       // lock the user out of every secret about to be stored, with no recovery by design.
       let target = store
       if (!target.exists() && !process.env.SAIP_SECRETS_PASSPHRASE) {
-        const ask = deps.prompt ?? promptTTY
+        const ask = deps.prompt ?? ((q: string) => promptTTY(q, { echo: false }))
         const first = await ask('choose a passphrase: ')
         if (!first) return fail('a passphrase is required to create the store; nothing was stored')
         if ((await ask('confirm passphrase: ')) !== first) return fail('passphrases did not match; nothing was stored')
@@ -380,9 +360,9 @@ export async function runConfig(
         say: (line) => process.stdout.write(`${line}\n`),
         // --non-interactive never prompts: runInit only calls `ask` when interactive is true, and
         // this guard makes that contract fail loudly rather than opening a terminal mid-report.
-        ask: async (question) => {
+        ask: async (question, o) => {
           if (nonInteractive) throw new NoTerminalError('non-interactive mode does not prompt')
-          return promptTTY(question)
+          return promptTTY(question, { echo: !o.secret })
         },
       }
       let envPath: string | undefined

@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { defaultSecretsProvider, MissingSecretError } from '../src/index.js'
+import { defaultSecretsProvider, MissingSecretError, isSensitiveName } from '../src/index.js'
 
 const storePath = () => join(mkdtempSync(join(tmpdir(), 'saip-wire-')), 'secrets.enc.json')
 
@@ -48,5 +48,18 @@ describe('defaultSecretsProvider (the real composition path)', () => {
     await new SecretStore({ path, keySources: defaultKeySources(env, { storePath: path }) }).set('SAIP_R2_BUCKET', 'stored')
     const p = defaultSecretsProvider({ ...env, SAIP_R2_BUCKET: 'shell-wins' }, { path })
     expect(await p.require('SAIP_R2_BUCKET')).toBe('shell-wins')
+  })
+})
+
+describe('isSensitiveName (#87)', () => {
+  it('treats credential-shaped names as sensitive', () => {
+    for (const n of ['SAIP_R2_ACCESS_KEY_ID', 'SAIP_R2_SECRET_ACCESS_KEY', 'SAIP_HF_TOKEN', 'SAIP_UI_ADMIN', 'SAIP_TOKEN_ALICE', 'MY_PASSWORD', 'DB_PASSPHRASE']) {
+      expect(isSensitiveName(n)).toBe(true)
+    }
+  })
+  it('treats ordinary configuration as not sensitive', () => {
+    for (const n of ['SAIP_R2_BUCKET', 'SAIP_R2_ENDPOINT', 'SAIP_HYPERSTACK_ENVIRONMENT', 'TZ', 'SAIP_INFERENCE_PORT']) {
+      expect(isSensitiveName(n)).toBe(false)
+    }
   })
 })

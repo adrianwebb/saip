@@ -203,6 +203,20 @@ export function defaultStorePath(env: NodeJS.ProcessEnv = process.env): string {
   return raw.replace(/^~/, homedir())
 }
 
+/**
+ * Whether a value is a credential or ordinary configuration (#87).
+ *
+ * The wizard used to suppress echo for everything it asked, which made a bucket name as unreadable
+ * to type as a secret key — and hid the current value behind a character count. Sensitivity is a
+ * property of the value, so it is decided by the name: anything credential-shaped stays hidden,
+ * plain configuration is displayed and editable so a user can actually see what they have.
+ *
+ * Deliberately conservative — an unknown name that *looks* like a credential is treated as one.
+ */
+export function isSensitiveName(name: string): boolean {
+  return /KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|CREDENTIAL|SESSION|AUTH|ADMIN/.test(name.toUpperCase())
+}
+
 export class SecretStoreError extends Error {
   readonly name = 'SecretStoreError'
 }

@@ -69,7 +69,7 @@ export function newLineAccumulator(): {
     },
   }
 }
-import { envFilePath, setEnvFileValues, removeEnvValues, type SecretStore } from '@saip/shared'
+import { envFilePath, setEnvFileValues, removeEnvValues, isSensitiveName, type SecretStore } from '@saip/shared'
 
 export interface InitItem {
   readonly name: string
@@ -213,9 +213,11 @@ export function planInitItems(input: { config: any; hosts: any[] }): InitItem[] 
       name: admin,
       kind: 'secret',
       required: false,
-      purpose: 'Secret guarding the web UI admin area. It is a NAME in config, never the value.',
-      how: 'Generate a long random string yourself.',
-      scope: 'Do not reuse any other secret here; anyone holding it can reach admin actions.',
+      purpose: 'Intended as the single admin PASSWORD for the web UI login screen. It is a NAME in config, never the value.',
+      how: 'Generate a long random string yourself (e.g. `openssl rand -base64 24`).',
+      // Said plainly because it is true: the guard class exists and is tested, but nothing
+      // constructs it, so the value currently protects nothing. A user must not believe otherwise.
+      scope: 'NOT ENFORCED YET: PasswordSessionAuth exists in @saip/shared but is never instantiated, and no route checks it. Setting this changes no behaviour today. Tracked in #90; do not rely on it for access control.',
       docsUrl: `${SITE}/reference/configuration/`,
     })
   }
@@ -236,14 +238,37 @@ export async function valueSource(
   return undefined
 }
 
-const sourceNote = (name: string, src: ValueSource): string[] => {
-  if (src !== 'shell') return [`   current : already set — source: (${src})`]
+const sourceNote = (name: string, src: ValueSource, shown?: string): string[] => {
+  if (src !== 'shell') return [`   current : already set — source: (${src})${shown ? ` — ${shown}` : ''}`]
   return [
     `   current : already set — source: (shell)`,
     `   note    : this comes from your shell environment, which the CLI cannot clear.`,
     `             Remove it yourself:  unset ${name}   and delete the line from your shell profile,`,
     `             otherwise it reappears next session and wins over anything stored here.`,
   ]
+}
+
+/**
+ * What to display for the current value: in full for ordinary configuration, as a character count
+ * for credentials. This is the whole point of the designation — the user needs to see the bucket
+ * and endpoint they have, and must never see a key.
+ */
+export async function currentDisplay(
+  item: InitItem,
+  src: ValueSource,
+  ctx: { env?: NodeJS.ProcessEnv; envPath: string; store: SecretStore },
+  sensitive: boolean,
+): Promise<string> {
+  let raw: string | undefined
+  if (src === 'shell') raw = (ctx.env ?? process.env)[item.name]
+  else if (src === '.env') raw = readEnvValue(ctx.envPath, item.name)
+  else {
+    // A stored credential reports its LENGTH only. Reading it is deliberate: "set (hidden)" tells
+    // you nothing about a value you may need to spot as wrong.
+    try { raw = await ctx.store.get(item.name) } catch { raw = undefined }
+  }
+  if (sensitive) return raw ? `set (${raw.length} chars, hidden)` : 'set (hidden)'
+  return raw ? `current value: ${raw}` : 'set'
 }
 
 /** The teaching block. Printed for EVERY item, set or unset — see #82. */
@@ -294,7 +319,8 @@ export async function runHelp(opts: {
   }
   for (const item of wanted) {
     for (const l of guidanceLines(item)) emit(l)
-    const src = await valueSource(item.name, ctx)
+    const sensitive = isSensitiveName(item.name)
+  const src = await valueSource(item.name, ctx)
     emit(src ? `   state   : ${src === 'store' ? 'stored (encrypted)' : src === '.env' ? 'set in .env' : 'set in your shell'} — ${item.required ? 'required' : 'optional'}` : `   state   : not set — ${item.required ? 'REQUIRED, must be provided' : 'optional, safe to skip'}`)
     emit('')
   }
@@ -371,14 +397,15 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
 
   try {
   for (const item of items) {
-    const src = await valueSource(item.name, ctx)
+    const sensitive = isSensitiveName(item.name)
+  const src = await valueSource(item.name, ctx)
     if (reset && reset !== item.name) { if (src) stored.push(item.name); continue }
 
     // Guidance first, ALWAYS — including for values already set. Hiding it once something exists
     // conceals it from precisely the user whose existing value is wrong, which is the case where
     // the explanation is worth the most.
     for (const l of interactive ? guidanceLines(item) : (item.required && !answers[item.name] ? [`   missing   : ${item.name} — ${item.purpose}`] : [])) emit(l)
-    if (src) for (const l of sourceNote(item.name, src)) emit(l)
+    if (src) for (const l of sourceNote(item.name, src, await currentDisplay(item, src, ctx, sensitive))) emit(l)
 
     if (reset === item.name) {
       // The user asked to redo this one; clear it first so "already set" cannot shadow the answer.
@@ -387,7 +414,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     } else if (src && !force) {
       if (!interactive) { stored.push(item.name); continue }
       emit(`   → Enter keeps it; type a new value to replace it; or: saip config forget ${item.name}`)
-      const next = clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' }))
+      const next = clean(await io.ask(`${item.name}: `, { secret: sensitive }))
       if (!next) { stored.push(item.name); continue }
       await writeOne(item, next)
       continue
@@ -400,7 +427,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     // safe to run from CI or an agent, and why a required blank is recorded rather than asked.
     let value = answers[item.name] !== undefined
       ? clean(answers[item.name]!)
-      : (interactive ? clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' })) : '')
+      : (interactive ? clean(await io.ask(`${item.name}: `, { secret: sensitive })) : '')
 
     if (!value) {
       if (!interactive) {
@@ -414,7 +441,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
         continue
       }
       emit(`   → ${item.name} is required and was left empty. Enter it, or Ctrl+C to stop.`)
-      const retry = clean(await io.ask(`${item.name}: `, { secret: item.kind === 'secret' }))
+      const retry = clean(await io.ask(`${item.name}: `, { secret: sensitive }))
       if (!retry) {
         lines.push(`[saip] stopped: ${item.name} is required and cannot be empty. Nothing was written for it.`)
         return { code: 1, lines: [...lines], stored, skipped }
@@ -463,7 +490,9 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     // discard the first four.
     else setEnvFileValues(envPath, { [item.name]: value })
     stored.push(item.name)
-    emit(`   → stored ${item.name} (${value.length} chars)`)
+    // Recomputed here: `writeOne` is shared by every branch, so relying on a loop-local variable
+    // would silently mask the wrong way for one of them.
+    emit(isSensitiveName(item.name) ? `   → stored ${item.name} (${value.length} chars)` : `   → stored ${item.name} = ${value}`)
   }
 }
 
