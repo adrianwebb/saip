@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- shared,cli: secret store v2 with **wrapped keys** — a random KEK encrypts the store and is held separately under each unlock method, so adding or removing a method never re-encrypts secrets and rotating a passphrase re-wraps only the KEK. There is no password hash: the GCM tag on the wrapped KEK is the check. `saip config key list\|add\|remove` exposes the methods, `doctor` reports which wrap unlocked and warns while an opt-in `unattended` wrap exists, and creation now prompts and confirms over the controlling terminal (#73)
 - cli: `saip` is now installable and runs however it is launched. The entry guard compared `import.meta.url` against the raw `process.argv[1]`, which is false for a symlinked launcher — the CLI loaded, ran nothing, and exited 0 in silence; it now resolves realpath. Config discovery walks up from the current directory for `saip.yaml` and `hosts.yaml`, honours `SAIP_CONFIG` / `SAIP_HOSTS_FILE` (a bad explicit path is an error naming it, never a silent fallback), and commands print the file they loaded so a global install cannot quietly read another project. The build sets the bin executable bit, `pnpm --filter @saip/cli install:local` links the CLI onto PATH, and `engines.node` is declared (#70)
 - cli: `saip config list|get|set|unset|doctor` for the encrypted store — values masked by default, `--reveal` to print one, and piped stdin read automatically so a secret never has to be a process argument (#67)
 - shared: encrypted local secret store (`secrets-store.ts`) behind the existing `SecretsProvider` seam — AES-256-GCM at `~/.saip/secrets.enc.json`, key from the OS keychain when `secret-tool` is present and a scrypt-derived passphrase otherwise, with `rotateKey` for re-encrypting under a new key. `SecretsService` now defaults to a chain of shell environment then store, so credentials no longer have to be exported into a shell or written into `saip.yaml` (#67)
@@ -51,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - security: key sources declare `mode: raw | passphrase` rather than being matched by name string — name matching mis-keyed any implementation with a different label, which a test double hit immediately (#67)
 
 - security: `saip deploy -p KEY=VALUE` no longer prints parameter values in the plan. The plan is a log surface and command-line arguments are already visible in `ps`; `--reveal-params` opts back in, and `KEY=secret:NAME` references keep plans readable without carrying a value at all (#67)
+
+- security: both key sources are now actually reachable from the CLI. Previously `defaultKeySources()` was called with no prompt and no keychain runner, so an injected test double was the only thing that could unlock a store and every real `saip config set` failed — green tests, unusable binary (#73)
+- cli: `saip config set` reads stdin only with `--stdin`. The earlier auto-detect-when-not-a-TTY made any non-interactive invocation hang indefinitely waiting for input (#73)
 
 ### Changed
 - config: the shipped `saip.yaml` uses `${VAR:-}` for the R2 bucket/endpoint so platform config stays readable without cloud credentials — strict `${VAR}` would make offline hardware inspection demand credentials just to load a file. An unset value loads as empty and the storage provider is responsible for refusing it (#65)

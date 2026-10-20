@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CommandRegistryService } from '../src/lib/command-registry.js'
 import configPlugin, { runConfig, maskValue } from '../src/commands/config.js'
+import { SecretStore, MemoryKeySource, PassphraseKey } from '@saip/shared'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { MemoryKeySource, SecretStore } from '@saip/shared'
 import { renderDeployPlan, parseParams } from '../src/lib/deploy.js'
 import { buildProgram } from '../src/index.js'
@@ -20,7 +23,7 @@ import { buildProgram } from '../src/index.js'
 const KEY = Buffer.alloc(32, 11)
 const mkStore = async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'saip-cfg-')), 'secrets.enc.json')
-  const store = new SecretStore({ path, keySources: [new MemoryKeySource(KEY)] })
+  const store = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', KEY)] })
   await store.set('SAIP_R2_BUCKET', 'saip-platform')
   await store.set('SAIP_R2_SECRET_ACCESS_KEY', 'super-secret-value-12345')
   return store
@@ -69,7 +72,7 @@ describe('saip config list', () => {
   it('reports an empty store without failing', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'saip-empty-')), 'none.enc.json')
     const restore = capture()
-    const r = await runConfig(new SecretStore({ path, keySources: [new MemoryKeySource(KEY)] }), {}, ['list'], { env: {} })
+    const r = await runConfig(new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', KEY)] }), {}, ['list'], { env: {} })
     restore()
     expect(r.code).toBe(0)
     expect(r.lines.join(' ')).toMatch(/empty|no secrets/i)
@@ -125,7 +128,7 @@ describe('saip config set / unset', () => {
     const store = await mkStore()
     const r = await runConfig(store, { value: 'rotated' }, ['set', 'SAIP_HF_TOKEN'], { env: {} })
     expect(r.code).toBe(0)
-    expect(await new SecretStore({ path: store.path, keySources: [new MemoryKeySource(KEY)] }).get('SAIP_HF_TOKEN')).toBe('rotated')
+    expect(await new SecretStore({ path: store.path, keySources: [new MemoryKeySource('passphrase', KEY)] }).get('SAIP_HF_TOKEN')).toBe('rotated')
     // The write path must not print the value it was given.
     expect(r.lines.join(' ')).not.toContain('rotated')
   })
@@ -156,22 +159,24 @@ describe('saip config set / unset', () => {
 })
 
 describe('saip config doctor', () => {
-  it('reports key source, path, and file mode', async () => {
+  it('reports wraps, path, and file mode', async () => {
     const store = await mkStore()
     const r = await runConfig(store, {}, ['doctor'], { env: {} })
     const text = r.lines.join('\n')
     expect(r.code).toBe(0)
     expect(text).toContain(store.path)
-    expect(text).toMatch(/key source:\s+memory/)
+    // v2 reports unlock methods rather than a single key source.
+    expect(text).toMatch(/wraps:\s+passphrase/)
+    expect(text).toMatch(/unlocked by:\s+passphrase/)
     expect(text).toMatch(/600/)
   })
 
   it('warns when the store cannot be opened, and exits non-zero', async () => {
     const store = await mkStore()
-    const broken = new SecretStore({ path: store.path, keySources: [new MemoryKeySource(Buffer.alloc(32, 99))] })
+    const broken = new SecretStore({ path: store.path, keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 99))] })
     const r = await runConfig(broken, {}, ['doctor'], { env: {} })
     expect(r.code).toBe(1)
-    expect(r.lines.join(' ')).toMatch(/cannot decrypt/)
+    expect(r.lines.join(' ')).toMatch(/cannot unlock/)
   })
 
   it('flags a store readable by group or other', async () => {
@@ -212,5 +217,62 @@ describe('deploy parameter redaction', () => {
   it('a secret NAME never appears masked, so plans stay debuggable', () => {
     const plan = renderDeployPlan({} as any, {} as any, { KEY_NAME: 'secret:SAIP_TOKEN' })
     expect(plan.detail).toMatch(/KEY_NAME=secret:SAIP_TOKEN/)
+  })
+})
+
+describe('store creation prompts (#73)', () => {
+  it('asks twice, and stores nothing when the two answers differ', async () => {
+    const asked: string[] = []
+    const store = new SecretStore({ path: join(mkdtempSync(join(tmpdir(), 'saip-c-')), 's.enc.json'), keySources: [new MemoryKeySource('passphrase', null)] })
+    // Answers are keyed to the question, not the call count: the value itself is prompted for
+    // when no --stdin/--value is given, so an order-based fake silently shifts out of phase.
+    const r = await runConfig(store, { value: 'the-secret' }, ['set', 'SAIP_X'], {
+      env: {},
+      prompt: async (q) => { asked.push(q); return q.startsWith('confirm') ? 'two' : 'one' },
+    })
+    expect(asked.length).toBe(2)
+    expect(r.code).toBe(1)
+    expect(r.lines.join(' ')).toMatch(/did not match/)
+    expect(store.exists()).toBe(false)
+  })
+
+  it('refuses an empty passphrase rather than creating an unrecoverable store', async () => {
+    const store = new SecretStore({ path: join(mkdtempSync(join(tmpdir(), 'saip-c-')), 's.enc.json'), keySources: [new MemoryKeySource('passphrase', null)] })
+    const r = await runConfig(store, { value: 'v' }, ['set', 'SAIP_X'], { env: {}, prompt: async () => '' })
+    expect(r.code).toBe(1)
+    expect(r.lines.join(' ')).toMatch(/passphrase is required/)
+    expect(store.exists()).toBe(false)
+  })
+
+  it('creates the store once both answers agree, keyed by the typed passphrase', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'saip-c-')), 's.enc.json')
+    // No usable key to begin with, so creation must come from the prompt itself.
+    const store = new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', null)] })
+    const r = await runConfig(store, { value: 'v' }, ['set', 'SAIP_X'], { env: {}, prompt: async () => 'same-twice' })
+    expect(r.code).toBe(0)
+    // Read it back through a passphrase source, not the raw placeholder key: the store is keyed
+    // by scrypt('same-twice'), which is the whole point of the confirm flow.
+    const reopened = new SecretStore({ path, keySources: [new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: 'same-twice' })] })
+    expect(await reopened.get('SAIP_X')).toBe('v')
+  })
+})
+
+describe('saip config key', () => {
+  it('lists wraps and adds unattended only on request', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'saip-key-'))
+    const store = new SecretStore({ path: join(d, 's.enc.json'), keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 6))] })
+    await store.set('A', '1')
+    expect((await runConfig(store, {}, ['key', 'list'], { env: {} })).lines.join(' ')).toContain('passphrase')
+    const added = await runConfig(store, {}, ['key', 'add', 'unattended'], { env: {} })
+    expect(added.code).toBe(0)
+    expect(added.lines.join(' ')).toMatch(/WARNING/)
+    expect(store.wrapIds().sort()).toEqual(['passphrase', 'unattended'])
+  })
+
+  it('refuses an unknown wrap id', async () => {
+    const store = new SecretStore({ path: join(mkdtempSync(join(tmpdir(), 'saip-key-')), 's.enc.json'), keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 6))] })
+    await store.set('A', '1')
+    const r = await runConfig(store, {}, ['key', 'add', 'nonsense'], { env: {} })
+    expect(r.code).toBe(1)
   })
 })
