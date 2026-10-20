@@ -46,11 +46,17 @@ SAIP uses pnpm as its package manager. If you don't have it installed, run `core
 
 ## Configure Secrets
 
-1. Copy the example environment file and fill in your credentials:
+1. **Recommended:** run the setup wizard. It asks for one credential at a time, hides your typing,
+   accepts pasted values, and explains what each one is for and how to scope it:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   saip config init
+   ```
+
+   Secrets go to the encrypted store; the bucket and endpoint go to `.env`, because those are
+   interpolated into `saip.yaml` and the store is not read for interpolation.
+
+   Alternatively, fill in the environment file by hand:
 
 2. Edit `.env` and set the following variables:
 
