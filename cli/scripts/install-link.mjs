@@ -20,8 +20,8 @@ import { execSync } from 'node:child_process'
  * A directory is only chosen if it exists or can be created; nothing writes outside $HOME,
  * and no sudo path is attempted because that would be a surprise privilege escalation.
  */
-const target = fileURLToPath(new URL('../dist/index.js', import.meta.url))
-if (!existsSync(target)) { console.error('[cli] dist/index.js missing — run `pnpm --filter @saip/cli build` first'); process.exit(1) }
+const target = fileURLToPath(new URL('../dist/bin.js', import.meta.url))
+if (!existsSync(target)) { console.error('[cli] dist/bin.js missing — run `pnpm --filter @saip/cli build` first'); process.exit(1) }
 chmodSync(target, (statSync(target).mode & 0o777) | 0o755)
 
 function candidates() {

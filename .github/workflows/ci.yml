@@ -68,11 +68,15 @@ jobs:
           # and is worthless here: it resolves argv[1] to the real file, so it passes even with
           # the #70 entry-guard bug reintroduced (verified). The symlink is what gives this gate
           # its teeth.
-          BIN=$(mktemp -d)
-          chmod +x cli/dist/index.js
-          ln -s "$PWD/cli/dist/index.js" "$BIN/saip"
-          export PATH="$BIN:$PATH"
-          command -v saip >/dev/null || { echo "::error::saip not launchable from PATH"; exit 1; }
+          # Install through the same script users run, rather than hard-coding an entry path here.
+          # The previous version pinned `cli/dist/index.js`, so when the executable moved to
+          # `dist/bin.js` (#101) this step exec'd a library as a shell script — the path existed in
+          # two places and only one was updated. One source of truth, and this step now also proves
+          # the installer works.
+          pnpm --filter @saip/cli install:local
+          PNPM_BIN=$(pnpm bin -g 2>/dev/null || true)
+          export PATH="${PNPM_BIN:-$HOME/.local/bin}:$HOME/.local/bin:$HOME/.local/share/pnpm/bin:$PATH"
+          command -v saip >/dev/null || { echo "::error::install:local did not put saip on PATH"; exit 1; }
 
           OUT=$(saip --version)
           test -n "$OUT" || { echo "::error::saip --version produced no output (silent no-op: the #70 symptom)"; exit 1; }
