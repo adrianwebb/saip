@@ -2,21 +2,39 @@
  * DisplayService (#88) — renders the credential cards, with a fallback for every degraded
  * terminal.
  *
- * ## Why this is not Ink (measured, not preferred)
- * A spike against ink@5 + react@18 on this host produced:
- *   - 43 transitive packages, 19 MB node_modules for a static bordered block;
- *   - piped stdout is FINE — Ink emitted clean text, no cursor control sequences;
- *   - `TERM=dumb` is NOT fine: it still emitted box-drawing characters. Ink does not degrade for
- *     dumb terminals, so "degrades gracefully" would have had to be added on top of it;
- *   - bundling was then measured directly (esbuild 0.28.2): Ink+React bundles to 1,391,621 bytes
- *     and **does not run**. Without help it fails to resolve `react-devtools-core`; aliasing that
- *     devtools import to an empty shim makes it resolve but the output dies at runtime on
- *     `Dynamic require of "..." is not supported` — the CJS/ESM interop wall that is precisely what
- *     a Node SEA single-file binary (#71) cannot survive.
- * So Ink was rejected on measurements, not taste: 19 MB of dependencies for a static bordered
- * block, no degradation under TERM=dumb, and an unbundlable output. A hand-rolled renderer has no
- * dependencies, degrades deliberately, and cannot surprise #71.
- * The rejected alternative is recorded here so nobody re-litigates it from memory.
+ * ## Ink: an earlier version of this section was wrong — re-measure before trusting it
+ *
+ * This header once declared Ink un-bundlable and treated that as settled guidance. It was wrong in
+ * its general form, and the reason matters more than the conclusion: every failure came from my own
+ * configuration. Recorded with the setup attached, per AGENTS.md "Web Research", because a negative
+ * result without its configuration is an anecdote.
+ *
+ *   - **Plain Node, unbundled: Ink works.** `node inkcard.mjs` renders the card, and does so into a
+ *     pipe as well (737 bytes, ink@8.0.0; 907 bytes, ink@5.2.1) with no cursor control sequences.
+ *     "Can Ink run here" was never the question.
+ *   - **esbuild: fails.** 1,391,621-byte bundle; unresolved `react-devtools-core`; aliasing it to a
+ *     stub still dies at runtime on `Dynamic require of "..." is not supported`. This result stands
+ *     for esbuild specifically.
+ *   - **Bun: works once the optional peer is installed.** `bun build --compile` with
+ *     `react-devtools-core` present produced a 92,686,304-byte binary (544 modules) that rendered
+ *     correctly when run under a pty. Without it: `Could not resolve: "react-devtools-core"` — which
+ *     is exactly what I mistook for a fundamental limit. `--external` compiles but fails at runtime
+ *     (`Cannot find package` from `/$bunfs/root/...`, since externals are not in the virtual
+ *     filesystem); `--alias` did not resolve either. My second theory, an Ink 6.8.0 tree-shaking
+ *     regression, was also wrong: 6.7.0 failed identically.
+ *   - Marginal cost under Bun is ~0.7 MB (91.97 -> 92.69 MB) because the embedded runtime dominates,
+ *     so with Bun as the packager (#71) Ink is cheap rather than disqualified.
+ *   - **`TERM=dumb`: Ink does not degrade** — box-drawing characters are emitted regardless (checked
+ *     again after the correction, both unbundled and compiled).
+ *   - **The compiled Bun binary writes nothing to a pipe** (exit 0, empty output) while plain Node
+ *     does. So this is a property of that artifact, not of Ink: do not repeat it as "Ink cannot
+ *     produce output when piped", which is the mistake this bullet exists to prevent.
+ *
+ * The hand-rolled renderer still ships, but on a weaker and more honest basis: zero dependencies,
+ * identical behaviour in all of the above environments, and an explicit plain-text path for non-TTY
+ * output. If #71 lands on Bun, Ink for the interactive case with this as the fallback is a live
+ * proposal, and this paragraph must be re-measured rather than copied forward.
+ *
  */
 import { Service, type Context } from 'cordis'
 
