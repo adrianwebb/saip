@@ -1,230 +1,268 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
-  SecretStore, SecretStoreError, MemoryKeySource, PassphraseKey, ChainSecrets,
-  EncryptedSecretsProvider, SecretToolKey, defaultKeySources,
+  SecretStore, MemoryKeySource, PassphraseKey, KeyFileKey,
+  SecretToolKey, ChainSecrets, EncryptedSecretsProvider, defaultKeySources,
 } from '../src/secrets-store.js'
 import { EnvSecrets, MissingSecretError } from '../src/hosting.js'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'saip-sec-'))
-const storeAt = (key: Buffer | null, name = 's.enc.json') =>
-  new SecretStore({ path: join(dir(), name), keySources: [new MemoryKeySource(key)] })
-const KEY = Buffer.alloc(32, 7)
-const other = (k: Buffer) => new MemoryKeySource(k)
+const pathIn = (n = 's.enc.json') => join(dir(), n)
+const raw = Buffer.alloc(32, 7)
+/** MemoryKeySource keyed off a short letter so different "passphrases" give different keys. */
+const pass = (v: string) => new MemoryKeySource('passphrase', v === 'raw' ? raw : Buffer.alloc(32, v.charCodeAt(0)))
 
-describe('SecretStore', () => {
-  it('treats an absent file as an empty store rather than an error', async () => {
-    const s = storeAt(KEY)
+describe('SecretStore v2 — creation requires a passphrase, never an on-disk key', () => {
+  it('treats an absent file as an empty store, not an error', async () => {
+    const s = new SecretStore({ path: pathIn(), keySources: [pass('raw')] })
     expect(s.exists()).toBe(false)
     expect(await s.read()).toEqual({})
     expect(await s.names()).toEqual([])
-    expect(await s.get('NOPE')).toBeUndefined()
+    expect(s.wrapIds()).toEqual([])
   })
 
-  it('round-trips set / get / names / unset', async () => {
-    const s = storeAt(KEY)
-    await s.set('SAIP_R2_BUCKET', 'saip-platform')
-    await s.set('SAIP_HF_TOKEN', 'hf_abc')
-    expect(await s.names()).toEqual(['SAIP_HF_TOKEN', 'SAIP_R2_BUCKET'])
-    expect(await s.get('SAIP_HF_TOKEN')).toBe('hf_abc')
-    expect(await s.unset('SAIP_HF_TOKEN')).toBe(true)
-    expect(await s.unset('SAIP_HF_TOKEN')).toBe(false)
-    expect(await s.names()).toEqual(['SAIP_R2_BUCKET'])
+  it('creates only under a passphrase wrap and records no key material in the file', async () => {
+    const p = pathIn()
+    await new SecretStore({ path: p, keySources: [pass('raw')] }).set('SAIP_R2_BUCKET', 'saip-platform')
+    const f = JSON.parse(readFileSync(p, 'utf8'))
+    expect(f.v).toBe(2)
+    expect(f.wraps.map((w: { id: string }) => w.id)).toEqual(['passphrase'])
+    expect(f.wraps.length).toBe(1)
+    expect(f.data).toBeTruthy()
+    // No field in the file may hold key material or the KEK in the clear.
+    expect(JSON.stringify(f).toLowerCase()).not.toContain('kek' + '"' + ':null')
+    const text = readFileSync(p, 'utf8')
+    expect(text).not.toContain('saip-platform')
+    expect(text).not.toContain(raw.toString('base64'))
+    // The secret NAME is encrypted too, so a leaked file does not enumerate credentials.
+    expect(text).not.toContain('SAIP_R2_BUCKET')
   })
 
-  it('stores a fresh random salt per file, and reuses it on later writes', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    const salt1 = JSON.parse(readFileSync(s.path, 'utf8')).salt
-    await s.set('B', '2')
-    expect(JSON.parse(readFileSync(s.path, 'utf8')).salt).toBe(salt1)
-    // Rotating the passphrase is not a salt change, so the same key must still work.
-    expect(await s.get('A')).toBe('1')
+  it('refuses to create when no key source can serve a passphrase', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [new MemoryKeySource('passphrase', null)] })
+    await expect(s.set('A', '1')).rejects.toThrow(/no key source|available to create/i)
+    expect(existsSync(p)).toBe(false)
   })
 
-  it('never writes the key or the plaintext anywhere in the file', async () => {
-    const s = storeAt(KEY)
-    const secret = 'AKIA-SUPER-SECRET-VALUE'
-    await s.set('SAIP_R2_ACCESS_KEY_ID', secret)
-    const raw = readFileSync(s.path, 'utf8')
-    expect(raw).not.toContain(secret)
-    expect(raw).not.toContain(KEY.toString('base64'))
-    // The secret name is encrypted too, not just its value.
-    expect(raw).not.toContain('SAIP_R2_ACCESS_KEY_ID')
-  })
-
-  it('restricts the file to the owner', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    expect(statSync(s.path).mode & 0o777).toBe(0o600)
-  })
-
-  it('rejects a wrong passphrase rather than returning garbage', async () => {
-    const s = storeAt(Buffer.alloc(32, 1))
-    await s.set('A', '1')
-    const attacker = new SecretStore({ path: s.path, keySources: [other(Buffer.alloc(32, 2))] })
-    await expect(attacker.read()).rejects.toThrow(SecretStoreError)
-    await expect(attacker.get("A")).rejects.toThrow(SecretStoreError)
-  })
-
-  it('rejects a tampered ciphertext — GCM authentication, not just encryption', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    const file = JSON.parse(readFileSync(s.path, 'utf8'))
-    const bytes = Buffer.from(file.data, 'base64')
-    bytes[0] ^= 0xff
-    writeFileSync(s.path, JSON.stringify({ ...file, data: bytes.toString('base64') }))
-    await expect(s.read()).rejects.toThrow(/cannot decrypt/)
-  })
-
-  it('rejects a stripped auth tag rather than decrypting unverified bytes', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    const file = JSON.parse(readFileSync(s.path, 'utf8'))
-    writeFileSync(s.path, JSON.stringify({ ...file, tag: '' }))
-    await expect(s.read()).rejects.toThrow(/format|decrypt/)
-  })
-
-  it('reports a corrupt file without destroying it', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    writeFileSync(s.path, 'not json at all')
-    await expect(s.read()).rejects.toThrow(/not readable as JSON/)
-  })
-
-  it('refuses to create a store when no key source is available', async () => {
-    const s = new SecretStore({ path: join(dir(), 'x.enc.json'), keySources: [new MemoryKeySource(null)] })
-    await expect(s.set('A', '1')).rejects.toThrow(/no key source available/)
-    expect(s.exists()).toBe(false)
-  })
-
-  it('uses a keyring key raw, and the recorded kdf makes that reproducible', async () => {
-    const kc = new MemoryKeySource(Buffer.alloc(32, 9))
-    ;(kc as { name: string }).name = 'keychain'
-    const s = new SecretStore({ path: join(dir(), 'k.enc.json'), keySources: [kc] })
-    await s.set('A', '1')
-    expect(JSON.parse(readFileSync(s.path, 'utf8')).kdf).toBe('raw')
-    expect(await s.get('A')).toBe('1')
-  })
-
-  it('does not leave a temp file behind after a write', async () => {
-    const s = storeAt(KEY)
-    await s.set('A', '1')
-    expect(exists(s.path + '.tmp')).toBe(false)
-  })
-
-  it('activeKeySource names the source in use, for doctor', async () => {
-    const s = storeAt(KEY)
-    expect(await s.activeKeySource()).toBe('memory')
-    const empty = new SecretStore({ path: join(dir(), 'none.enc.json'), keySources: [new MemoryKeySource(null)] })
-    expect(await empty.activeKeySource()).toBe('not-created')
+  it('does not offer the unattended tier unless explicitly allowed, nor the keyring without a runner', () => {
+    const env = { SAIP_SECRETS_FILE: pathIn(), SAIP_SECRETS_PASSPHRASE: 'p' }
+    expect(defaultKeySources(env).map((x) => x.id)).toEqual(['passphrase'])
+    expect(defaultKeySources(env, { toolRunner: async () => ({ code: 1, stdout: '' }) }).map((x) => x.id)).toEqual(['keyring', 'passphrase'])
+    expect(defaultKeySources(env, { allowUnattended: true }).map((x) => x.id)).toContain('unattended')
   })
 })
 
-function exists(p: string): boolean {
-  try { statSync(p); return true } catch { return false }
-}
+describe('SecretStore v2 — wraps are independent', () => {
+  it('adds a second wrap without re-encrypting anything', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await s.set('A', '1')
+    const before = JSON.parse(readFileSync(p, 'utf8'))
+    await s.addWrap(new MemoryKeySource('keyring', Buffer.alloc(32, 5)))
+    const after = JSON.parse(readFileSync(p, 'utf8'))
+    expect(after.wraps.map((w: { id: string }) => w.id).sort()).toEqual(['keyring', 'passphrase'])
+    // The point of wrapping: payload and KEK box are byte-identical after adding a method.
+    expect(after.data).toEqual(before.data)
+    expect(after.kek).toEqual(before.kek)
+  })
+
+  it('opens through either wrap and reports which one it used', async () => {
+    const p = pathIn()
+    const kekKey = Buffer.alloc(32, 5)
+    const store = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await store.set('A', '1')
+    await store.addWrap(new MemoryKeySource('keyring', kekKey))
+
+    const viaKeyring = new SecretStore({ path: p, keySources: [new MemoryKeySource('keyring', kekKey)] })
+    expect(await viaKeyring.get('A')).toBe('1')
+    expect(await viaKeyring.activeWrap()).toBe('keyring')
+
+    const viaPass = new SecretStore({ path: p, keySources: [pass('raw')] })
+    expect(await viaPass.get('A')).toBe('1')
+    expect(await viaPass.activeWrap()).toBe('passphrase')
+  })
+
+  it('removing a wrap re-wraps the KEK but never re-encrypts the secrets', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await s.set('A', '1')
+    const before = JSON.parse(readFileSync(p, 'utf8'))
+    await s.addWrap(new MemoryKeySource('unattended', Buffer.alloc(32, 9)))
+    await s.removeWrap('unattended')
+    const after = JSON.parse(readFileSync(p, 'utf8'))
+    expect(after.wraps.map((w: { id: string }) => w.id)).toEqual(['passphrase'])
+    // Removal is a filter, so the surviving wrap is byte-identical: no re-wrapping happened.
+    expect(after.wraps[0]).toEqual(before.wraps[0])
+    expect(after.data).toEqual(before.data)
+    expect(await new SecretStore({ path: p, keySources: [pass('raw')] }).get('A')).toBe('1')
+  })
+
+  it('refuses to remove the last wrap rather than making the store unreadable', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await s.set('A', '1')
+    await expect(s.removeWrap('passphrase')).rejects.toThrow(/last wrap/)
+    expect(await new SecretStore({ path: p, keySources: [pass('raw')] }).get('A')).toBe('1')
+  })
+
+  it('refuses a duplicate wrap id', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await s.set('A', '1')
+    await expect(s.addWrap(pass('raw'))).rejects.toThrow(/already exists/)
+  })
+})
+
+describe('SecretStore v2 — tamper and wrong key must fail, never mis-decode', () => {
+  const seeded = async () => {
+    const p = pathIn()
+    await new SecretStore({ path: p, keySources: [pass('raw')] }).set('A', 'secret-value')
+    return p
+  }
+
+  it('rejects a modified payload', async () => {
+    const p = await seeded()
+    const f = JSON.parse(readFileSync(p, 'utf8'))
+    const b = Buffer.from(f.data.data, 'base64'); b[0] ^= 0xff
+    writeFileSync(p, JSON.stringify({ ...f, data: { ...f.data, data: b.toString('base64') } }))
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/failed authentication/)
+  })
+
+  it('rejects a wrap swapped in from another store', async () => {
+    const p = await seeded()
+    const other = pathIn('other.enc.json')
+    await new SecretStore({ path: other, keySources: [pass('other')] }).set('X', '1')
+    const victim = JSON.parse(readFileSync(p, 'utf8'))
+    const attacker = JSON.parse(readFileSync(other, 'utf8'))
+    writeFileSync(p, JSON.stringify({ ...victim, wraps: attacker.wraps }))
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/cannot unlock|failed authentication/)
+  })
+
+  it('reports a bad passphrase and a tampered file the same way, so it cannot probe guesses', async () => {
+    const p = await seeded()
+    await expect(new SecretStore({ path: p, keySources: [pass('other')] }).read()).rejects.toThrow(/cannot unlock/)
+    const f = JSON.parse(readFileSync(p, 'utf8'))
+    writeFileSync(p, JSON.stringify({ ...f, wraps: f.wraps.map((w: { tag: string }) => ({ ...w, tag: '' })) }))
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/cannot unlock/)
+  })
+
+  it('rejects a stripped auth tag without decrypting unverified bytes', async () => {
+    const p = await seeded()
+    const f = JSON.parse(readFileSync(p, 'utf8'))
+    writeFileSync(p, JSON.stringify({ ...f, data: { ...f.data, tag: '' } }))
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/cannot unlock|authentication/)
+  })
+
+  it('explains a v1 store instead of failing obscurely', async () => {
+    const p = pathIn()
+    writeFileSync(p, JSON.stringify({ v: 1, kdf: 'scrypt', salt: 'AA==', iv: 'AA==', tag: 'AA==', data: 'AA==' }))
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/v1 format/)
+  })
+
+  it('names a corrupt file as corrupt', async () => {
+    const p = pathIn()
+    writeFileSync(p, 'not json')
+    await expect(new SecretStore({ path: p, keySources: [pass('raw')] }).read()).rejects.toThrow(/not readable as JSON/)
+  })
+
+  it('keeps the store file owner-only', async () => {
+    const p = await seeded()
+    expect(statSync(p).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('unattended wrap — explicit opt-in, honest about what it buys', () => {
+  it('opens with no passphrase once the key file exists', async () => {
+    // One directory for both files: the unattended key lives beside the store by design, so
+    // deriving the two paths from different temp dirs would test nothing.
+    const d = dir()
+    const p = join(d, 'store.enc.json')
+    const keyPath = join(d, 'keys', 'unattended.key')
+    const seed = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await seed.set('A', 'value')
+    await seed.addWrap(new KeyFileKey(keyPath))
+
+    const opened = new SecretStore({ path: p, keySources: [new KeyFileKey(keyPath)] })
+    expect(await opened.get('A')).toBe('value')
+    expect(await opened.activeWrap()).toBe('unattended')
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('refuses to use a key file that group or other can read', async () => {
+    const p = pathIn()
+    const keyPath = pathIn('loose.key')
+    const seed = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await seed.set('A', 'value')
+    await seed.addWrap(new KeyFileKey(keyPath))
+    chmodSync(keyPath, 0o644)
+    await expect(new SecretStore({ path: p, keySources: [new KeyFileKey(keyPath)] }).read()).rejects.toThrow(/cannot unlock/)
+  })
+
+  it('removeWrap destroys the on-disk key so the method really is gone', async () => {
+    const d = dir()
+    const p = join(d, 'store.enc.json')
+    const keyPath = join(d, 'keys', 'unattended.key')
+    const seed = new SecretStore({ path: p, keySources: [pass('raw')] })
+    await seed.set('A', 'value')
+    await seed.addWrap(new KeyFileKey(keyPath))
+    expect(existsSync(keyPath)).toBe(true)
+    await seed.removeWrap('unattended')
+    expect(existsSync(keyPath)).toBe(false)
+    expect(seed.wrapIds()).toEqual(['passphrase'])
+  })
+})
+
+describe('PassphraseKey', () => {
+  it('derives deterministically and differs across passphrases', async () => {
+    const salt = Buffer.alloc(16, 1)
+    const a = await new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: 'hunter' }).wrapKey(salt)
+    expect(a?.length).toBe(32)
+    expect(a!.equals((await new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: 'hunter' }).wrapKey(salt))!)).toBe(true)
+    expect(a!.equals((await new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: 'hunter2' }).wrapKey(salt))!)).toBe(false)
+  })
+
+  it('prompts rather than returning null when no env passphrase is set', async () => {
+    let asked = 0
+    const k = new PassphraseKey({}, async () => { asked++; return 'typed-passphrase' })
+    expect(await k.wrapKey(Buffer.alloc(16, 2))).toBeTruthy()
+    expect(asked).toBe(1)
+  })
+
+  it('returns null with neither env nor prompt, so the chain falls through', async () => {
+    expect(await new PassphraseKey({}).wrapKey(null)).toBeNull()
+  })
+})
 
 describe('SecretToolKey', () => {
-  it('returns null when the keychain has nothing, instead of throwing', async () => {
-    const k = new SecretToolKey(async () => ({ code: 1, stdout: '' }))
-    expect(await k.load()).toBeNull()
-  })
-
-  it('rejects a stored value of the wrong length rather than deriving from it', async () => {
-    const short = new SecretToolKey(async () => ({ code: 0, stdout: Buffer.alloc(8).toString('base64') }))
-    expect(await short.load()).toBeNull()
-    const good = new SecretToolKey(async () => ({ code: 0, stdout: Buffer.alloc(32, 3).toString('base64') }))
-    expect((await good.load())?.length).toBe(32)
-  })
-
-  it('is absent from the default chain when no runner is configured', async () => {
-    const sources = defaultKeySources({ SAIP_SECRETS_PASSPHRASE: 'p' })
-    expect(sources.map((s) => s.name)).toEqual(['passphrase'])
+  it('yields null when the keychain is empty and rejects wrong-length keys', async () => {
+    expect(await new SecretToolKey(async () => ({ code: 1, stdout: '' })).wrapKey(null)).toBeNull()
+    expect(await new SecretToolKey(async () => ({ code: 0, stdout: Buffer.alloc(8).toString('base64') })).wrapKey(null)).toBeNull()
+    expect((await new SecretToolKey(async () => ({ code: 0, stdout: Buffer.alloc(32, 3).toString('base64') })).wrapKey(null))?.length).toBe(32)
   })
 })
 
-describe('ChainSecrets + EncryptedSecretsProvider', () => {
-  it('shell wins over the store', async () => {
-    const s = storeAt(KEY)
+describe('provider chain', () => {
+  it('shell wins over the store, and empty is treated as absent', async () => {
+    const p = pathIn()
+    const s = new SecretStore({ path: p, keySources: [pass('raw')] })
     await s.set('SAIP_R2_BUCKET', 'from-store')
-    const chain = new ChainSecrets([
-      new EnvSecrets({ SAIP_R2_BUCKET: 'from-shell' }),
-      new EncryptedSecretsProvider(s),
-    ])
-    expect(await chain.get('SAIP_R2_BUCKET')).toBe('from-shell')
-  })
-
-  it('falls through to the store when the shell lacks the name', async () => {
-    const s = storeAt(KEY)
-    await s.set('SAIP_HF_TOKEN', 'hf_stored')
-    const chain = new ChainSecrets([new EnvSecrets({}), new EncryptedSecretsProvider(s)])
-    expect(await chain.get('SAIP_HF_TOKEN')).toBe('hf_stored')
-  })
-
-  it('treats an empty shell value as absent rather than authoritative', async () => {
-    const s = storeAt(KEY)
-    await s.set('B', 'stored')
-    const chain = new ChainSecrets([new EnvSecrets({ B: '' }), new EncryptedSecretsProvider(s)])
-    expect(await chain.get('B')).toBe('stored')
+    expect(await new ChainSecrets([new EnvSecrets({ SAIP_R2_BUCKET: 'from-shell' }), new EncryptedSecretsProvider(s)]).get('SAIP_R2_BUCKET')).toBe('from-shell')
+    expect(await new ChainSecrets([new EnvSecrets({ SAIP_R2_BUCKET: '' }), new EncryptedSecretsProvider(s)]).get('SAIP_R2_BUCKET')).toBe('from-store')
+    expect(await new ChainSecrets([new EnvSecrets({}), new EncryptedSecretsProvider(s)]).get('SAIP_R2_BUCKET')).toBe('from-store')
   })
 
   it('require() throws MissingSecretError naming the secret', async () => {
-    const chain = new ChainSecrets([new EnvSecrets({}), new EncryptedSecretsProvider(storeAt(KEY))])
+    const chain = new ChainSecrets([new EnvSecrets({}), new EncryptedSecretsProvider(new SecretStore({ path: pathIn(), keySources: [pass('raw')] }))])
     await expect(chain.require('SAIP_NOWHERE')).rejects.toBeInstanceOf(MissingSecretError)
   })
 
-})
-
-describe('SecretStore passphrase mode (the path this machine actually takes)', () => {
-  const passStore = (pass: string, path: string) =>
-    new SecretStore({ path, keySources: [new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: pass })] })
-
-  it('derives with scrypt and records kdf=scrypt, never storing the passphrase', async () => {
-    const p = join(dir(), 'p.enc.json')
-    const s = passStore('correct horse battery', p)
-    await s.set('SAIP_R2_SECRET_ACCESS_KEY', 'abc123')
-    const file = JSON.parse(readFileSync(p, 'utf8'))
-    expect(file.kdf).toBe('scrypt')
-    expect(file.salt).toBeTruthy()
-    const raw = readFileSync(p, 'utf8')
-    expect(raw).not.toContain('correct horse battery')
-    expect(raw).not.toContain('abc123')
-  })
-
-  it('same passphrase and salt reproduce the key across process instances', async () => {
-    const p = join(dir(), 'p2.enc.json')
-    await passStore('shared-secret', p).set('A', '1')
-    expect(await passStore('shared-secret', p).get('A')).toBe('1')
-  })
-
-  it('a different passphrase is refused, not silently misdecoded', async () => {
-    const p = join(dir(), 'p3.enc.json')
-    await passStore('right-one', p).set('A', '1')
-    await expect(passStore('wrong-one', p).read()).rejects.toThrow(/cannot decrypt/)
-  })
-
-  it('rotateKey re-encrypts under a new passphrase and invalidates the old one', async () => {
-    const p = join(dir(), 'p4.enc.json')
-    const old = passStore('old-pass', p)
-    await old.set('A', '1')
-    const salt = JSON.parse(readFileSync(p, 'utf8')).salt
-    // Re-reading with the new passphrase must fail until the store is rewritten.
-    await expect(passStore('new-pass', p).read()).rejects.toThrow(/cannot decrypt/)
-    // Rotating properly: decrypt with old, write with new. Salt must change or the old key returns.
-    await old.rotateKey(new PassphraseKey({ SAIP_SECRETS_PASSPHRASE: 'new-pass' }))
-    expect(JSON.parse(readFileSync(p, 'utf8')).salt).not.toBe(salt)
-    expect(await passStore('new-pass', p).get('A')).toBe('1')
-    // The old passphrase must be dead, not merely disfavoured.
-    await expect(passStore('old-pass', p).read()).rejects.toThrow(/cannot decrypt/)
-  })
-
-  it('a raw source cannot open a scrypt store and reports no key rather than garbage', async () => {
-    const p = join(dir(), 'p5.enc.json')
-    await passStore('some-pass', p).set('A', '1')
-    const wrongKind = new SecretStore({ path: p, keySources: [new MemoryKeySource(Buffer.alloc(32, 4))] })
-    await expect(wrongKind.read()).rejects.toThrow(/no key source available/)
+  it('an unreadable store surfaces as an error rather than looking merely unset', async () => {
+    const p = pathIn()
+    await new SecretStore({ path: p, keySources: [pass('raw')] }).set('SAIP_R2_ACCESS_KEY_ID', 'x')
+    const wrong = new SecretStore({ path: p, keySources: [pass('other')] })
+    await expect(new EncryptedSecretsProvider(wrong).get('SAIP_R2_ACCESS_KEY_ID')).rejects.toThrow(/cannot unlock/)
   })
 })
