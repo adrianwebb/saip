@@ -396,7 +396,7 @@ outside the workspace — and resolved at runtime by the same provider chain the
 ### Synopsis
 
 ```bash
-saip config <list|get|set|unset|doctor> [name] [value] [--value <v>] [--reveal]
+saip config <init|list|get|set|unset|key|doctor> [name] [value] [--value <v>] [--stdin] [--reveal] [--force]
 ```
 
 ### Subcommands
@@ -408,7 +408,16 @@ saip config <list|get|set|unset|doctor> [name] [value] [--value <v>] [--reveal]
 | `saip config set <name>` | Prompts with echo disabled — keeps the secret out of shell history and `ps`. |
 | `saip config set <name> --value <v>` | Non-interactive. Prefer piping: `printf %s "$V" \| saip config set NAME --stdin`. |
 | `saip config unset <name>` | Removes it; reports whether it was present. |
-| `saip config doctor` | Which key source resolved, where the store lives, and its file mode. |
+| `saip config init` | Guided first-time setup: one value at a time, echo off, paste accepted, each prompt explaining purpose, scope, and where to create it. Questions are derived from your `saip.yaml`/`hosts.yaml`. `--force` re-asks everything. |
+| `saip config key list` | Which unlock methods the store accepts and which one opened it just now. |
+| `saip config key add <keyring\|unattended>` | Adds an unlock method. Never called for you. |
+| `saip config key remove <id>` | Drops one; refuses to remove the last usable method, and deletes the `unattended` key file. |
+| `saip config doctor` | Store path, file mode, wraps on file, **which wrap unlocked**, and a warning if an `unattended` wrap exists. |
+
+Prompts read the controlling terminal (`/dev/tty`), not stdin, because `--stdin` supplies the value
+through stdin. With no terminal the command refuses and prints the manual path rather than blocking.
+`saip config init` cannot verify R2 credentials yet — the R2 client is separate work; see
+[Managing Secrets](/saip/guides/manage-secrets/).
 
 :::caution[Why `--value` is second choice]
 A command-line argument is visible to every process on the machine via `ps` and lands in shell

@@ -16,7 +16,7 @@
  * - **Strings only.** Numbers and booleans are never stringified by proximity to a token.
  */
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, chmodSync, renameSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
@@ -196,4 +196,51 @@ export function resolveConfigFile(
     return existsSync(p) ? { path: p } : { error: `${opts.envVar ?? 'configured path'} points at ${p}, which does not exist` }
   }
   return { path: discoverFile(filename, opts) }
+}
+
+/**
+ * Where the `.env` file for this run lives.
+ *
+ * Same discovery rule as `saip.yaml` (#70): an explicit `SAIP_ENV_FILE` wins outright, otherwise
+ * search upward from the starting directory, otherwise fall back to `<cwd>/.env` as the path to
+ * CREATE. A bare relative `'.env'` was wrong for an installed CLI — it silently meant "whatever
+ * directory you happen to be standing in", which is how a credential file ends up written into
+ * the wrong project.
+ */
+export function envFilePath(env: NodeJS.ProcessEnv = process.env, opts: { cwd?: string; start?: string } = {}): string {
+  const explicit = env.SAIP_ENV_FILE
+  if (explicit) return resolve(explicit)
+  const start = opts.start ?? opts.cwd ?? process.cwd()
+  return discoverFile('.env', { start }) ?? join(start, '.env')
+}
+
+/**
+ * Write KEY=value pairs into an env file, preserving comments, ordering and unrelated keys.
+ *
+ * A whole-file rewrite here would destroy the hand-written notes people keep in `.env`, and a
+ * naive append would leave two lines for one key — where the loader's "first wins / last wins"
+ * behaviour then decides which credential is live. So: replace in place, append only new names.
+ * Mode 0600, atomic via tmp+rename, because this file will hold real values.
+ */
+export function setEnvFileValues(path: string, values: Record<string, string>): void {
+  const existing = existsSync(path) ? readFileSync(path, 'utf8').split(/\r?\n/) : []
+  const out = [...existing]
+  const rest: string[] = []
+  for (const [key, value] of Object.entries(values)) {
+    const idx = out.findIndex((l) => new RegExp(`^\\s*#?\\s*${key}\\s*=`).test(l) || new RegExp(`^\\s*${key}\\s*=`).test(l))
+    const line = `${key}=${value}`
+    if (idx >= 0) {
+      // Un-comment in place: a commented template line is the file's own placeholder for this key.
+      out[idx] = line
+    } else rest.push(line)
+  }
+  if (rest.length) {
+    // Drop a single trailing blank line, append, then keep one newline at EOF.
+    while (out.length && out[out.length - 1].trim() === '') out.pop()
+    out.push(...rest, '')
+  }
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, out.join('\n'), { mode: 0o600 })
+  chmodSync(tmp, 0o600)
+  renameSync(tmp, path)
 }
