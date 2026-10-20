@@ -284,8 +284,33 @@ export class SecretStore {
   /** Ids of the wraps on file — names, never keys. */
   wrapIds(): WrapId[] { try { return this.file().wraps.map((w) => w.id) } catch { return [] } }
 
+  /**
+   * Signature of the unlock methods on file. Deliberately excludes the payload: the KEK depends
+   * only on the wraps, so ordinary writes keep the unlock valid while `addWrap`/`removeWrap` (or
+   * anyone rewriting the wraps) invalidate it. Caching on the whole file would re-prompt on every
+   * `set`, which is the exact behaviour #86 exists to remove.
+   */
+  private wrapSignature(f: StoreFileV2): string {
+    return f.wraps.map((w) => `${w.id}:${w.salt ?? ''}:${w.data.slice(0, 16)}`).join('|')
+  }
+
+  /**
+   * Unlock once (#86). Deriving the key costs a scrypt run AND a passphrase prompt, and before
+   * this both happened per operation — `saip config init` with four values demanded the passphrase
+   * four times, which is what made the tool feel broken. One recovered KEK is reused for as long as
+   * the wrap set is unchanged.
+   */
+  private kekCache?: { sig: string; kek: Buffer; wrap: WrapId }
+
   /** Recover the KEK by trying each wrap against a source that can serve it. */
   private async resolveKek(f: StoreFileV2): Promise<Buffer | null> {
+    const sig = this.wrapSignature(f)
+    if (this.kekCache && this.kekCache.sig === sig) {
+      // The id comes from the cache, never a guess: `saip config doctor` reports which wrap
+      // unlocked, and a defaulted value would misreport the security tier in force.
+      this.usedWrap = this.kekCache.wrap
+      return this.kekCache.kek
+    }
     for (const wrap of f.wraps) {
       const source = this.sources.find((s) => s.id === wrap.id)
       if (!source) continue
@@ -296,7 +321,11 @@ export class SecretStore {
         const wrapKey = await source.wrapKey(salt)
         if (!wrapKey || wrapKey.length !== KEY_BYTES) continue
         const kek = open(wrapKey, wrap)
-        if (kek && kek.length === KEY_BYTES) { this.usedWrap = wrap.id; return kek }
+        if (kek && kek.length === KEY_BYTES) {
+          this.usedWrap = wrap.id
+          this.kekCache = { sig, kek, wrap: wrap.id }
+          return kek
+        }
       } catch { continue }
     }
     return null
@@ -376,6 +405,7 @@ export class SecretStore {
     const kek = await this.resolveKek(f)
     if (!kek) throw new SecretStoreError('cannot unlock the store to add a wrap')
     const provisioned = await (source.provision?.() ?? Promise.reject(new SecretStoreError(`key source '${source.id}' cannot provision a key`)))
+    this.lock()
     f.wraps.push({ id: source.id, salt: provisioned.salt?.toString('base64'), ...seal(provisioned.key, kek) })
     // Nothing else changes: the payload stays sealed under the same KEK, and every existing
     // wrap already holds that KEK. Adding a method is therefore an append.
@@ -404,10 +434,28 @@ export class SecretStore {
       } catch { return false }
     }))
     if (!usable.some(Boolean)) throw new SecretStoreError(`refusing to remove '${id}': no surviving wrap can be unlocked by an available key source`)
+    this.lock()
     f.wraps = remaining
     this.write(f)
     if (id === 'unattended') new KeyFileKey(this.unattendedKeyPath).destroy()
   }
+
+  /**
+   * Unlock the store up front, so a command can prompt exactly once before it does any work.
+   * Returns the wrap that succeeded, or throws the same message `read()` would — this never
+   * silently degrades to "no secrets available", which is the failure mode that hides a wrong
+   * passphrase behind an unrelated-looking error.
+   */
+  async ensureUnlocked(): Promise<WrapId> {
+    if (!this.exists()) throw new SecretStoreError(`no secret store at ${this.path}`)
+    const f = this.file()
+    const kek = await this.resolveKek(f)
+    if (!kek) throw new SecretStoreError(`cannot unlock ${this.path}: none of its ${f.wraps.length} wrap(s) could be satisfied by the available key sources`)
+    return this.usedWrap as WrapId
+  }
+
+  /** Invalidate the cached unlock (used by tests and by any wrap mutation). */
+  lock(): void { this.kekCache = undefined }
 
   /** Which wrap unlocked last, after any read. */
   async activeWrap(): Promise<WrapId | undefined> {
