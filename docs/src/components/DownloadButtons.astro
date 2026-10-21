@@ -1,0 +1,122 @@
+---
+/**
+ * Per-architecture download buttons for the SAIP CLI (#123).
+ *
+ * Honest about availability: release assets are attached automatically only by the `release.yml`
+ * workflow that landed after 0.5.0, and 0.5.0 itself carries none — so a "download" that 404s is worse
+ * than no download at all. Every button therefore names the release it is valid from, and the section
+ * links the release page (which always exists) alongside the direct asset URLs (which will resolve from
+ * 0.6.0 onward).
+ *
+ * The platform is detected client-side and only used to reorder emphasis — every platform stays visible
+ * and clickable, because an agent, a container, or a colleague on another machine is not the browser's
+ * guess. No script, no problem: the markup is the same list either way.
+ */
+import { Icon } from '@astrojs/starlight/components'
+
+const RELEASE_MIN = '0.6.0'
+const BASE_URL = 'https://github.com/adrianwebb/saip/releases/latest/download'
+
+const targets = [
+  { id: 'linux-x64',   os: 'Linux',   arch: 'x86-64', file: 'saip-linux-x64',        icon: 'linux', hint: 'the usual server choice' },
+  { id: 'linux-arm64', os: 'Linux',   arch: 'ARM64',  file: 'saip-linux-arm64',      icon: 'linux', hint: 'cloud ARM, Raspberry Pi 4/5' },
+  { id: 'darwin-arm64', os: 'macOS',  arch: 'Apple Silicon', file: 'saip-darwin-arm64', icon: 'apple', hint: 'M-series Macs' },
+  { id: 'darwin-x64',  os: 'macOS',   arch: 'Intel',  file: 'saip-darwin-x64',       icon: 'apple', hint: 'Intel Macs' },
+  { id: 'windows-x64', os: 'Windows', arch: 'x86-64', file: 'saip-windows-x64.exe',  icon: null,    hint: 'PowerShell: unblock on first run' },
+]
+---
+<div class="dl">
+  <p class="dl-note">
+    One self-contained executable per platform — <strong>no Node.js and no source checkout</strong> on the
+    server. Verify the checksum before running anything. Assets are attached automatically from release
+    <code>{RELEASE_MIN}</code> onward; the <a href="https://github.com/adrianwebb/saip/releases">release
+    page</a> lists what each release carries, and <a href="/saip/guides/cli-reference/#installing-a-released-binary">the CLI reference</a>
+    covers installing from source if your release predates them.
+  </p>
+
+  <ul class="dl-grid" data-release-min={RELEASE_MIN}>
+    {targets.map((t) => (
+      <li class="dl-item" data-id={t.id}>
+        <a class="dl-btn" href={`${BASE_URL}/${t.file}`} rel="noopener">
+          <span class="dl-icon" aria-hidden="true">
+            {t.icon ? <Icon name={t.icon} size="1.4rem" /> : (
+              <svg viewBox="0 0 16 16" width="20" height="20" fill="currentColor" role="img" aria-label="Windows">
+                <path d="M0 2.2 6.6 1.1v6.2H0zM7.4.95 16-.25v7.55H7.4zM0 8.1h6.6v6.2L0 13.2zM7.4 8.1H16v7.55l-8.6-1.2z"/>
+              </svg>
+            )}
+          </span>
+          <span class="dl-text">
+            <span class="dl-os">{t.os} <span class="dl-arch">· {t.arch}</span></span>
+            <code class="dl-file">{t.file}</code>
+            <span class="dl-hint">{t.hint}</span>
+          </span>
+          <Icon name="download" size="1.1rem" class="dl-dl" />
+        </a>
+      </li>
+    ))}
+  </ul>
+
+  <p class="dl-detected" id="dl-detected" hidden>
+    Detected your platform: <strong></strong> — listed first, but every target stays available.
+  </p>
+
+  <details class="dl-verify">
+    <summary>Verify the download</summary>
+    <pre><code>{`curl -fLO ${BASE_URL}/saip-linux-x64
+curl -fLO ${BASE_URL}/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x saip-linux-x64 && mv saip-linux-x64 ~/.local/bin/saip
+saip --version`}</code></pre>
+    <p>
+      On macOS, an unsigned download is blocked once; after the checksum passes, clear the attribute with
+      <code>xattr -d com.apple.quarantine ./saip-darwin-arm64</code>. On Windows, check the file's hash the
+      same way (<code>Get-FileHash .\saip-windows-x64.exe -Algorithm SHA256</code>) — <code>sha256sum -c</code>
+      will not be available.
+    </p>
+  </details>
+</div>
+
+<script>
+  // Emphasis only, never a filter: the guess reorders the list, it does not hide a target.
+  const items = document.querySelectorAll<HTMLElement>('.dl-item')
+  const note = document.getElementById('dl-detected')
+  const list = document.querySelector('.dl-grid')
+  const UA = navigator.userAgent
+
+  let id = ''
+  if (/Windows/.test(UA)) id = 'windows-x64'
+  else if (/Macintosh|Mac OS X/.test(UA)) id = /AppleSilicon|ARM/.test(UA) || navigator.platform === 'MacArm' ? 'darwin-arm64' : 'darwin-arm64'
+  else if (/Linux/.test(UA)) id = /aarch64|arm64/.test(UA) ? 'linux-arm64' : 'linux-x64'
+
+  if (id && list) {
+    const el = document.querySelector<HTMLElement>(`.dl-item[data-id="${id}"]`)
+    if (el) {
+      list.prepend(el)
+      el.classList.add('is-match')
+      if (note) {
+        note.querySelector('strong')!.textContent = id
+        note.hidden = false
+      }
+    }
+  }
+</script>
+
+<style>
+  .dl { margin: 1.5rem 0; }
+  .dl-note { font-size: 0.9rem; opacity: 0.9; }
+  .dl-grid { list-style: none; padding: 0; margin: 1rem 0; display: grid; gap: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+  .dl-item { margin: 0; }
+  .dl-btn { display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 0.9rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.5rem; text-decoration: none; background: var(--sl-color-gray-6); }
+  .dl-btn:hover { border-color: var(--sl-color-accent); }
+  .is-match .dl-btn { border-color: var(--sl-color-accent); box-shadow: 0 0 0 1px var(--sl-color-accent); }
+  .dl-icon { display: inline-flex; color: var(--sl-color-text); }
+  .dl-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+  .dl-os { font-weight: 600; }
+  .dl-arch { font-weight: 400; opacity: 0.8; }
+  .dl-file { font-size: 0.72rem; opacity: 0.75; overflow-wrap: anywhere; }
+  .dl-hint { font-size: 0.72rem; opacity: 0.7; }
+  .dl-dl { margin-inline-start: auto; opacity: 0.6; }
+  .dl-detected { font-size: 0.8rem; opacity: 0.85; }
+  .dl-verify { margin-top: 0.5rem; font-size: 0.9rem; }
+  .dl-verify pre { overflow-x: auto; }
+</style>

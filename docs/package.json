@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && pnpm pack-context && bash scripts/check-links.sh dist",
+    "build": "astro build && pnpm pack-context && node scripts/check-links.mjs dist",
     "pack-context": "node scripts/generate-context-packs.mjs",
     "preview": "astro preview"
   },

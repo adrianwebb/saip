@@ -3,6 +3,8 @@ title: CLI Reference
 description: Complete reference for the saip command-line interface
 ---
 
+import DownloadButtons from '../../../components/DownloadButtons.astro';
+
 The `saip` CLI manages SAIP services, models, and infrastructure. All commands operate relative to the project root directory where `.env` and `saip.yaml` reside.
 
 ## Installing the CLI
@@ -34,6 +36,8 @@ protocol. Standalone single-file binaries for each architecture are tracked sepa
 until then, install from a checkout.
 
 ### Installing a released binary
+
+<DownloadButtons />
 
 > **Which releases carry binaries.** Per-platform executables are attached automatically to
 > releases tagged **after** this workflow landed (`#111`). Releases before that were created by hand
