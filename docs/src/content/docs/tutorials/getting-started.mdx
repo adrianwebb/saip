@@ -14,10 +14,8 @@ This tutorial walks you through deploying SAIP on your local machine, starting t
 Two ways, same tool either way.
 
 **A. Release binary** — no Node needed, best for a server:
-> **Which releases carry binaries.** Per-platform executables are attached automatically to
-> releases tagged **after** this workflow landed (`#111`). Releases before that were created by hand
-> and have no assets — `0.5.0` included — so `releases/latest/download/…` can 404 until the next
-> tag. If it does, use the from-source path below rather than assuming the download is broken.
+> Binaries are attached automatically to every release from **0.6.0** onward (the workflow landed in
+> #111); older tags were published by hand and carry none.
 
 ```bash
 curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
