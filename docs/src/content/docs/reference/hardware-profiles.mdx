@@ -263,7 +263,7 @@ Constraints that fail at load time rather than degrading quietly:
 ## Training on a 12 GB card
 
 The `full-loop-12gb` tier trains on the same GPU it serves, time-shared through
-[awake/sleep mode](/saip/explanation/architecture/#awake-sleep-mode-single-gpu-time-sharing),
+[awake/sleep mode](/saip/explanation/architecture/#awakesleep-mode-single-gpu-time-sharing),
 never concurrently.
 
 - **bf16 LoRA, not QLoRA, is the documented default.** [Unsloth's Qwen3.5

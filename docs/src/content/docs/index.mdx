@@ -7,29 +7,34 @@ hero:
   tagline: Teach an AI model new skills and knowledge, then serve it through a chat API — all on a single GPU.
   actions:
     - text: Get Started →
-      link: /tutorials/getting-started/
+      link: /saip/tutorials/getting-started/
       variant: primary
     - text: Understand the Architecture
-      link: /explanation/architecture/
+      link: /saip/explanation/architecture/
       variant: secondary
 ---
 
 import { CardGrid, Card, LinkCard, Icon } from '@astrojs/starlight/components';
+import DownloadButtons from '../../components/DownloadButtons.astro';
 
 <CardGrid>
-  <LinkCard title="Tutorials" href="/tutorials/getting-started/" icon="open-book">
+  <LinkCard title="Tutorials" href="/saip/tutorials/getting-started/" icon="open-book">
     Step-by-step lessons to deploy SAIP and train your first adapter.
   </LinkCard>
-  <LinkCard title="Guides" href="/guides/deploy-local/" icon="pencil">
+  <LinkCard title="Guides" href="/saip/guides/deploy-local/" icon="pencil">
     Practical recipes for deployment, configuration, and daily operations.
   </LinkCard>
-  <LinkCard title="Reference" href="/reference/configuration/" icon="information">
+  <LinkCard title="Reference" href="/saip/reference/configuration/" icon="information">
     Technical specifications for configuration, APIs, and data formats.
   </LinkCard>
-  <LinkCard title="Understanding SAIP" href="/explanation/architecture/" icon="bulb">
+  <LinkCard title="Understanding SAIP" href="/saip/explanation/architecture/" icon="bulb">
     Concepts and design decisions behind the platform architecture.
   </LinkCard>
 </CardGrid>
+
+## Get the CLI
+
+<DownloadButtons />
 
 ## New to AI?
 
