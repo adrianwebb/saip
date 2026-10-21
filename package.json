@@ -1,7 +1,7 @@
 {
   "name": "saip",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Simple AI Platform \u2014 continual learning with QLoRA adapters",
   "type": "module",
   "license": "Apache-2.0",
