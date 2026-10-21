@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 ### Changed
-- docs: the install panel now reads as one instruction rather than three parts (#136) — "Detected your platform" is centred directly above the command box, a **Copy** button sits in the box's top-right and puts the exact on-screen sequence on the clipboard (newline-separated, no `$` prompts, paste-and-run, with a selection fallback when the async clipboard API is unavailable or denied), long release URLs no longer clip because the host is held in `$B`, the panel has real padding with a fade when a line does overflow, and on Getting Started the panel is folded into path A instead of floating above the instructions. Verified in a real browser: clipboard text equals the visible text for all five platforms
+- docs: the install panel now reads as one instruction rather than three parts (#137) — "Detected your platform" is centred directly above the command box, a **Copy** button sits in the box's top-right and puts the exact on-screen sequence on the clipboard (newline-separated, no `$` prompts, paste-and-run, with a selection fallback when the async clipboard API is unavailable or denied), long release URLs no longer clip because the host is held in `$B`, the panel has real padding with a fade when a line does overflow, and on Getting Started the panel is folded into path A instead of floating above the instructions. Verified in a real browser: clipboard text equals the visible text for all five platforms
 
 ## [0.6.1] - 2026-10-21
 
