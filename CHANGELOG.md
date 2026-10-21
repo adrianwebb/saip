@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+
+### Fixed
+
+### Changed
+
+## [0.6.0] - 2026-10-21
+
+### Added
 - docs: **the link checker can now verify the deployed site**, closing the gap that let the #123 404s ship. `check-links.mjs --origin=<url>` requests every internal link against the live origin, and a new `verify-live` job in the docs workflow runs it after deployment plus spot-checks the five pages from that report. The build-time check cannot see this class at all: `/tutorials/getting-started/` and `/saip/tutorials/getting-started/` map to the same file on disk. Verified by injecting the historical href into a copy of the build — the checker fails with the page, the href and the reason (#123)
 - docs: **per-architecture download section on the homepage, getting-started, and the CLI reference** (#123). A `DownloadButtons` component lists all five release targets (`linux-x64/-arm64`, `darwin-x64/-arm64`, `windows-x64.exe`) with platform icons, direct `releases/latest/download/…` links, checksum instructions, and the macOS/Windows first-run caveats. Platform detection only reorders emphasis — every target stays visible, because an agent or a container is not the browser's guess. Availability is stated rather than implied: assets are attached automatically only from the release after #111, and `0.5.0` carries none
 - cli: **`pnpm --filter @saip/cli install:dev`** builds the host Bun binary and installs it as `saip-dev` in `~/.local/bin`, so the compiled artifact users get is runnable alongside the source-linked `saip` (#119). It reuses the release build script — so the version-parity guard applies to dev builds too — executes what it installed to verify `--version` and `--built`, records provenance in `saip-dev.meta.json` with a `sha256`, and refuses to overwrite a `saip-dev` it did not install unless `--force`. `saip --built` now reports commit, target, version and build time; the values are substituted at build time because a compiled binary has no `.git` to read
