@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { ALL_TARGETS, artifactName, hostTarget } from './build-lib.mjs'
+import { ALL_TARGETS, NPX, artifactName, hostTarget } from './build-lib.mjs'
 import { fileURLToPath } from 'node:url'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -49,7 +49,7 @@ function build(target, { verify }) {
   // nearly reported it as tested.
   const args = ['--yes', BUN, 'build', '--compile', `--target=${target}`, ENTRY, '--outfile', outfile]
   console.log(`[binaries] ${target} -> dist/binaries/${name}`)
-  execFileSync('npx', args, { cwd: pkgRoot, stdio: 'inherit' })
+  execFileSync(NPX, args, { cwd: pkgRoot, stdio: 'inherit' })
   const bytes = existsSync(outfile) ? readFileSync(outfile).byteLength : 0
   console.log(`[binaries]   ${bytes.toLocaleString()} bytes`)
   if (verify) {

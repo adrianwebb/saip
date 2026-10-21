@@ -34,3 +34,22 @@ export function artifactName(target) {
   if (!ALL_TARGETS.includes(target)) throw new Error(`unknown Bun target "${target}"`)
   return `saip-${target.replace('bun-', '')}${target.includes('windows') ? '.exe' : ''}`
 }
+
+/**
+ * The npm-runner executable for this platform (#122).
+ *
+ * `execFileSync('npx', …)` fails on Windows with `spawnSync npx ENOENT`: the real file there is
+ * `npx.cmd`, and Node does not try batch extensions unless the spawn goes through a shell. Resolved in
+ * one place because both build scripts (release and dev-install) invoke it, and a second copy would be
+ * fixed on Linux and left broken on Windows — which is precisely what happened here.
+ *
+ * Naming the executable is enough for a direct spawn. Deliberately NOT `shell: true`, because that
+ * would put the burden of quoting on every argument handed to Bun.
+ */
+export const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+
+/**
+ * The name an installed dev binary must have to be executable here (#122): Windows will not run
+ * `saip-dev` without `.exe`, so the installer must name it per platform rather than assume one string.
+ */
+export const devBinaryName = (platform = process.platform) => (platform === 'win32' ? 'saip-dev.exe' : 'saip-dev')

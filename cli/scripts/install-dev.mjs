@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { artifactName, hostTarget, PLACEHOLDERS } from './build-lib.mjs'
+import { artifactName, devBinaryName, hostTarget, PLACEHOLDERS } from './build-lib.mjs'
 import { binDir, classifyExisting, metaPath, parseBuilt, provenanceMismatch, readsInstalled } from './install-dev-lib.mjs'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -27,7 +27,7 @@ const target = (() => {
   return (inline && inline.split('=')[1]) || (spaced >= 0 ? argv[spaced + 1] : undefined) || hostTarget()
 })()
 const dir = binDir(process.env, process.env.HOME ?? '')
-const installed = join(dir, 'saip-dev')
+const installed = join(dir, devBinaryName())
 
 function git(args) {
   try { return execFileSync('git', args, { cwd: pkgRoot, encoding: 'utf8' }).trim() } catch { return PLACEHOLDERS.commit }
