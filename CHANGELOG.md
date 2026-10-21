@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 ### Changed
+- docs: the download section rewritten for someone installing the CLI for the first time (#132) — the commands for the platform in focus now sit in a permanent green panel instead of a collapsed "Verify the download" box, a single "Detected your platform: …" line replaces the explanatory prose, per-platform footnotes and defensive wording ("every target stays available", "unblock on first run") are gone, macOS notes appear only when a macOS target is chosen, and choosing a target updates the commands so the steps always match what you downloaded. Mac detection defaults to Apple Silicon because Safari and Chrome report "Intel Mac OS X" on ARM hardware. Uses Starlight's own green tokens, so it inverts correctly in dark mode
 
 ## [0.6.0] - 2026-10-21
 
