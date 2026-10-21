@@ -1,0 +1,22 @@
+
+### ART-set-prompted code=0 signal=0 hung=false clean=true elapsed=1
+   | [?2004hSAIP_SPIKE_SECRET: [?2004l
+   | [2m[saip] [22mstored SAIP_SPIKE_SECRET (11 chars)
+
+### ART-set-stdin code=0 signal=0 hung=false clean=true elapsed=285
+   | piped-value
+   | [2m[saip] [22mstored SAIP_SPIKE_SECRET (11 chars)
+
+### ART-list code=0 signal=0 hung=false clean=true elapsed=136
+   | [2m[saip] [22mstore is empty — no secrets set
+
+### ART-status code=0 signal=0 hung=false clean=true elapsed=179
+   | [2m[saip] [22mPlatform Status
+   | ─────────────────────
+   | [2mHost:     [22munknown host "default". Known hosts: (none)
+   | [2mMode:     [22mTODO (awake / asleep / down)
+   | [2mAdapters: [22mTODO (count and names)
+   | [2mGPU:      [22m[saip] SAIP_CONFIG points at /tmp/saip-pty-oMv0TB/saip.yaml, which
+   | does not exist
+   | [2mBucket:   [22mTODO (R2 bucket name)
+   | [2mUptime:   [22mTODO
