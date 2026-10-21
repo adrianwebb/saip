@@ -7,25 +7,14 @@ import DownloadButtons from '../../../components/DownloadButtons.astro';
 
 This tutorial walks you through deploying SAIP on your local machine, starting the inference stack, and making your first chat completion request. By the end, you'll have a working local AI platform serving Qwen3.5-4B with adapter support.
 
-<DownloadButtons />
-
 ## Install the CLI
 
 Two ways, same tool either way.
 
-**A. Release binary** — no Node needed, best for a server:
-> Binaries are attached automatically to every release from **0.6.0** onward (the workflow landed in
-> #111); older tags were published by hand and carry none.
+**A. Release binary** — one file per platform, no Node.js or Python required. Choose yours and the
+commands below become that platform's steps; the copy button takes the whole sequence.
 
-```bash
-curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
-curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
-chmod +x saip-linux-x64 && mv saip-linux-x64 ~/.local/bin/saip
-```
-
-Artifacts exist for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` and `windows-x64.exe`.
-If the download 404s, the newest release predates automated assets (#111) — use path B below.
+<DownloadButtons />
 
 **B. From a checkout** — needed when you are developing the platform:
 
@@ -36,7 +25,7 @@ saip --version
 ```
 
 `saip` is not published to npm, so `npx saip` will not find it — use a release binary or a checkout.
-See [CLI Reference → Installing the CLI](/saip/guides/cli-reference/#installing-the-cli).
+Full reference: [CLI Reference → Installing the CLI](/saip/guides/cli-reference/#installing-the-cli).
 
 
 ## Prerequisites

@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.6.2] - 2026-10-21
+
+### Added
+
+### Fixed
+- test: `config-init` is now hermetic against ambient `SAIP_*` variables (#138). The wizard reports where a value comes from and shell wins, but most of the file called `runInit` without an explicit `env`, so it asserted about `process.env`: a developer shell exporting `SAIP_R2_BUCKET` made the suite red locally while CI, which has no such variables, stayed green. Found while cutting 0.6.2. Snapshot/clear/restore in `beforeEach`/`afterEach`; tests that want a shell value still pass `env` explicitly
+
+### Changed
+- docs: the install panel now reads as one instruction rather than three parts (#137) — "Detected your platform" is centred directly above the command box, a **Copy** button sits in the box's top-right and puts the exact on-screen sequence on the clipboard (newline-separated, no `$` prompts, paste-and-run, with a selection fallback when the async clipboard API is unavailable or denied), long release URLs no longer clip because the host is held in `$B`, the panel has real padding with a fade when a line does overflow, and on Getting Started the panel is folded into path A instead of floating above the instructions. Verified in a real browser: clipboard text equals the visible text for all five platforms
+
 ## [0.6.1] - 2026-10-21
 
 ### Added
