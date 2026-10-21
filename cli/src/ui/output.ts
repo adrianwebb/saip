@@ -11,7 +11,8 @@
  * renderer selection, `--json` records and `structured` all behave identically in production.
  */
 import { plainRenderer } from './plain.js'
-import { cardBlock, lineBlock, type Block } from './blocks.js'
+import { lineBlock, type Block } from './blocks.js'
+import { ttyEngine } from './input.js'
 import type { CardSpec } from './card.js'
 
 export interface LinePrinter {
@@ -20,6 +21,8 @@ export interface LinePrinter {
   showAll(blocks: Block[]): void
   /** A card spec, rendered by whichever engine this stream gets. */
   card(spec: CardSpec): string
+  /** Read one value. The fallback uses the tty engine, which is the same engine the service uses. */
+  prompt(question: string, opts?: { secret?: boolean; echo?: boolean; stream?: import('node:tty').ReadStream }): Promise<string>
 }
 
 export function uiOr(ctx: any): LinePrinter {
@@ -36,5 +39,6 @@ export function uiOr(ctx: any): LinePrinter {
       process.stdout.write(`${plainRenderer.renderAll(blocks)}\n`)
     },
     card: (spec: CardSpec): string => plainRenderer.render({ kind: 'card', spec }),
+    prompt: (question, opts) => ttyEngine.ask(question, opts),
   }
 }
