@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { STRUCTURED_COMMANDS, setJsonMode, redirectHumanStdout } from '../src/lib/json-mode.js'
+import { isClosedReader } from '../src/index.js'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 const distBin = join(repoRoot, 'cli/dist/bin.js')
@@ -152,3 +153,34 @@ describe('the stdout quarantine (#113)', () => {
   })
 })
 
+describe('a closed reader must not look like a failed command (#113)', () => {
+  /**
+   * `console.log` swallowed write errors, so this only broke once output moved to the ui sink: CI's
+   * smoke step pipes `config doctor | grep -qi …`, and an unhandled EPIPE printed a stack trace with
+   * exit 1 as though the command had failed.
+   *
+   * The decision is asserted directly. Two earlier attempts could not fail: piping into `head -1`
+   * never raised EPIPE at all (the 64 KB pipe buffer absorbs ten lines), and emitting `'error'` on
+   * the real `process.stdout` threw regardless of the handler because Node installs its own handling
+   * on that stream. Both were green against a build with the fix removed.
+   */
+  it('recognises the reader-gone codes as benign', () => {
+    expect(isClosedReader(Object.assign(new Error('EPIPE'), { code: 'EPIPE' }))).toBe(true)
+    expect(isClosedReader(Object.assign(new Error('closed'), { code: 'ERR_STREAM_DESTROYED' }))).toBe(true)
+  })
+
+  it('does not hush a real write failure', () => {
+    for (const code of ['ENOSPC', 'EBADF', 'EACCES']) {
+      expect(isClosedReader(Object.assign(new Error(code), { code })), code).toBe(false)
+    }
+    expect(isClosedReader(undefined)).toBe(false)
+    expect(isClosedReader(new Error('no code'))).toBe(false)
+  })
+
+  it('the handler is installed by the composition root, not by each command', () => {
+    const src = readFileSync(join(repoRoot, 'cli/src/index.ts'), 'utf8')
+    expect(src).toMatch(/tolerateClosedReaders\(\)/)
+    // …and it is the FIRST thing runCli does, before --built or any parse.
+    expect(src.indexOf('tolerateClosedReaders()')).toBeLessThan(src.indexOf("argv.includes('--built')"))
+  })
+})

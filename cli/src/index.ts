@@ -152,7 +152,35 @@ export function buildProvenance(): string {
   return `saip build: commit=${SAIP_BUILD_COMMIT} target=${SAIP_BUILD_TARGET} version=${SAIP_VERSION} builtAt=${SAIP_BUILD_DATE}`
 }
 
+/**
+ * A CLI is expected to survive its reader going away. `saip status | head -1` or
+ * `saip config doctor | grep -q …` closes the pipe while output is still being written, and Node
+ * surfaces that as an asynchronous `error` event on the stream — which, unhandled, prints an
+ * `Error: write EPIPE` stack trace and exits 1 as though the command failed.
+ *
+ * This belongs at the composition root, not in the renderer: `console.log` used to hide the problem
+ * by swallowing write errors, so moving output to `ctx.ui`'s sink (#113) turned every piped
+ * invocation into a potential crash. Found by CI, where the smoke step pipes `config doctor` into
+ * `grep -qi`. Non-EPIPE errors are re-raised rather than hushed, because a real write failure
+ * (disk full, closed fd) must not be reported as success.
+ */
+/** The condition that means "the reader went away", not "the command failed". */
+export function isClosedReader(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED'
+}
+
+export function tolerateClosedReaders(): void {
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (isClosedReader(err)) return
+      throw err
+    })
+  }
+}
+
 export async function runCli(argv: string[] = process.argv): Promise<number> {
+  tolerateClosedReaders()
   if (argv.includes('--built')) {
     const machine = argv.includes('--json')
     ;(machine ? process.stderr : process.stdout).write(`${buildProvenance()}\n`)
