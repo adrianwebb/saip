@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - docs: removed four **documented-but-nonexistent** global flags (`--config`, `--env`, `--quiet`, `--verbose`) — every one exited `error: unknown option`. The table now lists what the CLI accepts and states that configuration location is chosen by environment variables; implementing the flags with tests first is #149 (#148)
 
 ### Changed
+- cli: **the wizard's cards render through `ctx.ui`, and `DisplayService` is retired** (#106 slice 2, #113). `config init`/`config help` build a card *spec* (`cardSpecFor`) and the seam chooses Ink frame / plain lines / JSONL record; `lib/display.ts` is deleted, its box primitive and capability probe moving to `ui/card.ts`. `plainGuidance` now delegates to the plain renderer, so the pipe format lives in exactly one place. Verified live: piped `config help` emits `-- SAIP_R2_BUCKET (required)` with **0** box characters, and a pty run shows the framed, coloured card
 
 ## [0.6.3] - 2026-10-21
 

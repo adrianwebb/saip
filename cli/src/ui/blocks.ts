@@ -8,7 +8,7 @@
  * decide presentation; commands construct blocks. That is the whole abstraction — no registry, no
  * runtime lookup, everything still typechecks.
  */
-import type { CardSpec } from '../lib/display.js'
+import type { CardSpec } from './card.js'
 
 /**
  * The block vocabulary a command can express. `note`, `blank` and `list` were added when migrating

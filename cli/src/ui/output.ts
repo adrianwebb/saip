@@ -11,12 +11,15 @@
  * renderer selection, `--json` records and `structured` all behave identically in production.
  */
 import { plainRenderer } from './plain.js'
-import { lineBlock, type Block } from './blocks.js'
+import { cardBlock, lineBlock, type Block } from './blocks.js'
+import type { CardSpec } from './card.js'
 
 export interface LinePrinter {
   showLine(text: string, level?: 'info' | 'warn' | 'error'): void
   show(block: Block): void
   showAll(blocks: Block[]): void
+  /** A card spec, rendered by whichever engine this stream gets. */
+  card(spec: CardSpec): string
 }
 
 export function uiOr(ctx: any): LinePrinter {
@@ -32,5 +35,6 @@ export function uiOr(ctx: any): LinePrinter {
     showAll: (blocks: Block[]): void => {
       process.stdout.write(`${plainRenderer.renderAll(blocks)}\n`)
     },
+    card: (spec: CardSpec): string => plainRenderer.render({ kind: 'card', spec }),
   }
 }

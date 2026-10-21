@@ -13,7 +13,7 @@
  */
 import React from 'react'
 import { Box, Text } from 'ink'
-import type { CardSpec } from '../lib/display.js'
+import type { CardSpec } from './card.js'
 import { PREFIX, type KvRow } from './blocks.js'
 
 export function Card(props: { spec: CardSpec }): React.ReactElement {

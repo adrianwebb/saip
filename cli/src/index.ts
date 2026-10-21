@@ -13,7 +13,6 @@ import { AdapterRegistryService, HostRegistryService, SecretsService } from '@sa
 import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
 import { SAIP_BUILD_COMMIT, SAIP_BUILD_DATE, SAIP_BUILD_TARGET, SAIP_VERSION } from './version.js'
-import { DisplayService } from './lib/display.js'
 import { UiService } from './lib/ui.js'
 import { jsonlRenderer } from './ui/json.js'
 import { isStructuredCommand, jsonModeOn, redirectHumanStdout, setJsonMode, unsupportedRecord } from './lib/json-mode.js'
@@ -39,7 +38,6 @@ export async function buildProgram(): Promise<Command> {
   await ctx.plugin(SecretAccessService, {})
   await ctx.plugin(CommandRegistryService)
   // Cards for humans, plain lines for pipes — the choice is made once, here (#88).
-  await ctx.plugin(DisplayService, {})
   // The #106 seam. Registered alongside DisplayService rather than replacing it: screens move to
   // `ui` one at a time, and the old path stays live until the last one has gone.
   await ctx.plugin(UiService, {})

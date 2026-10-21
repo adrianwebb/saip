@@ -69,8 +69,9 @@ export function newLineAccumulator(): {
     },
   }
 }
+import { plainRenderer } from '../ui/plain.js'
 import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, type SecretEntry, type SecretStore } from '@saip/shared'
-import { renderCard, type CardSpec, type DisplayOptions } from '../lib/display.js'
+import { renderCard, type CardSpec, type DisplayOptions } from '../ui/card.js'
 
 export interface InitItem {
   readonly name: string
@@ -175,21 +176,13 @@ export async function currentDisplay(
 
 /**
  * The default guidance block: prefixed label lines. Kept as the fallback for pipes, CI, agents and
- * dumb terminals, where a box is noise. The card renderer in `lib/display.ts` produces the same
+ * dumb terminals, where a box is noise. The card renderer in `ui/card.ts` produces the same
  * fields with the same wording, so which one a user sees is a presentation choice only.
  */
 export function plainGuidance(item: InitItem): string[] {
-  const out = [
-    // ASCII prefix: this is the fallback for pipes, CI, log collectors and TERM=dumb,
-    // where U+2500 is either noise or mojibake (#88).
-    `-- ${item.name} ${item.required ? '(required)' : '(optional)'}`,
-    `   what    : ${item.purpose}`,
-    `   how     : ${item.how}`,
-  ]
-  if (item.scope) out.push(`   scoping : ${item.scope}`)
-  out.push(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
-  if (item.docsUrl) out.push(`   docs    : ${item.docsUrl}`)
-  return out
+  // Same code path a pipe takes when the seam renders a card: the format lives in one place, so the
+  // wizard's fallback and `ctx.ui` cannot drift. It used to build these strings itself.
+  return plainRenderer.render({ kind: 'card', spec: cardSpecFor(item) }).split('\n')
 }
 
 /**
@@ -197,7 +190,13 @@ export function plainGuidance(item: InitItem): string[] {
  * renderers cannot drift apart in content — only in presentation — which is the failure mode a
  * separate "pretty" path usually grows.
  */
-export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
+/**
+ * The guidance for one item as a **spec**, not as text. Rendering is the seam's decision: the same
+ * spec becomes an Ink frame on a terminal, `label: value` lines in a pipe, and one JSONL record under
+ * `--json`. It used to call `renderCard` directly, which meant the wizard had a private renderer that
+ * bypassed capability selection (#106).
+ */
+export function cardSpecFor(item: InitItem): CardSpec {
   const fields = [
     { label: 'what', value: item.purpose },
     { label: 'how', value: item.how },
@@ -205,12 +204,12 @@ export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
     { label: 'create', value: item.providerUrl ?? 'generate this one yourself' },
     ...(item.docsUrl ? [{ label: 'docs', value: item.docsUrl }] : []),
   ]
-  const spec: CardSpec = {
-    title: item.name,
-    badge: item.required ? 'required' : 'optional',
-    fields,
-  }
-  return renderCard(spec, opts).split('\n')
+  return { title: item.name, badge: item.required ? 'required' : 'optional', fields }
+}
+
+/** @deprecated kept for the #88 tests; use `cardSpecFor` and render through `ctx.ui`. */
+export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
+  return renderCard(cardSpecFor(item), opts).split('\n')
 }
 
 export interface RunInitOptions {
@@ -229,9 +228,10 @@ export interface RunInitOptions {
   /** Retired config keys found in saip.yaml; reported before anything else. */
   deprecations?: string[]
   /**
-   * Renders one guidance block. The CLI passes the DisplayService card renderer; the default is
-   * the plain `label: value` lines used when stdout is not a terminal and by every test. One
-   * formatter, so a human's card and a log line cannot disagree about what a field says.
+   * Renders one guidance block. The CLI passes `ctx.ui.card(cardSpecFor(item))`, so capability
+   * selection happens in the seam rather than in the command. The default is the plain
+   * `label: value` lines used when stdout is not a terminal and by every test. One formatter,
+   * so a human's card and a log line cannot disagree about what a field says.
    */
   formatItem?: (item: InitItem) => string[]
 }
