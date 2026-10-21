@@ -1,8 +1,8 @@
 {
   "name": "saip",
   "private": true,
-  "version": "0.5.0",
-  "description": "Simple AI Platform — continual learning with QLoRA adapters",
+  "version": "0.6.0",
+  "description": "Simple AI Platform \u2014 continual learning with QLoRA adapters",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -13,5 +13,8 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

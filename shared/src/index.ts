@@ -4,7 +4,11 @@
 
 export * from './types.js'
 export * from './adapter-registry.js'
+export * from './config-source.js'
+export * from './secret-catalog.js'
+export * from './secret-access.js'
 export * from './hosting.js'
+export * from './secrets-store.js'
 export * from './profiles.js'
 export * from './auth.js'
 export * from './monitoring.js'

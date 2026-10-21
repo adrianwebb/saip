@@ -3,7 +3,43 @@ title: Getting Started
 description: Deploy SAIP locally and make your first inference request
 ---
 
+import DownloadButtons from '../../../components/DownloadButtons.astro';
+
 This tutorial walks you through deploying SAIP on your local machine, starting the inference stack, and making your first chat completion request. By the end, you'll have a working local AI platform serving Qwen3.5-4B with adapter support.
+
+<DownloadButtons />
+
+## Install the CLI
+
+Two ways, same tool either way.
+
+**A. Release binary** — no Node needed, best for a server:
+> **Which releases carry binaries.** Per-platform executables are attached automatically to
+> releases tagged **after** this workflow landed (`#111`). Releases before that were created by hand
+> and have no assets — `0.5.0` included — so `releases/latest/download/…` can 404 until the next
+> tag. If it does, use the from-source path below rather than assuming the download is broken.
+
+```bash
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/saip-linux-x64
+curl -fLO https://github.com/adrianwebb/saip/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x saip-linux-x64 && mv saip-linux-x64 ~/.local/bin/saip
+```
+
+Artifacts exist for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` and `windows-x64.exe`.
+If the download 404s, the newest release predates automated assets (#111) — use path B below.
+
+**B. From a checkout** — needed when you are developing the platform:
+
+```bash
+pnpm install && pnpm -r build
+pnpm --filter @saip/cli install:local
+saip --version
+```
+
+`saip` is not published to npm, so `npx saip` will not find it — use a release binary or a checkout.
+See [CLI Reference → Installing the CLI](/saip/guides/cli-reference/#installing-the-cli).
+
 
 ## Prerequisites
 
@@ -35,11 +71,17 @@ SAIP uses pnpm as its package manager. If you don't have it installed, run `core
 
 ## Configure Secrets
 
-1. Copy the example environment file and fill in your credentials:
+1. **Recommended:** run the setup wizard. It asks for one credential at a time, hides your typing,
+   accepts pasted values, and explains what each one is for and how to scope it:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   saip config init
+   ```
+
+   Secrets go to the encrypted store; the bucket and endpoint go to `.env`, because those are
+   interpolated into `saip.yaml` and the store is not read for interpolation.
+
+   Alternatively, fill in the environment file by hand:
 
 2. Edit `.env` and set the following variables:
 
@@ -135,5 +177,5 @@ The output includes:
 
 Now that you have a working inference deployment, continue with:
 
-- **[Training Your First Adapter](/tutorials/training-your-first-adapter/)** — Learn the full experience→evaluation→adaptation loop by submitting knowledge, collecting feedback, and training a custom adapter.
-- **[Architecture](/explanation/architecture/)** — Understand how the awake/sleep cycle, adapter lifecycle, and storage layer fit together.
+- **[Training Your First Adapter](/saip/tutorials/training-your-first-adapter/)** — Learn the full experience→evaluation→adaptation loop by submitting knowledge, collecting feedback, and training a custom adapter.
+- **[Architecture](/saip/explanation/architecture/)** — Understand how the awake/sleep cycle, adapter lifecycle, and storage layer fit together.

@@ -7,8 +7,8 @@
  * partial configs never crash the boot path.
  */
 
-import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
+import { existsSync } from 'node:fs'
+import { loadYamlConfig } from '@saip/shared'
 import type { AdapterDefinition, UserEntry, ApiTokenConfig } from '@saip/shared'
 import type { ProfileMap } from '@saip/shared'
 
@@ -20,7 +20,11 @@ export interface Message {
 export interface SecurityConfig {
   dev_mode: boolean
   api_tokens: ApiTokenConfig[]
-  ui?: { admin_secret?: string }
+  /**
+   * `ui.admin_secret` is deliberately absent (#90). The type previously accepted it, which is how
+   * a field that guards nothing kept looking configured: the value was read, typed, and never
+   * checked by anything. Retired keys are reported through `deprecations` instead.
+   */
 }
 
 export interface ModelConfig {
@@ -34,6 +38,12 @@ export interface ModelConfig {
 }
 
 export interface SaipRuntimeConfig {
+  /**
+   * Retired config keys found in this file, each with what to do instead. Old files load — a
+   * removed field must not break a working deployment — but silently ignoring a security-shaped
+   * key leaves the owner believing it does something (#90).
+   */
+  deprecations?: string[]
   model: ModelConfig
   /** Active service profile name; undefined means auto-resolve from the probed GPU. */
   profile?: string
@@ -69,8 +79,17 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
 
   let raw: any
   try {
-    raw = parseYaml(readFileSync(path, 'utf8'))
-  } catch {
+    // Shared loader: YAML parse then ${VAR} interpolation, shell winning over .env.
+    raw = loadYamlConfig(path)
+  } catch (e) {
+    // A missing required variable is a real configuration error and must propagate with the
+    // variable name — swallowing it reproduces the silent-failure class this loader exists to
+    // end. Only unreadable/corrupt YAML keeps the previous lenient behavior.
+    //
+    // Matched by name, not `instanceof`: this package consumes @saip/shared from dist/ while
+    // tests load it from src/, and a dual-identity class makes instanceof fail — which would
+    // silently downgrade a real config error to defaults, the exact failure mode being removed.
+    if ((e as { name?: string })?.name === 'ConfigInterpolationError') throw e
     return structuredClone(DEFAULTS)
   }
   if (!raw || typeof raw !== 'object') return structuredClone(DEFAULTS)
@@ -78,7 +97,21 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
   const inf = raw.inference ?? {}
   const kto = raw.training?.methods?.weighted_kto
   const m = raw.model ?? {}
+  // Retired keys are reported, never silently dropped: the file still loads, but the owner is
+  // told a security-shaped setting they set does nothing. Silence here is what made #90 a
+  // liability for two releases.
+  const deprecations: string[] = []
+  const legacyAdmin = raw.security?.ui?.admin_secret
+  if (legacyAdmin) {
+    deprecations.push(
+      `security.ui.admin_secret ("${legacyAdmin}") is retired (#90): no UI route enforces it and ` +
+      `PasswordSessionAuth is never constructed, so this value protects nothing. Remove the key. ` +
+      `If you stored the value, clear it with: saip config forget ${legacyAdmin}`,
+    )
+  }
+
   return {
+    deprecations,
     model: {
       base: m.base ?? '',
       quantization: m.quantization,
@@ -112,7 +145,7 @@ export function loadConfig(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): SaipR
       api_tokens: Array.isArray(raw.security?.api_tokens)
         ? raw.security.api_tokens.map((t: any) => ({ caller: String(t.caller), token_secret: String(t.token_secret ?? t.secret ?? '') }))
         : [],
-      ui: raw.security?.ui ? { admin_secret: raw.security.ui.admin_secret } : undefined,
+
     },
   }
 }

@@ -21,7 +21,8 @@ The `NexGenCloud/hyperstack` Terraform provider is **alpha**, and `tofu apply` c
 ```bash
 export API_KEY=your-hyperstack-api-key          # read by the provider
 export SAIP_HYPERSTACK_API_KEY=$API_KEY         # referenced by hosts.yaml by NAME
-export SAIP_SSH_PRIVATE_KEY=/path/to/key.pem    # private key path/name
+saip ssh generate --host cloud-inference        # SAIP creates and keeps the keypair
+saip ssh show --host cloud-inference | xclip -selection clipboard   # paste as your console keypair
 ```
 
 ## 2. Provision with OpenTofu
@@ -45,7 +46,7 @@ Add the two hosts to `hosts.yaml` using those IPs (see [Hosts Configuration](/sa
   - name: cloud-inference
     kind: hyperstack
     role: inference
-    ssh: { host: "<inference_floating_ip>", user: ubuntu, key_secret: SAIP_SSH_PRIVATE_KEY }
+    ssh: { host: "<inference_floating_ip>", user: ubuntu }   # managed key by host name
     secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
   - name: cloud-training
     kind: hyperstack

@@ -8,7 +8,7 @@
 
 import { Context } from 'cordis'
 import { AdapterRegistryService, SecretsService } from '@saip/shared/services'
-import { EnvSecrets, MetricsService } from '@saip/shared'
+import { EnvSecrets, MetricsService, SecretAccessService } from '@saip/shared'
 import { AdapterCompilerService } from './plugins/adapter-compiler.js'
 import { GatewayStateService } from './plugins/gateway-state.js'
 import { UserResolverService } from './plugins/user-resolver.js'
@@ -45,14 +45,30 @@ async function makeLatestVersion(
 ): Promise<(name: string) => number | undefined> {
   if (override) return override
   let aliases: Record<string, string> = {}
-  try {
-    const raw = await storage.get('adapters/_index.json')
-    if (raw) aliases = (JSON.parse(raw).aliases ?? {})
-  } catch {
-    /* no index yet */
+  let loaded = false
+  const load = async (): Promise<void> => {
+    try {
+      const raw = await storage.get('adapters/_index.json')
+      if (raw) aliases = (JSON.parse(raw).aliases ?? {})
+    } catch {
+      /* no index yet */
+    }
+    loaded = true
   }
+  // Resolution is synchronous for callers, so the index is refreshed lazily: read once up
+  // front, and re-read once when a name misses. A boot-time-only snapshot meant a newly
+  // promoted adapter was invisible until restart, contradicting the documented promise that
+  // "when a new adapter version is trained and promoted, the alias updates atomically ... and
+  // the next request uses it without any client-side change".
+  await load()
   return (name: string) => {
-    const concrete = aliases[`${name}@latest`]
+    const lookup = () => aliases[`${name}@latest`]
+    let concrete = lookup()
+    if (!concrete && loaded) {
+      // Fire a refresh and, since we cannot await here, resolve from the next request onward.
+      void load()
+      return undefined
+    }
     if (!concrete) return undefined
     const m = concrete.match(/@(\d+)$/)
     return m ? Number.parseInt(m[1], 10) : undefined
@@ -77,6 +93,12 @@ function backendFromEnv(): VllmBackend | undefined {
 
 export async function createApp(opts: CreateAppOptions = {}) {
   const loaded = opts.config ?? loadConfig(opts.configPath)
+  // Retired keys are announced where the config is read. Computing a deprecation and printing it
+  // nowhere is the described-vs-wired defect again — the value would keep looking configured while
+  // doing nothing, which is exactly the #90 problem restated one layer down.
+  for (const warning of loaded.deprecations ?? []) {
+    process.stderr.write(`[saip] WARNING: ${warning}\n`)
+  }
   // Defensive: a hand-built config may omit newer optional sections.
   const config: SaipRuntimeConfig = { ...loaded, security: loaded.security ?? { dev_mode: false, api_tokens: [] } }
   const storage = opts.storage ?? new MemoryStorage()
@@ -96,7 +118,13 @@ export async function createApp(opts: CreateAppOptions = {}) {
     throw new Error(`invalid adapter registry: ${codes}`)
   }
 
-  await ctx.plugin(SecretsService, { provider: new EnvSecrets() })
+  // No provider override: SecretsService defaults to the env -> encrypted-store chain. Passing a
+  // bare EnvSecrets here silently defeated the store — the config command would save credentials
+  // that the running gateway could never read. Discovered while wiring #93, and it is the
+  // composition-root failure #76 exists to catch: the seam worked in tests because tests inject
+  // providers, while production wiring overrode the one behaviour users were promised.
+  await ctx.plugin(SecretsService, {})
+  await ctx.plugin(SecretAccessService, {})
   await ctx.plugin(MetricsService, { provider: opts.monitoring })
   await ctx.plugin(AdapterCompilerService)
   await ctx.plugin(GatewayStateService, { config, storage, vllm })

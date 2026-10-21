@@ -75,3 +75,41 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # After the site is live, re-check its links AS URLS against the deployed origin. This is the only
+  # rung that can see the #123 failure class: `/tutorials/getting-started/` and
+  # `/saip/tutorials/getting-started/` map to the same file on disk, so the build-time check passed while
+  # GitHub Pages returned 404. Running it post-deploy turns a user-reported 404 into a red job.
+  verify-live:
+    name: Verify deployed links
+    needs: deploy
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install
+      - name: Build (the checker reads the built page set)
+        run: cd docs && pnpm build
+      - name: Check every internal link against the live site
+        run: cd docs && node scripts/check-links.mjs dist --origin=https://adrianwebb.github.io
+      - name: Spot-check the pages the maintainer reported 404ing
+        run: |
+          set -euo pipefail
+          for u in \
+            "https://adrianwebb.github.io/saip/" \
+            "https://adrianwebb.github.io/saip/tutorials/getting-started/" \
+            "https://adrianwebb.github.io/saip/guides/deploy-local/" \
+            "https://adrianwebb.github.io/saip/reference/configuration/" \
+            "https://adrianwebb.github.io/saip/explanation/architecture/" ; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -L "$u")
+            test "$code" = "200" || { echo "::error::$u returned $code"; exit 1; }
+            echo "200  $u"
+          done

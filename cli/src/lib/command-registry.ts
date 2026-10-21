@@ -12,10 +12,21 @@ import type { Context } from 'cordis'
 export interface CommandSpec {
   name: string
   description: string
-  /** Run the command with its parsed argv options and the CLI Cordis context. */
-  action: (ctx: Context, options: Record<string, unknown>) => void | Promise<void>
+  /**
+   * Run the command with its parsed argv options, the CLI Cordis context, and any positional
+   * arguments in declared order.
+   */
+  action: (ctx: Context, options: Record<string, unknown>, positional?: string[]) => void | Promise<void>
   /** Optional `--bucket <name>` style option flags. */
   options?: Array<{ flag: string; description: string }>
+  /**
+   * Commander argument spec, e.g. `<action> [name] [value]`. Declared only by commands that take
+   * positionals; the dispatcher keeps the argument-less path exactly as it was so existing
+   * commands are unaffected.
+   */
+  positional?: string
+  /** Help text shown with `positional`. */
+  positionalDescription?: string
 }
 
 declare module 'cordis' {

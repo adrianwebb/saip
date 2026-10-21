@@ -1,11 +1,11 @@
 {
   "name": "@saip/docs",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && pnpm pack-context && bash scripts/check-links.sh dist",
+    "build": "astro build && pnpm pack-context && node scripts/check-links.mjs dist",
     "pack-context": "node scripts/generate-context-packs.mjs",
     "preview": "astro preview"
   },

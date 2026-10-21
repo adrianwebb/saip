@@ -3,7 +3,250 @@ title: CLI Reference
 description: Complete reference for the saip command-line interface
 ---
 
+import DownloadButtons from '../../../components/DownloadButtons.astro';
+
 The `saip` CLI manages SAIP services, models, and infrastructure. All commands operate relative to the project root directory where `.env` and `saip.yaml` reside.
+
+## Installing the CLI
+
+`saip` is the `@saip/cli` package's bin entry. It is **not published to npm**, so `npx saip`
+cannot resolve it and `npm i -g saip` would install an unrelated package. Install it from
+this repository.
+
+```bash
+pnpm install && pnpm -r build          # compiles every package; dist/ is the runnable output
+pnpm --filter @saip/cli install:local   # links saip onto your PATH
+saip --version
+```
+
+`install:local` rather than `link`: pnpm owns the `link` subcommand and intercepts it before your
+package script is reached. The script symlinks `cli/dist/index.js` into the first writable
+directory on your PATH among `pnpm bin -g`, `~/.local/bin`, and `~/.local/share/pnpm/bin`, and
+prints what it linked.
+
+It must be a **symlink**, not a hard link or a copy: a hard link is an ordinary file sitting in
+the bin directory, so Node resolves `node_modules` upward from *there* and fails to find
+`cordis`. And `@saip/cli` depends on `@saip/shared` through the `workspace:` protocol, which a
+global install cannot resolve at all — so linking against a checkout is the supported install
+until single-file binaries land.
+
+The binary resolves `@saip/shared` through the workspace, so a global *install* of the
+package (as opposed to a link) cannot work while that dependency uses the `workspace:`
+protocol. Standalone single-file binaries for each architecture are tracked separately;
+until then, install from a checkout.
+
+### Installing a released binary
+
+<DownloadButtons />
+
+> **Which releases carry binaries.** Per-platform executables are attached automatically to
+> releases tagged **after** this workflow landed (`#111`). Releases before that were created by hand
+> and have no assets — `0.5.0` included — so `releases/latest/download/…` can 404 until the next
+> tag. If it does, use the from-source path below rather than assuming the download is broken.
+
+Each release publishes one self-contained executable per platform — **no Node.js, no pnpm, no source
+checkout** on the server:
+
+| Artifact | Platform |
+|---|---|
+| `saip-linux-x64` | Linux, x86-64 |
+| `saip-linux-arm64` | Linux, ARM64 (cloud ARM instances, Raspberry Pi 4/5) |
+| `saip-darwin-x64` | macOS on Intel |
+| `saip-darwin-arm64` | macOS on Apple Silicon |
+| `saip-windows-x64.exe` | Windows |
+
+```bash
+BASE=https://github.com/adrianwebb/saip/releases/latest/download
+curl -fLO $BASE/saip-linux-x64
+curl -fLO $BASE/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing          # verify before running anything
+chmod +x saip-linux-x64
+mv saip-linux-x64 ~/.local/bin/saip
+saip --version                                    # must print the release's version
+```
+
+A release that publishes no assets is a failed release, not an empty one: CI runs each platform's
+binary and refuses to publish if any artifact or its `--version` check is missing, so a partially
+uploaded release cannot be produced silently.
+
+macOS blocks an unsigned download on first run: `xattr -d com.apple.quarantine ./saip-darwin-arm64`
+**after** checking the checksum, or approve it in System Settings. The binary reports the version it
+was built from; a build whose embedded version does not match the release refuses to compile.
+
+### Where it looks for configuration
+
+`saip` locates `saip.yaml` and `hosts.yaml` by **walking up from the current directory**, so
+it works from a project root, a subdirectory, or anywhere else you happen to be standing.
+An explicit path always wins:
+
+| Setting | Used for | Resolution |
+|---------|----------|------------|
+| `SAIP_CONFIG` | `saip.yaml` | explicit path if set, else nearest `saip.yaml` upward from cwd |
+| `SAIP_HOSTS_FILE` | `hosts.yaml` | explicit path if set, else nearest `hosts.yaml` upward from cwd |
+
+Every command that reads configuration **prints the file it loaded**. With a global install
+the dangerous failure is not "cannot find config" but "silently used another project's
+config", so the resolved path is part of normal output rather than a debug flag.
+
+## `saip ssh`
+
+SAIP-generated, SAIP-stored SSH keypairs, one per host. No `ssh-keygen`, no key files to lose.
+
+```bash
+saip ssh <generate|show|verify|rotate|remove|migrate> --host <name>
+```
+
+| Command | What it does |
+|---|---|
+| `saip ssh generate --host X` | Creates an Ed25519 keypair. Private half goes into the encrypted store as `SAIP_SSH_KEY_X`; public half is written next to it. Refuses to overwrite an existing key — use `rotate`. |
+| `saip ssh show --host X` | Prints the **public** key only. Safe to paste into a provider console or pipe anywhere. |
+| `saip ssh verify --host X` | Attempts authentication with the managed key in `BatchMode`, so it fails fast and never hangs on a password prompt. |
+| `saip ssh rotate --host X` | Replaces the keypair. The old private half is gone from the store; the old **public** key stays authorised on the host until you revoke it there — the command says so, because SAIP cannot revoke a key it does not control. |
+| `saip ssh remove --host X` | Deletes the managed key and its public file. |
+| `saip ssh migrate` | Moves a legacy `SAIP_SSH_PRIVATE_KEY` value into a managed per-host key and clears the old name. |
+
+The private key is materialised as a temporary `0600` file only for the duration of an SSH call and
+removed on every exit path, including interruption and signals. `Ctrl+C` is handled explicitly: raw
+mode disables `ISIG`, so a keypress arrives as a byte and nothing would otherwise clean up.
+
+## How output is presented
+
+`saip config init` and `saip config help` render each credential as a **card** when you are at a
+terminal, and as plain `label: value` lines everywhere else. The same fields and the same wording
+either way — presentation is the only thing that changes, so a log line and a card cannot disagree.
+
+```
+╭────────────────────────────────────────────────────────────────╮
+│ SAIP_R2_BUCKET  (required)                                     │
+│ what: Object storage for adapters, knowledge, sessions and      │
+│ feedback. Everything the platform persists lives here.         │
+│ scoping: One private bucket per deployment is enough. Do not   │
+│ make it public: adapter weights and user data go in it.        │
+│ create: https://dash.cloudflare.com/?to=/:account/r2/overview  │
+╰────────────────────────────────────────────────────────────────╯
+```
+
+The fallback is automatic, never a flag:
+
+| Situation | What you get |
+|---|---|
+| Piped, redirected, CI, agent | plain lines — greppable, and **no box-drawing characters at all** |
+| `TERM=dumb` or a non-UTF-8 locale (`LANG=C`) | ASCII frame (`+----+`) if a frame is drawn at all |
+| `NO_COLOR`, or not a TTY | no ANSI escapes, ever |
+| Terminal narrower than ~72 columns | labels and values stack instead of sharing a line |
+| 100+ columns | width is clamped so a giant terminal does not produce a giant card |
+
+**Why this is hand-rolled rather than Ink.** An earlier version of this note said Ink could not be
+bundled. **That was wrong**, and the mistake is worth keeping visible: every failure came from my
+setup, not from Ink. Re-measured with the configuration attached:
+
+| Setup | Result |
+|---|---|
+| plain Node, unbundled | **works**, including into a pipe (no cursor control sequences) |
+| esbuild bundle | **fails**: unresolved `react-devtools-core`; with it stubbed, `Dynamic require of "…"` at runtime |
+| `bun build --compile`, `react-devtools-core` installed | **works**: ~92.7 MB binary, renders under a pty; ~0.7 MB over a plain Bun binary |
+| `bun build --compile` without it | fails to resolve — the exact error I had reported as a limit of Ink |
+| `TERM=dumb` | Ink does **not** degrade: box-drawing characters either way |
+| compiled Bun binary, piped | writes **nothing** — a property of that artifact, not of Ink |
+
+So the hand-rolled renderer ships for a weaker but honest reason: no dependencies, identical
+behaviour in every row above, and a deliberate plain-text path for non-TTY output. If Bun becomes
+the packager ([#71](https://github.com/adrianwebb/saip/issues/71)), Ink for interactive use with
+this as the fallback is a live option rather than a rejected one.
+
+### `saip` vs `saip-dev` — which build you are running
+
+Two names, deliberately, because the two builds behave differently and "works in dev, broken on the
+server" is this project's most repeated defect class:
+
+| Command | What it is | How to get it |
+|---|---|---|
+| `saip` | the **source** build: `cli/dist/bin.js` symlinked by `pnpm --filter @saip/cli install:local`, runs on Node, tracks your working tree | use it while developing |
+| `saip-dev` | a **compiled Bun binary** for your architecture, installed to `~/.local/bin/saip-dev` | `pnpm --filter @saip/cli install:dev` |
+| release binary | the same compiled artifact, downloaded with `SHA256SUMS` | see "Installing a released binary" above |
+
+`saip-dev` is what a server runs, so it is what a change should be accepted against — especially the
+terminal behaviour that cannot be judged from a test log: the wizard printing each value's explanation
+**before** its prompt, and **paste** working, because most credential values are copied rather than typed.
+
+```bash
+pnpm --filter @saip/cli install:dev     # build host binary, install, execute it, write provenance
+saip-dev --version                      # the version it was built from
+saip-dev --built                        # commit, target, builtAt — what this artifact actually is
+saip-dev config init                    # the acceptance test, at a real terminal
+```
+
+Notes that matter:
+
+- The install runs the **same** build script as the release, so the version-parity guard applies: if
+  `cli/src/version.ts` and `cli/package.json` disagree, the install refuses instead of shipping a binary
+  that reports the wrong version.
+- It **executes** what it installed and checks the reported version before calling the install a success.
+  A copy that runs nowhere is not an install.
+- It will **not** overwrite a `saip-dev` that it did not install (no matching provenance file) unless you
+  pass `--force`. An unrelated file at that path is yours, not ours to replace.
+- `SAIP_DEV_BINDIR` overrides the destination — used by the tests to install into a temp directory, and
+  available if you want dev builds elsewhere.
+- `--built` prints commit provenance recorded at compile time. A binary on a server is often the only
+  copy of the application, so "which release" (`--version`) and "which commit" (`--built`) are the whole
+  audit trail.
+
+### Building a binary yourself
+
+```bash
+pnpm --filter @saip/shared build          # binaries bundle from source against built @saip/shared
+pnpm --filter @saip/cli build:bin         # this host's architecture, then executes it as proof
+pnpm --filter @saip/cli build:bin:all     # all five targets from one machine
+```
+
+Output lands in `cli/dist/binaries/` with `SHA256SUMS`. Notes that matter when changing this:
+
+- **Bun is pinned and invoked through `npx`, not added as a dependency.** `pnpm add -D bun` did
+  something worse than installing a package: pnpm wrote `devEngines.packageManager = "bun"` into
+  `cli/package.json`, declaring Bun as this project's package manager. A build tool must not be able
+  to change that by being installed.
+- **Only the host target is executed by the build script.** Cross-compiled binaries are labelled
+  `NOT executed (foreign architecture)`, and CI's matrix job runs each architecture on a native
+  runner. "Built" is not evidence that a binary runs.
+- The compiled entry point is `src/bin.ts`, and it must stay unconditional. #101 removed entry
+  detection because a compiled binary's `process.argv[1]` is a virtual `/$bunfs/...` path, which no
+  path comparison can resolve.
+
+### `--json` — machine output is a guarantee, not a per-command feature
+
+Every SAIP command accepts `--json`. The rule (#113):
+
+> stdout of a `--json` run is **valid JSONL** — one parseable record per line — or the command says
+> why it cannot be, as a JSON record, with a non-zero exit.
+
+That means, for a script or agent:
+
+- **Commands that emit records** (`status`, `profiles`) put blocks on stdout: `{"kind":"keyValues",…}`,
+  one compact line each. Nothing else ever reaches stdout — provenance lines like
+  `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+- **Commands that have not migrated yet** answer with a single record and exit **2**:
+
+  ```json
+  {"kind":"line","level":"error","text":"command "awake" does not emit --json records yet; …",
+   "data":{"code":"not_structured","command":"awake"}}
+  ```
+
+  and **do not run**: `saip awake --json` switches nothing, because the guard short-circuits before the
+  action. Ask for machine output from a side-effecting command and you get a refusal, not a deployment.
+
+An empty stdout is deliberately treated as a failure of this guarantee, since a consumer cannot tell
+"nothing to report" from "broken stream".
+
+**Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
+`saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
+valid; the stream was not; no test noticed, because every test parsed the JSON and ignored stdout. Ten
+commands each remembering one rule is how that happened.
+
+```bash
+saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
+saip profiles --json   | jq .resolution.profile
+saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
+```
 
 ## Global Options
 
@@ -341,4 +584,60 @@ before installing, and in CI to assert a target card satisfies a tier.
 `saip awake` performs the same resolution and writes the derived engine arguments before
 starting compose. `saip profiles` exists so that decision can be inspected — and tested
 against a card — without changing anything.
+:::
+
+---
+
+## `saip config`
+
+Manage the encrypted local secret store. Values are written to `~/.saip/secrets.enc.json` —
+outside the workspace — and resolved at runtime by the same provider chain the gateways use.
+
+### Synopsis
+
+```bash
+saip config <init|list|get|set|unset|key|doctor> [name] [value] [--value <v>] [--stdin] [--reveal] [--force]
+```
+
+### Subcommands
+
+| Form | Behavior |
+|------|----------|
+| `saip config list` | Names only, one per line. Never prints values. |
+| `saip config get <name>` | Prints the value masked (`••••` plus length). `--reveal` prints it. |
+| `saip config set <name>` | Prompts with echo disabled — keeps the secret out of shell history and `ps`. |
+| `saip config set <name> --value <v>` | Non-interactive. Prefer piping: `printf %s "$V" \| saip config set NAME --stdin`. |
+| `saip config unset <name>` | Removes it; reports whether it was present. |
+| `saip config init` | Guided first-time setup: one value at a time, echo off, paste accepted, each prompt explaining purpose, scope, and where to create it. Questions are derived from your `saip.yaml`/`hosts.yaml`. `--force` re-asks everything. |
+| `saip config help [name]` | Prints the credential catalog — purpose, how to create it, required scope, provider page — without prompting or writing anything. |
+| `saip config forget <name>` | Removes the value from the encrypted store **and** `.env`, reporting each source. Use it when a stored value is wrong. |
+| `saip config init --reset <name>` | Forgets one value and re-asks just that one. |
+| `saip config key list` | Which unlock methods the store accepts and which one opened it just now. |
+| `saip config key add <keyring\|unattended>` | Adds an unlock method. Never called for you. |
+| `saip config key remove <id>` | Drops one; refuses to remove the last usable method, and deletes the `unattended` key file. |
+| `saip config doctor` | Store path, file mode, wraps on file, **which wrap unlocked**, and a warning if an `unattended` wrap exists. |
+
+Prompts read the controlling terminal (`/dev/tty`), not stdin, because `--stdin` supplies the value
+through stdin. With no terminal the command refuses and prints the manual path rather than blocking.
+`saip config init` cannot verify R2 credentials yet — the R2 client is separate work; see
+[Managing Secrets](/saip/guides/manage-secrets/).
+
+:::caution[Why `--value` is second choice]
+A command-line argument is visible to every process on the machine via `ps` and lands in shell
+history. `--stdin` and the interactive prompt exist so a secret never crosses the process
+boundary as an argument. `--value` remains for scripting where the caller has already solved
+that problem.
+:::
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Operation succeeded |
+| 1 | Usage error, no key source available, or the store could not be decrypted |
+
+:::note[Shell variables still win]
+`saip config` writes the store, which sits **below** the parent environment in resolution order.
+A variable you `export` in the same shell shadows the stored value, and `saip config doctor`
+says so rather than leaving you to discover it.
 :::

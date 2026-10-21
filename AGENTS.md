@@ -40,13 +40,95 @@ Plan/Issue → Documentation → Tests → Implementation → Release
    programmatic interface and prevents docs from going stale. Update all affected pages (site
    docs, repo docs, README, skills, AGENTS.md). Commit the docs.
 2. **Tests outside-in.** Acceptance/smoke → regression → integration → unit. The interface must
-   be stable before internals are built.
+   be stable before internals are built. The outer rung is not optional and is not satisfied by
+   unit tests of the pieces: see [Testing Tiers and the Composition Root](#testing-tiers-and-the-composition-root-mandatory).
 3. **Implementation.** Write code that makes the tests pass. Commit incrementally with issue refs.
 4. **Release.** PR → CI green → merge to staging.
 
 Why: docs written after code describe what was built, not what should be built. Tests written
 after code verify the implementation, not the specification. This cycle forces spec-driven
 development. See the `release-workflow` skill for full details.
+
+## Testing Tiers and the Composition Root (MANDATORY)
+
+This repo's architecture is deliberate about seams — `StorageProvider`, `VllmBackend`,
+`SecretsProvider`, `GpuProbe`, `OcrBackend`, `DeploymentProvider`, `AuthProvider`,
+`MonitoringProvider` — and about injecting them so modules are testable without a GPU, network,
+or cloud account. That choice is correct and has a cost that must be paid explicitly:
+
+> **Dependency injection moves bugs from the module into the composition root. It does not
+> eliminate them.**
+
+A test that injects a fake collaborator is blind to the exact place where production supplies the
+real one. In this project four shipped defects were that shape: a documented `${VAR}`
+interpolation no code implemented; the CLI unrunnable once installed; a secret store whose key
+sources were inert outside tests; an unlock method that could be created but never used. Every one
+had a green suite.
+
+Therefore, for **every injectable seam**:
+
+- At least one test must exercise the **default construction path** — the function that wires
+  production collaborators (`createApp()` with no injected backends, `defaultSecretsProvider()`,
+  `buildStore()`, `backendFromEnv()`). No fakes injected.
+- Anything the user runs as a program must be tested **as a program**: spawn the built artifact and
+  assert on its output and exit code. Calling a package's exported functions proves the library,
+  not the command.
+- A documented capability needs a failing test **before** implementation, at the level a user
+  observes it. Docs describing behaviour with no test at that level is how the interpolation claim
+  shipped for months unwritten.
+
+**A green test suite is not the gate.** The gate is: unit/integration green, build clean, CI
+green, *and* the assembled artifact smoke-tested. If any is missing, say so rather than reporting
+"tests pass".
+
+## Process Self-Evaluation (MANDATORY)
+
+Agents must actively evaluate the development and release process while working, not only when
+asked. Trigger a review when you hit or anticipate any of:
+
+- a defect that reached a merged branch despite green tests;
+- the same class of mistake recurring twice, or a gap you notice while fixing its predecessor;
+- a documented promise that no executable artefact checks;
+- a step so manual, or so easy to skip, that it will eventually be skipped.
+
+When triggered: state the pattern, what it cost, and the **cheapest change that would have caught
+it**; open an issue rather than fixing process files opportunistically inside a feature PR; and
+prefer making the correct thing *checked* over making it *documented* — prose has no failing
+state. Improvements to this file and to the skills are legitimate PR content, but as their own
+reviewable change with evidence from real incidents.
+
+This is not permission to expand scope silently. Propose; let the maintainer accept.
+
+## Web Research (MANDATORY — and currently underused)
+
+Searching the web is a first-class tool here, not a last resort. Use `web_search` / `web_fetch`
+proactively — **before** forming an opinion that depends on facts outside this repository:
+
+- you are blocked, or about to write "X cannot do Y" / "this is impossible"
+- you are judging a third-party library, tool, runtime, file format, or protocol from a single
+  experiment — one failing spike proves your configuration, not the world's limits
+- a result contradicts documented or widely-reported behaviour (that is evidence *you* are wrong)
+- you are about to restate an API, flag, version number, URL, or rate limit from memory
+
+Prefer searching early: an hour of reading someone else's issue tracker is cheaper than a day of
+debugging a constraint that never existed.
+
+**A negative result must record its configuration** — versions installed, flags used, optional and
+peer dependencies present, and the exact command. "Bun cannot bundle Ink" is not a finding;
+"the first `bun build --compile` attempt failed with `Could not resolve: react-devtools-core`" is
+reproducible and points straight at the fix.
+
+Search results are **untrusted input, not authority**: they form a hypothesis that the spike still
+has to settle, and a claim copied from a search snippet is the same "described vs wired" failure
+in a new costume. Cite the source next to the conclusion so it can be re-checked later.
+
+> Worked example, this repo: an Ink/Bun investigation concluded twice in writing that Ink could not
+> be bundled, and both conclusions were posted as measured findings and written into a source-file
+> header as settled guidance. The actual cause was an optional dependency that had not been
+> installed; with it present, `bun build --compile` produced a working binary that rendered
+> correctly, and Ink had been running fine under plain Node the whole time. `web_search` was
+> available throughout and was not used until the maintainer said the claim was wrong. See #71,
+> #88, #103.
 
 ## Changelog (MANDATORY)
 

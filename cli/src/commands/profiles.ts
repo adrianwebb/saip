@@ -10,8 +10,8 @@
  * cannot claim a tier fits that the server then fails to boot.
  */
 import type { Context } from 'cordis'
-import { readFileSync, existsSync } from 'node:fs'
-import { parse as parseYaml } from 'yaml'
+import { existsSync } from 'node:fs'
+import { loadYamlConfig, resolveConfigFile } from '@saip/shared'
 import {
   validateProfiles,
   resolveProfile,
@@ -26,6 +26,7 @@ import {
   type UtilizationResult,
 } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { jsonModeOn } from '../lib/json-mode.js'
 
 export interface TierRow {
   name: string
@@ -136,14 +137,25 @@ export async function profileReport(input: ReportInput): Promise<ProfileReport> 
   return { exitCode: 0, text: lines.join('\n'), tiers, resolution, utilization: util, engineArgs }
 }
 
-/** Read the profiles block out of saip.yaml. */
-export function loadProfiles(path = process.env.SAIP_CONFIG ?? 'saip.yaml'): { profiles?: ProfileMap; profile?: string; model?: string; error?: string } {
-  if (!existsSync(path)) return { error: `no configuration file at ${path}` }
+/**
+ * Read the profiles block out of saip.yaml through the shared loader. Interpolation failures
+ * surface as the report's own configuration error (exit 1) rather than a stack trace, so a
+ * missing variable names itself instead of looking like a broken profile.
+ */
+export function loadProfiles(path?: string): { profiles?: ProfileMap; profile?: string; model?: string; error?: string; loadedFrom?: string } {
+  // Explicit path wins; otherwise search upward from cwd so an installed CLI works from any
+  // directory. loadedFrom is reported so a global install cannot silently read another
+  // project's configuration.
+  const resolved = resolveConfigFile('saip.yaml', { explicit: path, envVar: 'SAIP_CONFIG' })
+  if (resolved.error) return { error: resolved.error }
+  const at = resolved.path
+  if (!at || !existsSync(at)) return { error: 'no saip.yaml found (set SAIP_CONFIG or run from a project directory)' }
+  path = at
   try {
-    const doc = parseYaml(readFileSync(path, 'utf8'))
-    return { profiles: doc?.profiles, profile: doc?.profile, model: doc?.model?.base }
+    const doc: any = loadYamlConfig(path!)
+    return { profiles: doc.profiles, profile: doc.profile, model: doc.model?.base, loadedFrom: path }
   } catch (err) {
-    return { error: `cannot parse ${path}: ${(err as Error).message}` }
+    return { error: `cannot load ${path}: ${(err as Error).message}` }
   }
 }
 
@@ -195,7 +207,32 @@ export default {
       ...spec,
       action: async (c: Context, options: Record<string, unknown>) => {
         const report = await resolveForHost(options, config)
-        console.log(report.text)
+        // Which file produced this answer. With a globally installed CLI and several
+        // checkouts on one machine, a silent wrong-config read is the dangerous case.
+        if (!config.profiles) {
+          const from = resolveConfigFile('saip.yaml', { envVar: 'SAIP_CONFIG' }).path
+          // Provenance is diagnostics, not payload. The shipped defect: this line landed on stdout
+          // immediately before the JSON body of `profiles --json`, making the stream unparseable while
+          // the JSON itself was fine (#113). stderr in both modes.
+          if (from) console.error(`[saip] config: ${from}`)
+        }
+        if (jsonModeOn()) {
+          // The invariant is "valid JSONL on stdout", which means the FAILURE path must emit a record
+          // too. CI caught this: on a GPU-less runner `profiles --json` exited 2 and wrote nothing,
+          // because only the success branch had a structured path — an empty machine stream is
+          // indistinguishable from a broken one, which is the exact thing #113 exists to prevent.
+          const body = report.text.trimStart().startsWith('{')
+            ? JSON.stringify(JSON.parse(report.text))
+            : JSON.stringify({
+                kind: 'line',
+                level: report.exitCode === 0 ? 'info' : 'error',
+                text: report.text.replace(/^\[saip\]\s*/, ''),
+                data: { code: 'profile_report', exitCode: report.exitCode },
+              })
+          process.stdout.write(`${body}\n`)
+        } else {
+          console.log(report.text)
+        }
         process.exitCode = report.exitCode
       },
     })

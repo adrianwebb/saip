@@ -1,30 +1,45 @@
 {
   "name": "@saip/cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "SAIP CLI \u2014 manage inference and training services",
   "type": "module",
   "bin": {
-    "saip": "dist/index.js"
+    "saip": "dist/bin.js"
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/mark-bin-executable.mjs",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "install:local": "node scripts/install-link.mjs",
+    "build:bin": "node scripts/build-binaries.mjs",
+    "build:bin:all": "node scripts/build-binaries.mjs --all",
+    "install:dev": "node scripts/install-dev.mjs"
   },
   "dependencies": {
     "@saip/shared": "workspace:*",
-    "cordis": "^4.0.0-rc.11",
     "commander": "^13.0.0",
-    "yaml": "^2.6.0",
-    "dotenv": "^16.4.0"
+    "cordis": "^4.0.0-rc.11",
+    "dotenv": "^16.4.0",
+    "ink": "8.0.0",
+    "react": "19.3.1",
+    "react-devtools-core": "^6.1.5",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
+    "@types/react": "^19.3.0",
     "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "scripts"
+  ]
 }
