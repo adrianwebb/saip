@@ -27,8 +27,9 @@
  * after the last one has gone.
  */
 import { Service, type Context } from 'cordis'
-import type { CardSpec, DisplayOptions } from './display.js'
-import { detectDisplay } from './display.js'
+import type { CardSpec } from '../ui/card.js'
+import type { DisplayOptions } from '../ui/card.js'
+import { detectDisplay } from '../ui/card.js'
 import { kvBlock, columnsBlock, lineBlock, ruleBlock, type Block, type KvRow } from '../ui/blocks.js'
 import type { Renderer } from '../ui/renderer.js'
 import { plainRenderer } from '../ui/plain.js'

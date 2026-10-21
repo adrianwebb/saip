@@ -1,9 +1,8 @@
 /**
  * Plain renderer (#113): the fallback that pipes, CI, agents and log collectors get, and the one that
- * must never contain box-drawing or ANSI. The card implementation is #88's `renderCard`, reused rather
- * than reimplemented — two plain renderers would drift exactly like two command-local formatters did.
+ * must never contain box-drawing or ANSI. A card is a heading plus `label: value` lines; the framed
+ * box primitive lives in `ui/card.ts` and the Ink renderer owns framed presentation.
  */
-import { renderCard } from '../lib/display.js'
 import { PREFIX, type Block, type KvRow } from './blocks.js'
 import type { Renderer } from './renderer.js'
 
@@ -13,10 +12,17 @@ export const plainRenderer: Renderer = {
   renderAll: (blocks: Block[]): string => blocks.map((b) => plainRenderer.render(b)).join('\n'),
   render(block: Block): string {
     switch (block.kind) {
-      case 'card':
-        // unicode:false keeps this path ASCII-only regardless of locale: a log collector is not a
-        // terminal, and #88 measured that box characters break greppability.
-        return renderCard(block.spec, { unicode: false, color: false, columns: 80 })
+      case 'card': {
+        // The pipe format from #82/#88, owned by the renderer rather than by each command:
+        //   -- NAME (required)
+        //      what    : …
+        // No frame characters, because a log collector cannot use them and `grep --` still finds the
+        // block header. Two earlier versions of this case got it wrong — an ASCII box (which kept
+        // emitting `+---+` into pipes) and a bare `NAME (required)` heading, which silently changed
+        // `config help` output and was caught by the assembled-program test counting `-- SAIP_`.
+        const head = block.spec.badge ? `-- ${block.spec.title} (${block.spec.badge})` : `-- ${block.spec.title}`
+        return [head, ...block.spec.fields.map((f) => `   ${f.label.padEnd(8)}: ${f.value}`)].join('\n')
+      }
       case 'keyValues': {
         // `label:` with the colon inside the padded field, so `Adapters:  3 defined` stays matchable
         // by `grep 'Adapters:'` — the property that makes this output usable in logs and CI.

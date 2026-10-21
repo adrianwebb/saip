@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { planInitItems, runInit, runHelp, forgetValue, cardGuidance, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { planInitItems, runInit, runHelp, forgetValue, cardSpecFor, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 import { human } from '../lib/json-mode.js'
 import { blankBlock, kvBlock, lineBlock, listBlock, noteBlock, rawBlock, type Block, type KvRow } from '../ui/blocks.js'
 import { plainRenderer } from '../ui/plain.js'
@@ -633,12 +633,12 @@ export default {
         // Single construction point. A second, separate `new SecretStore(...)` here is what
         // let a real key-source wiring bug live in one path while the other looked correct.
         const store = config.store ?? buildStore({})
-        // Cards when a human is at a terminal; plain lines otherwise. Decided once, here, from the
-        // DisplayService plugin — no command body branches on isTTY itself (#88).
-        const display = _ctx.display
-        const formatItem = display && !display.plain
-          ? (item: InitItem) => cardGuidance(item, display.options)
-          : undefined
+        // Capability selection lives in the seam, not here (#106): the command supplies a spec,
+        // `ctx.ui` decides Ink frame / plain lines / JSONL record. The old code asked
+        // `DisplayService.plain` and called `renderCard` directly, which was a second renderer
+        // outside the seam — the thing this migration exists to remove.
+        const ui = uiOr(_ctx)
+        const formatItem = (item: InitItem): string[] => ui.card(cardSpecFor(item)).split('\n')
         const result = await runConfig(store, options, positional, { formatItem })
         // Rendered through the seam (#113): blocks become Ink frames on a terminal, plain text in a
         // pipe, and JSONL records under --json. The command body builds no strings for display.
