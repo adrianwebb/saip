@@ -10,6 +10,11 @@
  * artifact named `saip---target=linux-arm64` once (#71), and a duplicated table would fail silently
  * instead of loudly.
  */
+import { execFileSync } from 'node:child_process'
+
+/** Runs git in `cwd` and trims, for `gitInfo`. */
+export const gitRun = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+
 export const ALL_TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-x64', 'bun-darwin-arm64', 'bun-windows-x64']
 
 /** Provenance placeholders: the shipped defaults, and the strings the installer replaces. */
@@ -53,3 +58,21 @@ export const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx'
  * `saip-dev` without `.exe`, so the installer must name it per platform rather than assume one string.
  */
 export const devBinaryName = (platform = process.platform) => (platform === 'win32' ? 'saip-dev.exe' : 'saip-dev')
+
+/**
+ * Which commit this build came from (#125). Lives here because the release path needs it too — the
+ * provenance used to be computed only by the dev installer, which is why release binaries reported
+ * `unknown-commit` while dev builds knew their own history.
+ *
+ * Returns placeholders on failure (a tarball without `.git`, a shallow clone) rather than throwing: an
+ * unattributable build is still a valid build, and "unknown" is honest where a guessed sha would not be.
+ */
+export function gitInfo(cwd, run = (args) => gitRun(args, cwd)) {
+  let commit = PLACEHOLDERS.commit
+  let dirty = false
+  try {
+    commit = run(['rev-parse', '--short', 'HEAD']) || PLACEHOLDERS.commit
+    dirty = run(['status', '--porcelain']).length > 0
+  } catch { /* no git: keep the placeholders */ }
+  return { commit: `${commit}${dirty ? '-dirty' : ''}`, dirty }
+}

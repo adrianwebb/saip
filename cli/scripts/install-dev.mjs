@@ -13,11 +13,10 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { artifactName, devBinaryName, hostTarget, PLACEHOLDERS } from './build-lib.mjs'
+import { artifactName, devBinaryName, hostTarget } from './build-lib.mjs'
 import { binDir, classifyExisting, metaPath, parseBuilt, provenanceMismatch, readsInstalled } from './install-dev-lib.mjs'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const versionFile = join(pkgRoot, 'src', 'version.ts')
 
 const argv = process.argv.slice(2)
 const force = argv.includes('--force')
@@ -29,12 +28,6 @@ const target = (() => {
 const dir = binDir(process.env, process.env.HOME ?? '')
 const installed = join(dir, devBinaryName())
 
-function git(args) {
-  try { return execFileSync('git', args, { cwd: pkgRoot, encoding: 'utf8' }).trim() } catch { return PLACEHOLDERS.commit }
-}
-
-const commit = git(['rev-parse', '--short', 'HEAD'])
-const dirty = git(['status', '--porcelain']) !== PLACEHOLDERS.commit && git(['status', '--porcelain']).length > 0
 const builtAt = new Date().toISOString()
 
 const verdict = classifyExisting({ exists: existsSync(installed), meta: readsInstalled(dir) }, { force })
@@ -46,29 +39,16 @@ if (verdict.action === 'refuse') {
 mkdirSync(dir, { recursive: true })
 
 /**
- * The compiled artifact must carry the commit it came from, and the only way to do that without a
- * runtime `.git` read (which would report the developer's checkout, not the build) is to substitute
- * these lines before compilation and restore them after. Reversibility is not optional: a crashed
- * install must not leave the working tree holding a machine-specific constant.
+ * Provenance is injected by the build itself (#125): `build-binaries.mjs` compiles a throwaway copy of
+ * `src` stamped with commit/target/date, so this script never touches tracked source. It used to rewrite
+ * `src/version.ts` around the build, which raced the test that asserts that file's placeholder text and
+ * could leave instrumented source in a working tree.
+ *
+ * The dev path therefore gets provenance for free, and the release path gets it too.
  */
-const original = readFileSync(versionFile, 'utf8')
-const substituted = original
-  .replace(`SAIP_BUILD_COMMIT = '${PLACEHOLDERS.commit}'`, `SAIP_BUILD_COMMIT = '${commit}${dirty ? '-dirty' : ''}'`)
-  .replace(`SAIP_BUILD_TARGET = '${PLACEHOLDERS.target}'`, `SAIP_BUILD_TARGET = '${target}'`)
-  .replace(`SAIP_BUILD_DATE = '${PLACEHOLDERS.date}'`, `SAIP_BUILD_DATE = '${builtAt}'`)
-if (substituted === original) {
-  throw new Error('[install:dev] version.ts no longer carries the provenance placeholders — refusing to build an unattributable binary')
-}
-
-try {
-  writeFileSync(versionFile, substituted, 'utf8')
-  process.stdout.write(`[install:dev] building ${target} (commit ${commit}${dirty ? '-dirty' : ''})\n`)
-  execFileSync(process.execPath, [join(pkgRoot, 'scripts', 'build-binaries.mjs'), `--target=${target}`], {
-    cwd: pkgRoot, stdio: ['ignore', 'inherit', 'inherit'],
-  })
-} finally {
-  writeFileSync(versionFile, original, 'utf8')
-}
+execFileSync(process.execPath, [join(pkgRoot, 'scripts', 'build-binaries.mjs'), `--target=${target}`], {
+  cwd: pkgRoot, stdio: ['ignore', 'inherit', 'inherit'],
+})
 
 const artifact = join(pkgRoot, 'dist', 'binaries', artifactName(target))
 if (!existsSync(artifact)) throw new Error(`[install:dev] expected artifact not found: ${artifact}`)
@@ -98,7 +78,13 @@ if ((statSync(installed).mode & 0o777) !== 0o755) {
   throw new Error(`[install:dev] installed binary mode is ${(statSync(installed).mode & 0o777).toString(8)}, expected 755`)
 }
 
-const meta = { version: manifestVersion, commit: `${commit}${dirty ? '-dirty' : ''}`, target, builtAt, sha256 }
+// Provenance comes from the artifact's own report, not from a second git call here: if the binary says a
+// different target or commit than we asked for, that is a build bug worth failing on rather than a
+// discrepancy the meta file would paper over.
+if (built.target !== target) {
+  throw new Error(`[install:dev] artifact reports target ${built.target}, expected ${target}`)
+}
+const meta = { version: manifestVersion, commit: built.commit, target: built.target, builtAt: built.builtAt ?? builtAt, sha256 }
 const mismatch = provenanceMismatch(meta)
 if (mismatch) throw new Error(`[install:dev] ${mismatch}`)
 writeFileSync(metaPath(dir), `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o644 })
