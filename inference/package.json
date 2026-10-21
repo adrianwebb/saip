@@ -1,6 +1,6 @@
 {
   "name": "@saip/inference",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "SAIP Inference Gateway \u2014 vLLM + Hono + Cordis",
   "type": "module",
   "main": "dist/index.js",
