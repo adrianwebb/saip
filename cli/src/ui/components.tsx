@@ -83,3 +83,22 @@ export function Line(props: { text: string; level?: 'info' | 'warn' | 'error' })
     </Text>
   )
 }
+
+export function List(props: { items: string[] }): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      {props.items.map((item, i) => (
+        <Text key={`${item}-${i}`} wrap="wrap">{`  ${item}`}</Text>
+      ))}
+    </Box>
+  )
+}
+
+/** A continuation line: dimmer than the message it follows, and never carries the `[saip] ` marker. */
+export function Note(props: { text: string }): React.ReactElement {
+  return <Text dimColor wrap="wrap">{`   ${props.text}`}</Text>
+}
+
+export function Blank(): React.ReactElement {
+  return <Text> </Text>
+}

@@ -87,6 +87,10 @@ export async function buildProgram(): Promise<Command> {
       // The `--json` invariant (#113): stdout is valid JSONL or the command says why it cannot be.
       if ((options as Record<string, unknown>)?.json) {
         setJsonMode(true)
+        // The machine target is a renderer choice, not a per-command code path (#113): switching the
+        // service here means any command that renders blocks gets valid JSONL for free. Commands that
+        // have not migrated are short-circuited below rather than emitting prose into the stream.
+        ctx.ui?.useRenderer('jsonl')
         const restore = redirectHumanStdout()
         try {
           if (!isStructuredCommand(spec.name)) {
@@ -96,7 +100,20 @@ export async function buildProgram(): Promise<Command> {
             process.exitCode = 2
             return
           }
-          await spec.action(ctx, options, positional)
+          try {
+            await spec.action(ctx, options, positional)
+          } catch (err: any) {
+            // The invariant is about the STREAM, so it has to hold when an action throws part way
+            // through — `ssh --json` with no store on disk failed here and printed nothing, which is
+            // indistinguishable from "no results". A record plus a non-zero exit is the honest form.
+            const message = err?.message ?? String(err)
+            process.stdout.write(`${jsonlRenderer.render({
+              kind: 'line', level: 'error', text: message,
+              data: { code: 'command_failed', command: spec.name },
+            })}\n`)
+            console.error(`[saip] error: ${message}`)
+            process.exitCode = typeof process.exitCode === 'number' && process.exitCode !== 0 ? process.exitCode : 1
+          }
         } finally {
           setJsonMode(false)
           restore()

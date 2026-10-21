@@ -10,6 +10,7 @@ import type { Renderer } from './renderer.js'
 
 export const plainRenderer: Renderer = {
   kind: 'plain',
+  renderAll: (blocks: Block[]): string => blocks.map((b) => plainRenderer.render(b)).join('\n'),
   render(block: Block): string {
     switch (block.kind) {
       case 'card':
@@ -38,6 +39,14 @@ export const plainRenderer: Renderer = {
         const level = block.level ?? 'info'
         return `${PREFIX[level]} ${block.text}`
       }
+      case 'list':
+        // Names with optional annotations, indented and unprefixed: this is a listing, not a message.
+        return block.items.map((i) => `  ${i}`).join('\n')
+      case 'note':
+        // Continuation of the message above it, so it carries no `[saip] ` marker.
+        return `   ${block.text}`
+      case 'blank':
+        return ''
       case 'rule':
         return '-'.repeat(Math.max(1, block.width))
     }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- cli: **command results are blocks, and `--json` is now a property of the seam rather than of each command** (#113). The block model gained `list`, `note` and `blank` — the shapes `config` and `ssh` were already hand-building as padded strings — and `Renderer` gained `renderAll()`. `saip ssh` now returns blocks and renders through `ctx.ui`, which means it emits valid JSONL records under `--json` with no command-specific JSON code, and `ssh` joined the structured-command list. The dispatcher activates the `jsonl` renderer for the whole run, so any migrated command inherits machine output. Two gaps this exposed and fixed: a structured command that **throws** left stdout empty (now a `command_failed` record plus a non-zero exit), and the passphrase explanation wrote straight to `process.stdout`, putting `[saip] unlocking the encrypted secret store` as the first "JSON" line of `saip ssh --json` — the #115 defect in a place the quarantine could not see, because it only wrapped `console.log`. Human prose now goes through one `human()` sink. Severity also stopped mutating the marker: `[saip]` for every level, with `level` carrying the meaning (#113)
 
 ### Fixed
 

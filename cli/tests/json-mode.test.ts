@@ -6,8 +6,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { STRUCTURED_COMMANDS, setJsonMode, redirectHumanStdout } from '../src/lib/json-mode.js'
 
@@ -15,10 +16,22 @@ const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 const distBin = join(repoRoot, 'cli/dist/bin.js')
 const built = existsSync(distBin)
 
+/** A throwaway home for every probe: without this the CLI reads the developer's real ~/.saip store. */
+function sandbox(): Record<string, string> {
+  const dir = mkdtempSync(join(tmpdir(), 'saip-json-'))
+  writeFileSync(join(dir, 'hosts.yaml'), 'hosts: []\n', 'utf8')
+  return {
+    SAIP_SECRETS_FILE: join(dir, 'secrets.enc.json'),
+    SAIP_ENV_FILE: join(dir, '.env'),
+    SAIP_HOSTS_FILE: join(dir, 'hosts.yaml'),
+    SAIP_SECRETS_PASSPHRASE: 'json-mode-test-passphrase',
+  }
+}
+
 function runJson(args: string[]): { code: number | null; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, [distBin, ...args, '--json'], {
     encoding: 'utf8', cwd: repoRoot, timeout: 60_000,
-    env: { ...process.env, SAIP_CONFIG: join(repoRoot, 'saip.yaml') },
+    env: { ...process.env, SAIP_CONFIG: join(repoRoot, 'saip.yaml'), ...sandbox() },
   })
   return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
 }
@@ -82,10 +95,27 @@ describe.skipIf(!built)('every --json run emits parseable JSONL on stdout (#113)
 
   it('every declared structured command really emits records', () => {
     // The list is a claim about the CLI; this makes it checked rather than maintained by hand.
+    // Each command is invoked the way a caller actually invokes it: a bare `ssh` is a commander
+    // usage error (stderr, exit 1), not a stream violation, and asserting on it would test the
+    // argument parser rather than the invariant.
+    const invocations: Record<string, string[]> = {
+      status: ['status'],
+      profiles: ['profiles'],
+      ssh: ['ssh', 'list'],
+    }
     for (const name of [...STRUCTURED_COMMANDS]) {
-      const { stdout } = runJson([name])
+      const args = invocations[name] ?? [name]
+      const { stdout } = runJson(args)
       expectJsonl(stdout, name)
     }
+  })
+
+  it('a structured command that fails mid-action still leaves a record, not silence (#113)', () => {
+    // `ssh show --host <unknown>` cannot produce a key, but the caller must still be able to tell
+    // "no results" from "broken": a record plus a non-zero exit, never an empty stdout.
+    const { stdout } = runJson(['ssh', 'show', '--host', 'definitely-not-configured'])
+    const [rec] = expectJsonl(stdout, 'ssh show')
+    expect(['line', 'keyValues']).toContain(rec.kind)
   })
 })
 

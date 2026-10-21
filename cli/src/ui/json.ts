@@ -15,6 +15,7 @@ import type { Renderer } from './renderer.js'
 
 export const jsonlRenderer: Renderer = {
   kind: 'jsonl',
+  renderAll: (blocks: Block[]): string => blocks.map((b) => jsonlRenderer.render(b)).join('\n'),
   render(block: Block): string {
     switch (block.kind) {
       case 'card':
@@ -33,6 +34,12 @@ export const jsonlRenderer: Renderer = {
           // whether a record carries a code.
           ...(block.data ? { data: block.data } : {}),
         })
+      case 'list':
+        return JSON.stringify({ kind: 'list', items: block.items })
+      case 'note':
+        return JSON.stringify({ kind: 'note', text: block.text })
+      case 'blank':
+        return JSON.stringify({ kind: 'blank' })
       case 'rule':
         // A rule is decoration. It still gets a record rather than being silently dropped, so a
         // consumer sees the same block sequence the terminal saw.

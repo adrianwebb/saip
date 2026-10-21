@@ -15,6 +15,9 @@ import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { type HostConfig, type SecretStore } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
+import { lineBlock, listBlock, type Block } from '../ui/blocks.js'
+import { plainRenderer } from '../ui/plain.js'
+import { uiOr } from '../ui/output.js'
 import { buildStore } from './config.js'
 import {
   generateKeypair, importPrivateKey, managedKeyName, publicPath, writePublicKeypair,
@@ -34,8 +37,24 @@ export interface SshDeps { store?: SecretStore; runner?: SshRunner; hosts?: () =
 /** Key directory for this store, so relocated stores keep their keys together. */
 const keyDirFor = (store: SecretStore): string => join(dirname(store.filePath), 'keys')
 
-const fail = (msg: string) => ({ code: 1, lines: [`[saip] error: ${msg}`] })
-const ok = (...lines: string[]) => ({ code: 0, lines: lines.map((l) => (l.startsWith('[saip]') ? l : `[saip] ${l}`)) })
+/**
+ * Results are **blocks**, not pre-formatted lines (#113): the command decides what a result *says*,
+ * `ctx.ui` decides how it looks, and `--json` gets records for free. `lines` remains as a derived
+ * view rendered by the plain renderer, so the assertions that pin this command's wording keep
+ * checking real content rather than being rewritten to match a new source of truth.
+ *
+ * Error text stays `[saip] error: …` rather than the `warn`/`error` levels on purpose: changing the
+ * marker is a user-visible change and belongs with the display review, not inside a refactor.
+ */
+export interface SshResult { readonly code: number; readonly blocks: Block[]; readonly lines: string[] }
+
+const res = (code: number, ...blocks: Block[]) => ({
+  code,
+  blocks,
+  get lines(): string[] { return blocks.map((b) => plainRenderer.render(b)) },
+})
+const fail = (msg: string) => res(1, lineBlock(`error: ${msg}`))
+const ok = (...lines: string[]) => res(0, ...lines.map((l) => lineBlock(l.replace(/^\[saip\]\s*/, ''))))
 
 function findHost(hosts: HostConfig[], name: string): HostConfig | undefined {
   return hosts.find((h) => h.name === name)
@@ -49,7 +68,7 @@ export async function runSsh(
   action: string | undefined,
   options: Record<string, unknown>,
   deps: SshDeps = {},
-): Promise<{ code: number; lines: string[] }> {
+): Promise<SshResult> {
   const runner = deps.runner ?? defaultRunner
   const hostName = typeof options.host === 'string' ? options.host : undefined
   const hosts = deps.hosts?.() ?? []
@@ -80,7 +99,10 @@ export async function runSsh(
     case 'list': {
       const names = (await store.names()).filter((n) => n.startsWith('SAIP_SSH_KEY_'))
       if (!names.length) return ok('no managed SSH keys. Create one: saip ssh generate --host <name>')
-      return ok('managed keys:', ...names.map((n) => `  ${n}  (public: ${join(keyDirFor(store), n.replace(/^SAIP_SSH_KEY_/, '').toLowerCase() + '.ed25519.pub')})`))
+      return res(0,
+        lineBlock('managed keys:'),
+        listBlock(names.map((n) => `${n}  (public: ${join(keyDirFor(store), n.replace(/^SAIP_SSH_KEY_/, '').toLowerCase() + '.ed25519.pub')})`)),
+      )
     }
 
     case 'generate': {
@@ -210,7 +232,9 @@ export default {
         const result = await runSsh(positional?.[0], options ?? {}, {
           store: config.store, runner: config.runner, hosts,
         })
-        for (const l of result.lines) console.log(l)
+        // Rendered through the seam: the same blocks become an Ink frame on a terminal,
+        // plain text in a pipe, and JSONL records under --json.
+        uiOr(_ctx).showAll(result.blocks)
         process.exitCode = result.code
       },
     })
