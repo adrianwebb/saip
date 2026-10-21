@@ -16,6 +16,7 @@ import { lineBlock, type Block } from './blocks.js'
 export interface LinePrinter {
   showLine(text: string, level?: 'info' | 'warn' | 'error'): void
   show(block: Block): void
+  showAll(blocks: Block[]): void
 }
 
 export function uiOr(ctx: any): LinePrinter {
@@ -27,6 +28,9 @@ export function uiOr(ctx: any): LinePrinter {
     },
     show: (block: Block): void => {
       process.stdout.write(`${plainRenderer.render(block)}\n`)
+    },
+    showAll: (blocks: Block[]): void => {
+      process.stdout.write(`${plainRenderer.renderAll(blocks)}\n`)
     },
   }
 }

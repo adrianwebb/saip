@@ -17,8 +17,12 @@
  */
 import type { Block } from '../ui/blocks.js'
 
-/** Commands that emit JSONL records on stdout. Add to this list as each migrates (#113). */
-export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles'])
+/**
+ * Commands that emit JSONL records on stdout. Add to this list as each migrates (#113) — the entry
+ * means "this command renders blocks through `ctx.ui`", not "this command has a `--json` branch".
+ * `ssh` joined when its results became blocks; `config` is next.
+ */
+export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles', 'ssh'])
 
 let enabled = false
 
@@ -40,6 +44,19 @@ export function unsupportedRecord(name: string): Block {
     level: 'error',
     data: { code: 'not_structured', command: name },
   }
+}
+
+/**
+ * Write text meant for a human. The single decision point: stdout when a person is reading, stderr
+ * when stdout has been promised to a machine. Anything that prints prose should use this rather than
+ * `process.stdout.write`, which is how `saip ssh --json` ended up with `[saip] unlocking the store…`
+ * as the first "JSON" line — the same defect #115 fixed for `profiles`, in a place the quarantine
+ * could not see because it only wrapped `console.log`.
+ */
+export function human(text: string, level: 'info' | 'error' = 'info'): void {
+  const line = text.startsWith('[saip') ? text : `[saip] ${text}`
+  if (enabled) process.stderr.write(`${line}\n`)
+  else (level === 'error' ? process.stderr : process.stdout).write(`${line}\n`)
 }
 
 /**

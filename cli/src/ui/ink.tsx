@@ -10,7 +10,7 @@
  */
 import React from 'react'
 import { render, type RenderOptions } from 'ink'
-import { Card, Columns, KeyValues, Line, Rule } from './components.js'
+import { Blank, Card, Columns, KeyValues, Line, List, Note, Rule } from './components.js'
 import type { Block } from './blocks.js'
 import type { Renderer } from './renderer.js'
 
@@ -50,12 +50,16 @@ export function renderInkToString(el: React.ReactElement, columns = 80): string 
 
 export const inkRenderer: Renderer = {
   kind: 'ink',
+  renderAll: (blocks: Block[]): string => blocks.map((b) => inkRenderer.render(b)).join('\n'),
   render(block: Block): string {
     switch (block.kind) {
       case 'card': return renderInkToString(<Card spec={block.spec} />)
       case 'keyValues': return renderInkToString(<KeyValues rows={block.rows} />)
       case 'columns': return renderInkToString(<Columns header={block.header} rows={block.rows} />)
       case 'line': return renderInkToString(<Line text={block.text} level={block.level} />)
+      case 'list': return renderInkToString(<List items={block.items} />)
+      case 'note': return renderInkToString(<Note text={block.text} />)
+      case 'blank': return renderInkToString(<Blank />)
       case 'rule': return renderInkToString(<Rule width={block.width} />)
     }
   },

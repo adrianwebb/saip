@@ -22,6 +22,7 @@ import { createInterface } from 'node:readline'
 import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { planInitItems, runInit, runHelp, forgetValue, cardGuidance, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { human } from '../lib/json-mode.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -240,7 +241,9 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
       lines.push('SAIP_SECRETS_PASSPHRASE skips this prompt; `saip config key add unattended` removes the need for one, at a weaker guarantee (run `saip config doctor` to see it).')
       lines.push('Pasting works. A value that contains newlines is safer piped: printf %s "$VALUE" | saip config set NAME --stdin')
     }
-    if (lines.length) process.stdout.write(`[saip] ${lines.join('\n[saip] ')}\n`)
+    // Routed through the human sink: under `--json` this is diagnostics, not payload, and it must not
+    // land in the record stream (see #115 for the same defect in `profiles`).
+    for (const l of lines) human(l)
     return deps.prompt ? deps.prompt(q) : promptTTY(q)
   }
   const sources = defaultKeySources(env, {

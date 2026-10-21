@@ -233,7 +233,13 @@ That means, for a script or agent:
   action. Ask for machine output from a side-effecting command and you get a refusal, not a deployment.
 
 An empty stdout is deliberately treated as a failure of this guarantee, since a consumer cannot tell
-"nothing to report" from "broken stream".
+"nothing to report" from "broken stream" — including when a command throws part way through, which
+still writes one `command_failed` record before exiting non-zero.
+
+**Scope of the guarantee:** it applies to a *valid invocation*. `saip ssh --json` with no subcommand is
+a commander usage error — a message on stderr and exit 1 — and produces no record, because no command
+ran. Distinguishing "you asked badly" from "the tool broke" is the caller's job, and the exit codes do
+that: 2 for refused/unsupported, 1 for failure, 0 for success.
 
 **Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
 `saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
