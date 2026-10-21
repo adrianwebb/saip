@@ -127,7 +127,12 @@ export class PtyRun {
    */
   async finish(timeoutMs: number): Promise<PtyResult> {
     const started = Date.now()
-    const hung = await new Promise<boolean>((resolve) => {
+    // A child that exited BEFORE finish() was called is already dead: its `onExit` fired while the
+    // caller was still waiting for output or settling frames. Checking `this.exit` first is not a
+    // nicety — without it a fast-exiting child is reported as hung, which is exactly the false
+    // verdict this harness produced while probing the shipped CLI, and which an independent python
+    // `pty.fork` check contradicted. `waitFor` honoured `this.exited`; `finish` must too.
+    const hung = this.exit ? false : await new Promise<boolean>((resolve) => {
       let settled = false
       const timer = setTimeout(() => { if (!settled) { settled = true; resolve(true) } }, timeoutMs)
       this.exitWaiters.push((e) => {

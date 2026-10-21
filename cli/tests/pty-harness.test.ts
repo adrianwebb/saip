@@ -92,7 +92,7 @@ describe('the pty harness proves it can see a HANG (#154 gate)', () => {
     expect(alive).toBe(false)
   }, 20_000)
 
-  it('detects a sleeping shell still alive at 1.5s — the measurement #154 recorded', async () => {
+  it('detects a sleeping child still alive at 1.5s — the measurement #154 recorded', async () => {
     const run = new PtyRun({ cmd: '/bin/sleep', args: ['30'] })
     const seen = await run.waitFor('nothing-never-printed', 1_500)
     expect(seen).toBe(false)
@@ -100,6 +100,40 @@ describe('the pty harness proves it can see a HANG (#154 gate)', () => {
     const r = await run.finish(500)
     expect(r.hung).toBe(true)
   }, 20_000)
+
+  it('reports the code of a child that exited BEFORE finish() was called', async () => {
+    // THE regression this harness actually shipped with. `waitFor`/`settle` are how a probe lets a
+    // prompt paint before calling `finish`; if `finish` only registers an `onExit` waiter, a child
+    // that already exited is reported as HUNG. That false verdict claimed the shipped CLI's
+    // `config set` never returned — until an independent python `pty.fork` check said `exit=0`.
+    const run = new PtyRun({ cmd: node, args: ['-e', 'console.log("quick"); process.exit(7)'] })
+    await run.waitFor('quick', 8_000)                       // exit lands during this window
+    await run.settle(150)
+    expect(run.exited).toBe(true)                           // the child is already dead
+    const r = await run.finish(5_000)                        // …and finish must still see code 7
+    expect(r.hung).toBe(false)
+    expect(r.code).toBe(7)
+    expect(r.signal).toBe(0)
+  }, 20_000)
+
+  it('distinguishes "exited during the settle window" from "still alive at the deadline"', async () => {
+    // Both children print the same marker. One then exits, one then hangs. The harness must give
+    // opposite verdicts on identical output — the property that makes every termination claim here
+    // trustworthy, and the one the bug above violated.
+    const exits = new PtyRun({ cmd: node, args: ['-e', 'console.log("MARK"); setTimeout(() => process.exit(3), 400)'] })
+    await exits.waitFor('MARK', 8_000)
+    await exits.settle(900)
+    const a = await exits.finish(4_000)
+    expect(a.code).toBe(3)
+    expect(a.hung).toBe(false)
+
+    const hangs = new PtyRun({ cmd: node, args: ['-e', 'console.log("MARK"); setInterval(() => {}, 1000)'] })
+    await hangs.waitFor('MARK', 8_000)
+    await hangs.settle(900)
+    const b = await hangs.finish(1_200)
+    expect(b.hung).toBe(true)
+    expect(b.code).toBeNull()
+  }, 30_000)
 })
 
 describe('the pty harness delivers a terminal, not a pipe', () => {
