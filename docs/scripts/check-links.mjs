@@ -26,6 +26,11 @@ const positional = argv.filter((a) => !a.startsWith('--'))
 const DIST = resolve(dirname(fileURLToPath(import.meta.url)), '..', positional[0] ?? 'dist')
 const BASE = (argv.find((a) => a.startsWith('--base=')) ?? '--base=/saip').split('=').slice(1).join('=')
 const LIVE = argv.includes('--live')
+// `--origin=https://adrianwebb.github.io` turns the internal-link check into a request against the
+// DEPLOYED site. That is the only check that can see a base/path mistake of the kind #123 shipped: the
+// build output contains the same files at the same paths either way, so an on-disk check passes while
+// the server 404s. Opt-in because it runs after deployment, not during a build.
+const ORIGIN = (argv.find((a) => a.startsWith('--origin=')) ?? '').split('=').slice(1).join('=')
 
 if (!existsSync(DIST)) {
   console.error(`❌ build directory not found: ${DIST}\n   run 'pnpm --filter @saip/docs build' first`)
@@ -128,6 +133,16 @@ for (const file of HTML_FILES) {
     if (!target) {
       record(pageUrl, href, `no page at ${resolved}`)
       continue
+    }
+    if (ORIGIN) {
+      // Ask the real server for the real URL. A 200 on disk and a 404 from GitHub Pages is exactly
+      // the #123 failure, and only this request distinguishes them.
+      try {
+        const res = await fetch(`${ORIGIN.replace(/\/$/, '')}${resolved}`, { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(15_000) })
+        if (!res.ok) record(pageUrl, href, `deployed ${resolved} returned HTTP ${res.status}`)
+      } catch (e) {
+        record(pageUrl, href, `deployed request failed for ${resolved}: ${e?.name ?? e}`)
+      }
     }
     if (fragment && !IDS.get(target).has(fragment)) {
       record(pageUrl, href, `${resolved} exists but has no anchor #${fragment}`)
