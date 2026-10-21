@@ -83,3 +83,31 @@ describe('builds never write tracked source (#125)', () => {
     expect(info.commit).toMatch(/^[0-9a-f]{7,}(-dirty)?$/)
   })
 })
+
+describe('bun invocation is safe on Windows (#122)', () => {
+  it('assembles a shell command line only from allowlisted tokens', async () => {
+    const { bunCommandLine } = await import('../scripts/build-lib.mjs')
+    expect(bunCommandLine('npx', ['--yes', 'bun@1.4.3', 'build', '--compile', '--target=bun-windows-x64', 'src/bin.ts']))
+      .toBe('npx --yes bun@1.4.3 build --compile --target=bun-windows-x64 src/bin.ts')
+  })
+
+  it('refuses anything that could be shell metacharacters rather than quoting and hoping', async () => {
+    const { bunCommandLine } = await import('../scripts/build-lib.mjs')
+    for (const bad of ['a;rm -rf', '$(id)', '`id`', 'a|b', 'a&&b', 'with space', '']) {
+      expect(() => bunCommandLine('npx', [bad]), bad).toThrow(/allowlisted/)
+    }
+    // A space would split the argument once the shell sees it, so it is rejected rather than quoted
+    // and hoped over. Windows path separators, by contrast, must PASS — the earlier version of this
+    // allowlist omitted `\` and would have refused every real output path on that platform.
+    expect(() => bunCommandLine('npx', ['--outfile', 'C:\\Program Files\\x.exe'])).toThrow(/allowlisted/)
+    expect(() => bunCommandLine('npx', ['--outfile', 'D:\\a\\saip\\saip\\cli\\dist\\binaries\\saip-windows-x64.exe'])).not.toThrow()
+    expect(bunCommandLine('npx', ['--target=bun-windows-x64', 'src/bin.ts'])).toBe('npx --target=bun-windows-x64 src/bin.ts')
+  })
+
+  it('the npx name carries no .cmd: Windows resolves it through cmd.exe, POSIX spawns directly', async () => {
+    const { NPX } = await import('../scripts/build-lib.mjs')
+    // Passing 'npx.cmd' to execFileSync is what produced EINVAL after CVE-2024-27980; the shim name is
+    // resolved by `cmd.exe /c` instead.
+    expect(NPX).toBe('npx')
+  })
+})
