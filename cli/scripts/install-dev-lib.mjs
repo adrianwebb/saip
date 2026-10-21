@@ -13,6 +13,7 @@ export function binDir(env = process.env, homedir = process.env.HOME ?? '') {
   return env.SAIP_DEV_BINDIR || join(homedir, '.local', 'bin')
 }
 
+/** One meta name on every platform: it sits next to `saip-dev` or `saip-dev.exe` (#122). */
 export const metaPath = (dir) => join(dir, 'saip-dev.meta.json')
 
 /** True when a complete provenance file from a previous install sits next to the binary. */

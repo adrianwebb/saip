@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import {
   binDir, metaPath, readsInstalled, classifyExisting, provenanceMismatch, parseBuilt,
 } from '../scripts/install-dev-lib.mjs'
+import { devBinaryName, NPX } from '../scripts/build-lib.mjs'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 const manifestVersion = JSON.parse(readFileSync(join(repoRoot, 'cli/package.json'), 'utf8')).version
@@ -21,6 +22,15 @@ describe('where it goes and what may be overwritten (#119)', () => {
   it('defaults to ~/.local/bin and honours SAIP_DEV_BINDIR', () => {
     expect(binDir({}, '/home/u')).toBe('/home/u/.local/bin')
     expect(binDir({ SAIP_DEV_BINDIR: '/tmp/other' }, '/home/u')).toBe('/tmp/other')
+  })
+
+  it('the installed name and the npx spawn are correct for the platform (#122)', () => {
+    // Windows will not execute `saip-dev` without `.exe`, and `npx` there is `npx.cmd` — the second one
+    // is what made the release matrix red on windows-x64 for three pushes (#122).
+    expect(devBinaryName('win32')).toBe('saip-dev.exe')
+    expect(devBinaryName('linux')).toBe('saip-dev')
+    expect(devBinaryName('darwin')).toBe('saip-dev')
+    expect(NPX).toBe(process.platform === 'win32' ? 'npx.cmd' : 'npx')
   })
 
   it('a missing destination is installable; our own previous build is replaceable', () => {
@@ -67,7 +77,7 @@ describe.skipIf(!bunReady)('install:dev end to end — the installed artifact ru
     expect(r.stderr?.slice(0, 400)).toBe('')
     expect(r.status).toBe(0)
 
-    const installed = join(dir, 'saip-dev')
+    const installed = join(dir, devBinaryName())
     expect(existsSync(installed)).toBe(true)
     expect(statSync(installed).mode & 0o111).toBeTruthy()
 
@@ -87,7 +97,7 @@ describe.skipIf(!bunReady)('install:dev end to end — the installed artifact ru
 
   it('refuses to overwrite a hand-made saip-dev without --force', () => {
     const dir = mkdtempSync(join(tmpdir(), 'saip-dev-refuse-'))
-    const target = join(dir, 'saip-dev')
+    const target = join(dir, devBinaryName())
     writeFileSync(target, '#!/bin/sh\necho not mine\n', { mode: 0o755 })
     chmodSync(target, 0o755)
     const r = spawnSync(process.execPath, [join(repoRoot, 'cli/scripts/install-dev.mjs')], {

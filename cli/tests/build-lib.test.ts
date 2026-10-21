@@ -5,9 +5,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALL_TARGETS, hostTarget, artifactName, PLACEHOLDERS } from '../scripts/build-lib.mjs'
+import { ALL_TARGETS, gitInfo, hostTarget, artifactName, PLACEHOLDERS } from '../scripts/build-lib.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -48,5 +48,38 @@ describe('target table is one source of truth (#119)', () => {
     const version = readFileSync(join(root, 'cli/src/version.ts'), 'utf8')
     expect(version).toContain(PLACEHOLDERS.commit)
     expect(version).toContain(PLACEHOLDERS.target)
+  })
+})
+
+describe('builds never write tracked source (#125)', () => {
+  // The race that broke CI on PR #124: the dev installer substituted provenance into
+  // `src/version.ts`, compiled, then restored it — while vitest ran `version.test.ts` in a parallel
+  // worker reading that same file. A test asserting on a file another test edits is not a flake to
+  // retry, it is a design fault. The fix is a throwaway copy; this forbids the pattern coming back.
+  const scripts = ['build-binaries.mjs', 'install-dev.mjs']
+
+  for (const file of scripts) {
+    it(`${file} does not write into src/`, () => {
+      const src = readFileSync(join(root, 'cli/scripts', file), 'utf8')
+      expect(src).not.toMatch(/writeFileSync\([^)]*['"`]src['"`]/)
+      expect(src).not.toMatch(/versionFile/)
+      // It may read the tracked file (the parity guard does), just not mutate it.
+      expect(src).not.toMatch(/rmSync\([^)]*['"`]src['"`]/)
+    })
+  }
+
+  it('provenance is injected into a gitignored copy instead', () => {
+    const src = readFileSync(join(root, 'cli/scripts/build-binaries.mjs'), 'utf8')
+    expect(src).toMatch(/\.build-provenance/)
+    expect(src).toMatch(/cpSync\(/)
+    const ignore = readFileSync(join(root, '.gitignore'), 'utf8')
+    expect(ignore).toMatch(/cli\/\.build-provenance\//)
+  })
+
+  it('gitInfo actually consults git by default (a stub default made every build claim unknown)', () => {
+    const src = readFileSync(join(root, 'cli/scripts/build-lib.mjs'), 'utf8')
+    expect(src).toMatch(/export function gitInfo\(cwd, run = \(args\) => gitRun\(args, cwd\)\)/)
+    const info = gitInfo(resolve(join(root, 'cli')))
+    expect(info.commit).toMatch(/^[0-9a-f]{7,}(-dirty)?$/)
   })
 })

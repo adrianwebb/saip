@@ -1,34 +1,45 @@
 /**
- * Build distributable single-file binaries with Bun (#71).
+ * Build distributable single-file binaries with Bun (#71, #122, #125).
  *
- * Bun is used only to BUILD; the project's package manager stays pnpm and the runtime for tests
- * stays Node. Bun is invoked through `npx` at a pinned version rather than added as a dependency,
- * because `pnpm add -D bun` was tried first and did something worse than installing: pnpm wrote
- * `devEngines.packageManager = "bun"` into cli/package.json, declaring the wrong package manager for
- * the project. A build tool should not be able to change that by being installed.
+ * Bun is used only to BUILD; the project's package manager stays pnpm and the runtime for tests stays
+ * Node. Bun is invoked through `npx` at a pinned version rather than added as a dependency, because
+ * `pnpm add -D bun` did something worse than installing: pnpm wrote `devEngines.packageManager = "bun"`
+ * into cli/package.json, declaring the wrong package manager for the project. A build tool should not be
+ * able to change that by being installed.
  *
- * Targets default to this host only. Cross-compilation is the reason for Bun: it emits every target
- * from one machine, which `node --experimental-sea-config` cannot do. The trade-off, recorded so CI
- * can enforce it: a cross-compiled binary was NOT executed, so `--verify` (default on for host, off
- * for foreign targets) is what keeps "built" from being presented as "works".
+ * Targets default to this host. Cross-compilation is the reason for Bun: it emits every target from one
+ * machine, which `node --experimental-sea-config` cannot. The trade-off is recorded so CI can enforce it:
+ * a cross-compiled binary is NOT executed here, so `--verify` (on for the host, off for foreign targets)
+ * is what keeps "built" from being presented as "works".
  */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { ALL_TARGETS, artifactName, hostTarget } from './build-lib.mjs'
 import { fileURLToPath } from 'node:url'
+import { ALL_TARGETS, NPX, PLACEHOLDERS, artifactName, gitInfo, gitRun, hostTarget } from './build-lib.mjs'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BUN = 'bun@1.4.3' // pinned: a compiler upgrade must be a deliberate change, not a floating one
 const OUT_DIR = join(pkgRoot, 'dist', 'binaries')
+/**
+ * Throwaway copy of `src` used to inject build provenance (#125).
+ *
+ * Provenance was previously written into the **tracked** `src/version.ts`, compiled, then restored in a
+ * `finally`. That raced the test suite — vitest runs files in parallel workers, and
+ * `cli/tests/version.test.ts` asserts the placeholder text of that very file, so CI failed intermittently
+ * (PR #124). It also risks committing a machine-specific constant after a crash between write and restore.
+ * Compiling a copy removes the whole class: `cli/src/**` is never written by a build, so no concurrent
+ * reader can observe a half-built state and no `git add -A` can capture instrumented source.
+ */
+const PROV_DIR = join(pkgRoot, '.build-provenance')
 const ENTRY = 'src/bin.ts'
 
 /**
- * A distributed binary is often the only copy of the application on a server, so the version it
- * prints has to be embedded, not read from a manifest that is not there. That makes the literal in
- * src/version.ts authoritative at runtime — so the build refuses to produce an artifact whose two
- * version numbers disagree, rather than trusting a discipline that will eventually lapse.
+ * A distributed binary is often the only copy of the application on a server, so the version it prints
+ * has to be embedded, not read from a manifest that is not there. The literal in `src/version.ts` is
+ * therefore authoritative at runtime — so the build refuses to produce an artifact whose two version
+ * numbers disagree, rather than trusting a discipline that will eventually lapse.
  */
 function version() {
   const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version
@@ -40,18 +51,40 @@ function version() {
   return manifest
 }
 
-function build(target, { verify }) {
+/**
+ * Copy `src` and stamp provenance into the copy. Returns the directory to compile from, which sits inside
+ * the package so Bun still resolves `node_modules` (and therefore `@saip/shared`) by walking upward.
+ */
+function prepareProvenance(target, builtAt) {
+  rmSync(PROV_DIR, { recursive: true, force: true })
+  mkdirSync(join(PROV_DIR), { recursive: true })
+  cpSync(join(pkgRoot, 'src'), join(PROV_DIR, 'src'), { recursive: true })
+
+  const file = join(PROV_DIR, 'src', 'version.ts')
+  const { commit } = gitInfo(pkgRoot, (args) => gitRun(args, pkgRoot))
+  const contents = readFileSync(file, 'utf8')
+    .replace(`SAIP_BUILD_COMMIT = '${PLACEHOLDERS.commit}'`, `SAIP_BUILD_COMMIT = '${commit}'`)
+    .replace(`SAIP_BUILD_TARGET = '${PLACEHOLDERS.target}'`, `SAIP_BUILD_TARGET = '${target}'`)
+    .replace(`SAIP_BUILD_DATE = '${PLACEHOLDERS.date}'`, `SAIP_BUILD_DATE = '${builtAt}'`)
+  // The version constant must survive untouched, or the parity guarantee below stops meaning anything.
+  if (!contents.includes(`SAIP_VERSION = '${version()}'`)) {
+    throw new Error('[binaries] provenance substitution disturbed SAIP_VERSION')
+  }
+  writeFileSync(file, contents, 'utf8')
+  return { dir: PROV_DIR, commit }
+}
+
+function build(target, { verify, provenance }) {
   const name = artifactName(target)
   const outfile = join(OUT_DIR, name)
-  // `npx --yes bun@<pinned> build …` — an earlier version passed `exec` as the first argument,
-  // turning it into `npx exec …`, which is not a bun invocation. The failure was opaque ("stdout:
-  // null") because execFileSync stdio was inherit, so the guard below had never been reached and I
-  // nearly reported it as tested.
+  // `npx --yes bun@<pinned> build …`. An earlier version passed `exec` as the first argument
+  // (`npx exec …`), which is not a bun invocation; with stdio inherited the failure was opaque, and the
+  // verification below had never been reached — nearly reported as tested.
   const args = ['--yes', BUN, 'build', '--compile', `--target=${target}`, ENTRY, '--outfile', outfile]
   console.log(`[binaries] ${target} -> dist/binaries/${name}`)
-  execFileSync('npx', args, { cwd: pkgRoot, stdio: 'inherit' })
+  execFileSync(NPX, args, { cwd: provenance.dir, stdio: 'inherit' })
   const bytes = existsSync(outfile) ? readFileSync(outfile).byteLength : 0
-  console.log(`[binaries]   ${bytes.toLocaleString()} bytes`)
+  console.log(`[binaries]   ${bytes.toLocaleString()} bytes · commit ${provenance.commit}`)
   if (verify) {
     // Only the host target can be executed here; anything else is an unverified artifact.
     const out = execFileSync(outfile, ['--version'], { encoding: 'utf8' }).trim()
@@ -66,9 +99,8 @@ function build(target, { verify }) {
 const argv = process.argv.slice(2)
 const all = argv.includes('--all')
 // Accept both `--target x` and `--target=x`. CI passes the `=` form, and the previous lookup
-// (`argv.indexOf('--target') + 1`) silently returned the flag itself when given `--target=x`,
-// which built a file named `saip---target=linux-arm64`. Only caught by running the exact command
-// the workflow uses — see .github/workflows/binaries.yml.
+// (`argv.indexOf('--target') + 1`) silently returned the flag itself when given `--target=x`, building a
+// file named `saip---target=linux-arm64`. Only caught by running the exact command the workflow uses.
 const flagValue = (name) => {
   const inline = argv.find((a) => a.startsWith(`--${name}=`))
   if (inline) return inline.slice(inline.indexOf('=') + 1)
@@ -81,10 +113,19 @@ const host = hostTarget()
 mkdirSync(OUT_DIR, { recursive: true })
 if (argv.includes('--clean')) rmSync(OUT_DIR, { recursive: true, force: true })
 
-const built = targets.map((t) => build(t, { verify: t === host && !argv.includes('--no-verify') }))
+const builtAt = new Date().toISOString()
+let built = []
+try {
+  // One provenance copy per run: Bun needs to resolve the tree for every target, and a copy per target
+  // would let two targets disagree about the commit they came from.
+  const provenance = prepareProvenance(targets[0], builtAt)
+  built = targets.map((t) => build(t, { verify: t === host && !argv.includes('--no-verify'), provenance }))
+} finally {
+  rmSync(PROV_DIR, { recursive: true, force: true })
+}
 
-// Checksums: an operator downloading a binary onto a server has no other way to know it is the
-// artifact CI produced.
+// Checksums: an operator downloading a binary onto a server has no other way to know it is the artifact
+// CI produced.
 const sums = built.map((b) => {
   const digest = createHash('sha256').update(readFileSync(join(OUT_DIR, b.name))).digest('hex')
   return `${digest}  ${b.name}`

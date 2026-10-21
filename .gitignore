@@ -37,3 +37,6 @@ docs/.astro/
 
 # Generated per-host by inference/scripts/generate-engine-args.ts (GPU-specific — never commit)
 inference/.engine-args.env
+
+# throwaway copy used to inject build provenance (#125)
+cli/.build-provenance/
