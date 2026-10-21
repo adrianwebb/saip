@@ -22,7 +22,7 @@ import type { Block } from '../ui/blocks.js'
  * means "this command renders blocks through `ctx.ui`", not "this command has a `--json` branch".
  * `ssh` joined when its results became blocks; `config` is next.
  */
-export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles', 'ssh'])
+export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles', 'ssh', 'config'])
 
 let enabled = false
 

@@ -38,6 +38,8 @@ export const jsonlRenderer: Renderer = {
         return JSON.stringify({ kind: 'list', items: block.items })
       case 'note':
         return JSON.stringify({ kind: 'note', text: block.text })
+      case 'raw':
+        return JSON.stringify({ kind: 'raw', lines: block.lines })
       case 'blank':
         return JSON.stringify({ kind: 'blank' })
       case 'rule':

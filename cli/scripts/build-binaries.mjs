@@ -80,7 +80,13 @@ function build(target, { verify, provenance }) {
   // `npx --yes bun@<pinned> build …`. An earlier version passed `exec` as the first argument
   // (`npx exec …`), which is not a bun invocation; with stdio inherited the failure was opaque, and the
   // verification below had never been reached — nearly reported as tested.
-  const args = ['--yes', BUN, 'build', '--compile', `--target=${target}`, ENTRY, '--outfile', outfile]
+  // `--no-compile-autoload-dotenv` (#148): Bun's single-file executables otherwise load the CURRENT
+  // WORKING DIRECTORY's .env into the process at startup. SAIP has its own loader, which honours
+  // `--env` → $SAIP_ENV_FILE → ./.env; two loaders means the runtime silently wins, ignores which file
+  // was meant to be read, and reports those values as "from shell environment". Reproduced with a
+  // canary: released binary printed the value, a flag-built one printed "is not set".
+  const args = ['--yes', BUN, 'build', '--compile', `--target=${target}`, '--no-compile-autoload-dotenv',
+    ENTRY, '--outfile', outfile]
   console.log(`[binaries] ${target} -> dist/binaries/${name}`)
   // Platform-correct invocation (#122): a direct spawn on POSIX, `cmd.exe /c` with validated
   // arguments on Windows, where Node refuses to spawn the `npx.cmd` shim at all.

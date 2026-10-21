@@ -24,6 +24,12 @@ export type Block =
   | { kind: 'line'; text: string; level?: 'info' | 'warn' | 'error'; data?: Record<string, unknown> }
   | { kind: 'note'; text: string }
   | { kind: 'blank' }
+  /**
+   * Verbatim lines, for output that is not block-native yet — the wizard's guidance and prompts until
+   * #106 slice 2 lands. Renderers add no prefix and no alignment. Named `raw` so it is obvious in a
+   * diff that a command is opting out of the model rather than using it.
+   */
+  | { kind: 'raw'; lines: string[] }
   | { kind: 'rule'; width: number }
 
 export interface KvRow { label: string; value: string; hint?: string }
@@ -41,6 +47,7 @@ export const ruleBlock = (width = 60): Block => ({ kind: 'rule', width })
 export const listBlock = (items: string[]): Block => ({ kind: 'list', items })
 export const noteBlock = (text: string): Block => ({ kind: 'note', text })
 export const blankBlock = (): Block => ({ kind: 'blank' })
+export const rawBlock = (lines: string[]): Block => ({ kind: 'raw', lines })
 
 /**
  * The marker is `[saip]` for every severity. The codebase already says `[saip] error: …` and

@@ -23,6 +23,9 @@ import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFile
 import type { CommandSpec } from '../lib/command-registry.js'
 import { planInitItems, runInit, runHelp, forgetValue, cardGuidance, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 import { human } from '../lib/json-mode.js'
+import { blankBlock, kvBlock, lineBlock, listBlock, noteBlock, rawBlock, type Block, type KvRow } from '../ui/blocks.js'
+import { plainRenderer } from '../ui/plain.js'
+import { uiOr } from '../ui/output.js'
 
 export interface RunDeps {
   /** Environment used to detect shadowing. Defaults to process.env. */
@@ -43,7 +46,18 @@ export interface RunDeps {
   access?: SecretAccess
 }
 
-export interface RunResult { code: number; lines: string[] }
+/**
+ * A result is a SEQUENCE of blocks (#113). `lines` is kept as a derived plain-rendered view so the
+ * assertions that pin this command's wording keep checking real content, and so a caller that only
+ * wants text still has it. Commands never build padded strings themselves.
+ */
+export interface RunResult { readonly code: number; readonly blocks: Block[]; readonly lines: string[] }
+
+const res = (code: number, ...blocks: Block[]): RunResult => ({
+  code,
+  blocks,
+  get lines(): string[] { return blocks.map((b) => plainRenderer.render(b)).join('\n').split('\n') },
+})
 
 /**
  * Masks a value. Deliberately contains no substring of the original — an ellipsis-plus-tail like
@@ -72,14 +86,32 @@ export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
  * /dev/tty; so do we — and with no controlling terminal we refuse outright rather than storing
  * a key that nobody knows, which would look like success and be unrecoverable.
  */
-/** One stream for the controlling terminal, opened once and reused. */
+/**
+ * One stream for the controlling terminal, opened once and reused — so bytes typed ahead of the
+ * next prompt survive in `pending` rather than being lost with a closed fd (#99).
+ *
+ * Reusing it, however, is what made every prompted command hang: an active ReadStream keeps the
+ * event loop alive, so `config set NAME` printed `stored …` and then sat in `ep_poll` with the tty
+ * fd open until the user killed it (#110 F1). The handle is therefore **unref'd between prompts and
+ * ref'd during one**: it stops holding the process open, while still existing so buffered leftovers
+ * and the open fd survive from one question to the next.
+ */
 let ttyStream: ReadStream | undefined
+function holdTty(stream: ReadStream, hold: boolean): void {
+  // Node exposes ref/unref on fd-backed streams, but the type is on WriteStream; guard rather than
+  // assume, because an injected test stream has neither.
+  const fn = hold ? (stream as unknown as { ref?: () => void }).ref : (stream as unknown as { unref?: () => void }).unref
+  if (typeof fn === 'function') { try { fn.call(stream) } catch { /* a fake stream in tests */ } }
+}
+
 function ttyInput(): ReadStream {
   if (ttyStream) return ttyStream
   let fd: number
   try { fd = openSync('/dev/tty', 'r+') }
   catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
   ttyStream = new ReadStream(fd)
+  // Unref'd at creation: opening the terminal must not by itself keep a non-prompting command alive.
+  holdTty(ttyStream, false)
   return ttyStream
 }
 
@@ -135,6 +167,8 @@ export function promptTTY(
       if (rest) pending.set(stream, (pending.get(stream) ?? '') + rest)
     }
     const cleanup = (): void => {
+      // Release the loop between prompts; `pending` keeps whatever the user typed ahead.
+      holdTty(stream, false)
       if (hidden) { try { stream.setRawMode(!!wasRaw) } catch { /* not a real tty */ } }
       if (hidden) process.stdout.write('\u001b[?2004l')     // leave the terminal as we found it
       stream.removeListener('data', onData)
@@ -182,6 +216,7 @@ export function promptTTY(
       }
     }
     const onError = (): void => { cleanup(); reject(new WizardCancelled('terminal closed')) }
+    holdTty(stream, true)          // hold the loop only while a question is actually open
     stream.on('data', onData)
     stream.once('error', onError)
     const queued = pending.get(stream)
@@ -291,19 +326,16 @@ export async function runConfig(
   // the #76 pattern in a new place, and it is exactly what the first version of this did.
   const access = deps.access ?? new SecretAccess(store, env, `${store.filePath}.access.json`)
   const lines: string[] = []
-  const fail = (msg: string): RunResult => ({ code: 1, lines: [`[saip] ${msg}`] })
+  const fail = (msg: string): RunResult => res(1, lineBlock(msg))
   if (!action) return fail('usage: saip config <init|help|list|get|set|unset|forget|key|doctor> [name]')
 
   switch (action) {
     case 'list': {
       let names: string[]
       try { names = await store.names() } catch (e) { return fail((e as Error).message) }
-      if (!names.length) return { code: 0, lines: ['[saip] store is empty — no secrets set'] }
+      if (!names.length) return res(0, lineBlock('store is empty — no secrets set'))
       const shadowed = new Set(names.filter((n) => (env[n] ?? '') !== ''))
-      return {
-        code: 0,
-        lines: ['', ...names.map((n) => `  ${n}${shadowed.has(n) ? '  (shadowed by shell env)' : ''}`), ''],
-      }
+      return res(0, blankBlock(), listBlock(names.map((n) => `${n}${shadowed.has(n) ? '  (shadowed by shell env)' : ''}`)), blankBlock())
     }
 
     case 'get': {
@@ -324,10 +356,10 @@ export async function runConfig(
       const shadow = env[name]
       if (shadow) {
         const shown = plain ? shadow : maskValue(shadow)
-        return { code: 0, lines: [`[saip] ${name}=${shown}  (from shell environment — shadows the store value)${note}`] }
+        return res(0, lineBlock(`${name}=${shown}  (from shell environment — shadows the store value)${note}`))
       }
       if (value === undefined) return fail(`${name} is not set`)
-      return { code: 0, lines: [`[saip] ${name}=${plain ? value : maskValue(value)}${note}`] }
+      return res(0, lineBlock(`${name}=${plain ? value : maskValue(value)}${note}`))
     }
 
     case 'set': {
@@ -379,7 +411,7 @@ export async function runConfig(
         } catch (e) { return fail(`stored ${name} but could not read it back: ${(e as Error).message}`) }
       } catch (e) { return fail((e as Error).message) }
       // Never echo what was just stored, including on the success path.
-      return { code: 0, lines: [`[saip] stored ${name} (${value.length} chars)`] }
+      return res(0, lineBlock(`stored ${name} (${value.length} chars)`))
     }
 
     case 'unset':
@@ -392,7 +424,7 @@ export async function runConfig(
       const r = await forgetValue({ store, name, envPath: envFilePath(process.env), env })
       // Nothing removed is a failure to report, not a success: the old `unset` said
       // "not in the store" for a value sitting in .env, which read like a clean no-op.
-      return { code: r.cleared.length ? 0 : 1, lines: r.lines }
+      return { code: r.cleared.length ? 0 : 1, blocks: [rawBlock(r.lines)], get lines() { return r.lines } }
     }
 
     case 'help': {
@@ -401,55 +433,61 @@ export async function runConfig(
       // printed twice — found only by running the command, since every unit test called runHelp
       // directly and read only its return value.
       const io: Io = { say: () => {}, ask: async () => '' }
-      return await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io, formatItem: deps.formatItem })
+      // The wizard is not block-native until #106 slice 2, so its lines travel as a `raw` block
+      // rather than being re-prefixed here.
+      const help = await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io, formatItem: deps.formatItem })
+      return res(help.code, rawBlock(help.lines))
     }
 
     case 'doctor': {
-      const lines: string[] = ['[saip] secret store']
-      lines.push(`  path:        ${store.path}`)
+      // Rows, not hand-padded strings (#113): alignment is the renderer's job, so a longer label
+      // elsewhere cannot desynchronise this report.
+      const rows: KvRow[] = [{ label: 'path', value: store.path }]
       let unlocked = 'none reachable'
       const ids = store.wrapIds()
       try { unlocked = (await store.activeWrap()) ?? 'none reachable' } catch { /* reported below */ }
-      lines.push(`  wraps:       ${ids.length ? ids.join(', ') : 'none (store not created)'}`)
-      lines.push(`  unlocked by: ${unlocked}`)
+      rows.push({ label: 'wraps', value: ids.length ? ids.join(', ') : 'none (store not created)' })
+      rows.push({ label: 'unlocked by', value: unlocked })
+      const report = (extra: KvRow[]): RunResult => res(0, lineBlock('secret store'), kvBlock([...rows, ...extra]))
       try {
         const mode = (statSync(store.path).mode & 0o777).toString(8)
-        lines.push(`  file mode:   ${mode}`)
+        rows.push({ label: 'file mode', value: mode })
         if (mode !== '600' && mode !== '0600') {
-          return { code: 1, lines: [...lines, `  [saip] permissive file mode ${mode} — run: chmod 600 ${store.path}`] }
+          return res(1, lineBlock('secret store'), kvBlock(rows), lineBlock(`permissive file mode ${mode} — run: chmod 600 ${store.path}`))
         }
       } catch {
-        lines.push('  file mode:   n/a (no store yet)')
+        rows.push({ label: 'file mode', value: 'n/a (no store yet)' })
       }
       if (!store.exists()) {
-        lines.push(`  key sources: passphrase${hasSecretTool() ? ', keyring (secret-tool found)' : ' only — no secret-tool found on this host'}`)
-        return { code: 0, lines: [...lines, '  status:      not created (first `set` will create it, prompting for a passphrase)'] }
+        rows.push({ label: 'key sources', value: `passphrase${hasSecretTool() ? ', keyring (secret-tool found)' : ' only — no secret-tool found on this host'}` })
+        return report([{ label: 'status', value: 'not created (first `set` will create it, prompting for a passphrase)' }])
       }
       try {
         const names = await store.names()
-        lines.push(`  status:      readable (${names.length} secret${names.length === 1 ? '' : 's'})`)
+        rows.push({ label: 'status', value: `readable (${names.length} secret${names.length === 1 ? '' : 's'})` })
         if (store.wrapIds().includes('unattended')) {
-          lines.push(`  WARNING:     an 'unattended' wrap exists at ${store.unattendedKeyPath} — these secrets unlock with no passphrase, for any process that can read your home directory`)
+          rows.push({ label: 'WARNING', value: `an 'unattended' wrap exists at ${store.unattendedKeyPath} — these secrets unlock with no passphrase, for any process that can read your home directory` })
         }
         // The answer to "why did it ask me for a password?", readable after the fact.
+        const notes: Block[] = []
         try {
           const history = readAudit(`${store.filePath}.access.json`)
           if (history.length) {
-            lines.push(`  recent access: ${history.length} record(s), latest first`)
+            rows.push({ label: 'recent access', value: `${history.length} record(s), latest first` })
             for (const r of history.slice(-5).reverse()) {
               const when = new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')
-              lines.push(`    ${when}  ${r.command} -> ${r.name}${r.declared ? '' : ' (sensitivity inferred)'}: ${r.purpose}`)
+              notes.push(noteBlock(`${when}  ${r.command} -> ${r.name}${r.declared ? '' : ' (sensitivity inferred)'}: ${r.purpose}`))
             }
           }
         } catch { /* history is diagnostic only */ }
         const shadowed = names.filter((n) => (env[n] ?? '') !== '')
         if (shadowed.length) {
-          lines.push(`  note:        ${shadowed.join(', ')} also set in shell — the shell value wins`)
+          rows.push({ label: 'note', value: `${shadowed.join(', ')} also set in shell — the shell value wins` })
         }
+        return res(0, lineBlock('secret store'), kvBlock(rows), ...notes)
       } catch (e) {
-        return { code: 1, lines: [...lines, `  status:      UNREADABLE — ${(e as Error).message}`] }
+        return res(1, lineBlock('secret store'), kvBlock([...rows, { label: 'status', value: `UNREADABLE — ${(e as Error).message}` }]))
       }
-      return { code: 0, lines }
     }
 
     case 'key': {
@@ -458,27 +496,30 @@ export async function runConfig(
       if (!sub || sub === 'list') {
         const ids = store.wrapIds()
         const active = await store.activeWrap().catch(() => undefined)
-        return { code: 0, lines: ['', ...ids.map((w) => `  ${w}${w === active ? '  (unlocked this session)' : ''}`), ''] }
+        return res(0, blankBlock(), listBlock(ids.map((w) => `${w}${w === active ? '  (unlocked this session)' : ''}`)), blankBlock())
       }
       if (sub === 'add') {
         if (id === 'unattended') {
           // Opt-in only, and explicit about the weaker guarantee it buys.
           try { await store.addWrap(new KeyFileKey(store.unattendedKeyPath)) }
           catch (e) { return fail((e as Error).message) }
-          return { code: 0, lines: [`[saip] added 'unattended' wrap; key at ${store.unattendedKeyPath} (mode 600)`, '[saip] WARNING: this unlock method can be used by any process reading your home directory — it defends against repo-scoped readers and other users, not against an agent running as you.'] }
+          return res(0,
+            lineBlock(`added 'unattended' wrap; key at ${store.unattendedKeyPath} (mode 600)`),
+            lineBlock('WARNING: this unlock method can be used by any process reading your home directory — it defends against repo-scoped readers and other users, not against an agent running as you.'),
+          )
         }
         if (id === 'keyring') {
           if (!hasSecretTool()) return fail('no secret-tool (libsecret) on this host; run `saip config doctor` to see what is available')
           try { await store.addWrap(new SecretToolKey(deps.toolRunner ?? secretToolRunner())) }
           catch (e) { return fail((e as Error).message) }
-          return { code: 0, lines: ["[saip] added 'keyring' wrap"] }
+          return res(0, lineBlock("added 'keyring' wrap"))
         }
         return fail("key add expects 'unattended' or 'keyring'")
       }
       if (sub === 'remove') {
         if (!id) return fail('key remove expects an id')
         try { await store.removeWrap(id) } catch (e) { return fail((e as Error).message) }
-        return { code: 0, lines: [`[saip] removed wrap '${id}'`] }
+        return res(0, lineBlock(`removed wrap '${id}'`))
       }
       return fail(`unknown key subcommand "${sub}" (expected list|add|remove)`)
     }
@@ -541,20 +582,20 @@ export async function runConfig(
         })
         // Nothing is appended to `lines` here: io.say already wrote every line to stdout as it
         // happened. Returning them again would print the whole transcript a second time.
-        return { code: r.code, lines: [] }
+        return res(r.code)
       } catch (e) {
         if (e instanceof NoTerminalError) {
-          return { code: 1, lines: [
+          return res(1, rawBlock([
             '[saip] no controlling terminal: `saip config init` needs one to hide your typing.',
             '[saip] set values non-interactively instead, e.g.:',
             ...items.filter((x) => x.required).map((i) => i.kind === 'secret'
               ? `  printf %s "$${i.name}" | saip config set ${i.name} --stdin`
               : `  echo '${i.name}=...' >> ${envPath ?? '.env'}`),
-          ] }
+          ]))
         }
         if (e instanceof WizardCancelled) {
           // Ctrl+C reaches here when it happens on the passphrase prompt, before the store exists.
-          return { code: 130, lines: ['[saip] cancelled. Nothing further was written.'] }
+          return res(130, lineBlock('cancelled. Nothing further was written.'))
         }
         return fail((e as Error).message)
       }
@@ -599,7 +640,9 @@ export default {
           ? (item: InitItem) => cardGuidance(item, display.options)
           : undefined
         const result = await runConfig(store, options, positional, { formatItem })
-        for (const l of result.lines) console.log(l)
+        // Rendered through the seam (#113): blocks become Ink frames on a terminal, plain text in a
+        // pipe, and JSONL records under --json. The command body builds no strings for display.
+        uiOr(_ctx).showAll(result.blocks)
         process.exitCode = result.code
       },
     })

@@ -189,7 +189,7 @@ export async function runSsh(
       }
       const kp = importPrivateKey(pem, hostName)
       await store.set(keyName(), kp.privatePem)
-      await writePublicKeypair(kp, hostName)
+      await writePublicKeypair(kp, hostName!, keyDirFor(store))
       await store.unset('SAIP_SSH_PRIVATE_KEY')
       return ok(
         `migrated ${looksLikePath ? 'a key file' : 'the stored key'} into ${keyName}`,
