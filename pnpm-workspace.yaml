@@ -6,4 +6,8 @@ packages:
   - docs
 allowBuilds:
   esbuild: true
+  # node-pty 1.1.0 ships prebuilds for darwin/win32 only; on Linux pnpm runs the
+  # package's own `install` script (`scripts/prebuild.js || node-gyp rebuild`), which
+  # compiles build/Release/pty.node. Needed by the pty harness in cli/tests. See #154.
+  node-pty: true
   sharp: true
