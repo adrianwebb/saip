@@ -25,17 +25,15 @@ type Target = {
 }
 
 /**
- * The commands are shown with the release host held in `$B` rather than repeated in full on every
- * line. Not cosmetics: the longest URL is 84 characters, which was clipped by the panel edge on
- * desktop and badly clipped on a phone. As a variable the widest line fits, and the sequence stays
- * paste-and-run — the assignment is the first line, so nothing depends on the reader's shell state.
+ * Full URLs, spelled out. An earlier revision shortened them with `B=https://…` on the first line to
+ * stop the panel clipping long lines; that traded a layout bug for instructions that read like a
+ * developer's shell history, which is worse for the person following them. The clipping is solved by
+ * the panel instead: the code font is sized so the widest line fits at desktop width, and narrower
+ * screens scroll with a fade that appears only when there is something to scroll.
  */
-const B_ASSIGN = `B=${BASE}`
-
 const UNIX_STEPS = (file: string): string[] => [
-  B_ASSIGN,
-  `curl -fLO $B/${file}`,
-  `curl -fLO $B/SHA256SUMS`,
+  `curl -fLO ${BASE}/${file}`,
+  `curl -fLO ${BASE}/SHA256SUMS`,
   'sha256sum -c SHA256SUMS --ignore-missing',
   `chmod +x ${file}`,
   `sudo mv ${file} /usr/local/bin/saip`,
@@ -60,9 +58,8 @@ const targets: Target[] = [
   {
     id: 'windows-x64', label: 'Windows · x86-64', file: 'saip-windows-x64.exe', icon: null,
     steps: [
-      'B="' + BASE + '"',
-      'curl.exe -LO "$B/saip-windows-x64.exe"',
-      'curl.exe -LO "$B/SHA256SUMS"',
+      `curl.exe -LO ${BASE}/saip-windows-x64.exe`,
+      `curl.exe -LO ${BASE}/SHA256SUMS`,
       'Get-FileHash .\\saip-windows-x64.exe -Algorithm SHA256',
       '.\\saip-windows-x64.exe --version',
     ],
@@ -271,10 +268,10 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
   /* Long curl URLs are the point of the panel, so they scroll rather than escaping the frame.
      The padding is generous because the text was sitting flush against the border before. */
   .dl-steps pre {
-    margin: 0; padding: .5rem 1.15rem .95rem;
+    margin: 0; padding: .55rem 1.05rem .95rem;
     overflow-x: auto; background: transparent; border-radius: 0;
   }
-  .dl-steps code { color: var(--sl-color-green-high); font-size: .86rem; background: transparent; white-space: pre; }
+  .dl-steps code { color: var(--sl-color-green-high); font-size: .76rem; background: transparent; white-space: pre; }
   /* A fade, not a guess: JS adds the class only when the code is wider than the panel, so a
      non-scrolling box shows no phantom hint. */
   .dl-steps.is-scrollable::after {
