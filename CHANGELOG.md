@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- cli: **CI can drive a real terminal, and the Ink input engine was measured against one** (#154). `node-pty@1.1.0` joins `@saip/cli` as a devDependency, together with a pty harness whose own self-test must prove it sees a known exit code *and* a known hang before any claim is taken from it (16 cases), a small screen model so "the explanation is ABOVE the prompt" is an assertion rather than an opinion (11 cases), and a fake tty that satisfies both input styles — Ink pulls `read()`/`'readable'`, `promptTTY` pushes `'data'`. The spike's verdict is recorded in `docs/spike-154-ink-input-engine.md`: Ink terminates cleanly, keeps #78's ordering and carries typed-ahead bytes, but its input model gives an engine no way to tell an Enter that ended the question from a newline inside the text, so `ttyEngine` stays the default and `promptTTY`'s reducer stays. Two shipped-guarantee facts were also established: the long-lived Ink instance owns raw mode and bracketed paste for the whole session, not per read (3 gate rows fail for that reason alone, recorded as `it.fails`), and the released CLI's prompted commands do terminate correctly under a pty (#145's fix verified)
 
 ### Fixed
 
