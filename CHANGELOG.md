@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.6.3] - 2026-10-21
+
+### Added
+
+### Fixed
+- docs: install commands show **full URLs again** (#141). The panel had been shortened with a `B=https://…` first line to stop long URLs clipping — a fix that traded a layout bug for instructions reading like shell history. The URLs are spelled out again and the clipping is solved by sizing the code to the content column: fits without scrolling at desktop, laptop and tablet widths, and scrolls with the fade only on a phone
+
+### Changed
+
 ## [0.6.2] - 2026-10-21
 
 ### Added
