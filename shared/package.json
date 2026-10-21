@@ -1,6 +1,6 @@
 {
   "name": "@saip/shared",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "SAIP shared types, config schema, and storage clients",
   "type": "module",
   "main": "dist/index.js",

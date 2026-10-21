@@ -7,7 +7,7 @@
  * to discipline — `tests/version.test.ts` asserts this equals `package.json`, and
  * `scripts/build-binaries.mjs` refuses to compile when it does not.
  */
-export const SAIP_VERSION = '0.6.3'
+export const SAIP_VERSION = '0.7.0'
 
 /**
  * Which commit this artifact was compiled from, and for what platform (#119).
