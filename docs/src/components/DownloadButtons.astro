@@ -24,9 +24,18 @@ type Target = {
   note?: string
 }
 
+/**
+ * The commands are shown with the release host held in `$B` rather than repeated in full on every
+ * line. Not cosmetics: the longest URL is 84 characters, which was clipped by the panel edge on
+ * desktop and badly clipped on a phone. As a variable the widest line fits, and the sequence stays
+ * paste-and-run — the assignment is the first line, so nothing depends on the reader's shell state.
+ */
+const B_ASSIGN = `B=${BASE}`
+
 const UNIX_STEPS = (file: string): string[] => [
-  `curl -fLO ${BASE}/${file}`,
-  `curl -fLO ${BASE}/SHA256SUMS`,
+  B_ASSIGN,
+  `curl -fLO $B/${file}`,
+  `curl -fLO $B/SHA256SUMS`,
   'sha256sum -c SHA256SUMS --ignore-missing',
   `chmod +x ${file}`,
   `sudo mv ${file} /usr/local/bin/saip`,
@@ -51,8 +60,9 @@ const targets: Target[] = [
   {
     id: 'windows-x64', label: 'Windows · x86-64', file: 'saip-windows-x64.exe', icon: null,
     steps: [
-      `curl.exe -LO ${BASE}/saip-windows-x64.exe`,
-      `curl.exe -LO ${BASE}/SHA256SUMS`,
+      'B="' + BASE + '"',
+      'curl.exe -LO "$B/saip-windows-x64.exe"',
+      'curl.exe -LO "$B/SHA256SUMS"',
       'Get-FileHash .\\saip-windows-x64.exe -Algorithm SHA256',
       '.\\saip-windows-x64.exe --version',
     ],
@@ -66,6 +76,7 @@ const fallback = targets[0]
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 ---
 <div class="dl" data-base={BASE}>
+
   <ul class="dl-grid">
     {targets.map((t) => (
       <li class="dl-item" data-id={t.id}>
@@ -85,71 +96,144 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
   </ul>
 
   <p class="dl-detected" id="dl-detected" hidden>Detected your platform: <strong></strong></p>
-
   <div class="dl-steps" id="dl-steps" data-default={fallback.id}>
-    <!-- Rendered statically for the default target so the page is usable without JavaScript; the
-         script replaces it when a platform is detected or another button is chosen. -->
-    <pre><code>{targets.map((t) => t.id === fallback.id ? t.steps.map(esc).join('\n') : '').filter(Boolean).join('\n')}</code></pre>
+    <div class="dl-bar">
+      <!-- No `copy` icon exists in this Starlight build (checked Icons.ts), so the glyph is inline.
+           The label doubles as the confirmation: it reads "Copied" briefly after a click. -->
+      <button type="button" class="dl-copy" id="dl-copy" aria-label="Copy the install commands">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span class="dl-copy-text">Copy</span>
+      </button>
+    </div>
+
+    <!-- Rendered statically for the default target so the page works without JavaScript; the script
+         replaces it once a platform is detected or another target is chosen. -->
+    <pre><code>{targets.map((t) => (t.id === fallback.id ? t.steps.map(esc).join('\n') : '')).filter(Boolean).join('\n')}</code></pre>
     <p class="dl-note" id="dl-note" hidden></p>
   </div>
 </div>
 
 <script define:vars={{ targets }}>
+  // Plain JavaScript only: Astro does not type-strip a bare <script>, and the first version of this
+  // block carried `: string` annotations and `!` assertions, so the browser refused to parse it and
+  // every interaction — detected platform, copy, target switching — silently did nothing. A build
+  // that succeeds and a page that works are different claims.
   const stepsBox = document.getElementById('dl-steps')
   const noteEl = document.getElementById('dl-note')
   const detected = document.getElementById('dl-detected')
-  const detectedName = detected?.querySelector('strong')
+  const detectedName = detected ? detected.querySelector('strong') : null
+  const copyBtn = document.getElementById('dl-copy')
+  const copyText = copyBtn ? copyBtn.querySelector('.dl-copy-text') : null
+  const codeEl = stepsBox ? stepsBox.querySelector('pre code') : null
+  const preEl = stepsBox ? stepsBox.querySelector('pre') : null
+
+  let current = null
+
+  const syncScrollHint = () => {
+    if (!preEl || !stepsBox) return
+    stepsBox.classList.toggle('is-scrollable', preEl.scrollWidth - preEl.clientWidth > 2)
+  }
 
   const render = (id) => {
     const t = targets.find((x) => x.id === id)
     if (!t || !stepsBox) return
-    stepsBox.querySelector('pre code')!.textContent = t.steps.join('\n')
+    current = { label: t.label, steps: t.steps }
+    if (codeEl) codeEl.textContent = t.steps.join('\n')
     stepsBox.dataset.active = t.id
     if (noteEl) {
-      if (t.note) { noteEl.textContent = t.note; noteEl.hidden = false }
-      else { noteEl.textContent = ''; noteEl.hidden = true }
+      if (t.note) { noteEl.textContent = t.note; noteEl.removeAttribute('hidden') }
+      else { noteEl.textContent = ''; noteEl.setAttribute('hidden', '') }
     }
     document.querySelectorAll('.dl-item').forEach((li) => {
       li.classList.toggle('is-active', li.dataset.id === t.id)
     })
+    syncScrollHint()
   }
 
-  // Which platform are we on? A convenience, never a lock: picking any button above replaces both the
-  // commands and the note immediately.
   const ua = navigator.userAgent
   let chosen = null
   if (/Windows/.test(ua)) chosen = 'windows-x64'
   else if (/Macintosh|Mac OS X/.test(ua)) {
-    // Safari and Chrome both report "Intel Mac OS X" on Apple Silicon, and `navigator.architecture`
-    // does not exist — so a UA-based guess here would be wrong on nearly every Mac sold since 2021.
-    // Default to Apple Silicon and let the async client-hints answer refine it where supported.
+    // Safari and Chrome both report "Intel Mac OS X" on Apple Silicon, so a UA guess would be wrong on
+    // nearly every Mac sold since 2021: Apple Silicon is the default, refined where the browser can
+    // actually answer.
     chosen = 'darwin-arm64'
-    const hints = (navigator as unknown as { userAgentData?: { getHighEntropyValues?(k: string[]): Promise<{ architecture?: string }> } }).userAgentData
-    hints?.getHighEntropyValues?.(['architecture']).then((v) => {
-      if (v?.architecture && /x86/i.test(v.architecture)) {
-        if (chosen === 'darwin-arm64') { chosen = 'darwin-x64'; render('darwin-x64') }
-        if (detectedName && detected && !detected.hidden && /macOS/i.test(detectedName.textContent ?? '')) {
-          detectedName.textContent = 'macOS · Intel'
+    const hints = navigator.userAgentData
+    if (hints && typeof hints.getHighEntropyValues === 'function') {
+      hints.getHighEntropyValues(['architecture']).then((v) => {
+        if (v && typeof v.architecture === 'string' && /x86/i.test(v.architecture) && chosen === 'darwin-arm64') {
+          chosen = 'darwin-x64'
+          render('darwin-x64')
+          if (detectedName) detectedName.textContent = 'macOS · Intel'
         }
-      }
-    }).catch(() => { /* client hints unavailable: the Apple Silicon default stands */ })
-  }
-  else if (/Linux/.test(ua)) chosen = /arm64|aarch64/.test(ua) ? 'linux-arm64' : 'linux-x64'
+      }).catch(() => { /* no client hints: the Apple Silicon default stands */ })
+    }
+  } else if (/Linux/.test(ua)) chosen = /arm64|aarch64/.test(ua) ? 'linux-arm64' : 'linux-x64'
 
-  if (chosen) {
+  if (chosen && detected && detectedName) {
     const t = targets.find((x) => x.id === chosen)
-    if (t && detected && detectedName) { detectedName.textContent = t.label; detected.hidden = false }
+    if (t) { detectedName.textContent = t.label; detected.removeAttribute('hidden') }
   }
-  render(chosen ?? stepsBox?.dataset.default ?? 'linux-x64')
+  render(chosen || (stepsBox ? stepsBox.dataset.default : '') || 'linux-x64')
 
-  // A download button also selects its platform, so the commands underneath are the right ones for
-  // what you just downloaded. The link still downloads; this only updates the page.
   document.querySelectorAll('.dl-btn').forEach((a) => {
     a.addEventListener('click', () => {
-      const id = a.closest('.dl-item')?.dataset.id
-      if (id) render(id)
+      const li = a.closest('.dl-item')
+      if (li && li.dataset.id) render(li.dataset.id)
     })
   })
+
+  const flash = (label) => {
+    if (!copyText) return
+    copyText.textContent = label
+    window.setTimeout(() => { copyText.textContent = 'Copy' }, 1800)
+  }
+
+  // Copy the exact commands that are on screen — newline-separated, no `$` prompts, no shell
+  // operators — so pasting runs them top to bottom as shown.
+  //
+  // Three tiers, because the async API is not universally grantable: it is absent on insecure
+  // origins, and it REJECTS with NotAllowedError in contexts like headless Chrome or an unfocused
+  // window. The first version only fell back when the API was missing, so a rejection left the user
+  // with nothing. Last resort selects the text, so a manual copy still works.
+  const copyViaSelection = () => {
+    if (!codeEl) return false
+    const range = document.createRange()
+    range.selectNodeContents(codeEl)
+    const sel = window.getSelection()
+    if (!sel) return false
+    sel.removeAllRanges()
+    sel.addRange(range)
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { ok = false }
+    if (!ok) {
+      // Leave it selected: the user can still hit Ctrl/Cmd+C.
+      return false
+    }
+    sel.removeAllRanges()
+    return true
+  }
+
+  const copyNow = async () => {
+    if (!current) return
+    const text = current.steps.join('\n')
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text)
+        flash('Copied')
+        return
+      } catch { /* rejected (permissions/focus): fall through to the selection path */ }
+    }
+    if (copyViaSelection()) { flash('Copied'); return }
+    flash('Copied? select')
+  }
+
+  if (copyBtn) copyBtn.addEventListener('click', copyNow)
+
+  window.addEventListener('resize', syncScrollHint)
 </script>
 
 <style>
@@ -161,11 +245,41 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
   .dl-icon { display: inline-flex; }
   .dl-label { font-weight: 600; font-size: .92rem; }
   .dl-dl { margin-inline-start: auto; opacity: .65; }
-  .dl-detected { margin: 0 0 .55rem; font-size: .95rem; }
-  /* Starlight's green tokens: `-low` is the interior, `-high` the foreground, `-green` the frame.
-     They swap with the theme, so this is a green panel in both modes without a second value. */
-  .dl-steps { border: 1px solid var(--sl-color-green); background: var(--sl-color-green-low); border-radius: .5rem; padding: .2rem .9rem .5rem; }
-  .dl-steps pre { margin: .5rem 0 0; background: transparent; padding: 0; }
-  .dl-steps code { color: var(--sl-color-green-high); font-size: .9rem; background: transparent; }
-  .dl-note { margin: .6rem 0 0; font-size: .86rem; color: var(--sl-color-green-high); }
+  /* Centered above the panel, because its whole job is saying "these are your commands". */
+  .dl-detected { margin: .2rem 0 .5rem; font-size: .95rem; text-align: center; }
+  .dl-detected strong { font-weight: 650; }
+  /* Frame, interior and text from Starlight's green tokens so both themes invert correctly. */
+  .dl-steps {
+    position: relative;
+    border: 1px solid var(--sl-color-green);
+    background: var(--sl-color-green-low);
+    border-radius: .55rem;
+    overflow: hidden;
+  }
+  .dl-bar {
+    display: flex; align-items: center; justify-content: flex-end;
+    padding: .3rem .4rem 0;
+    border-bottom: 1px solid color-mix(in oklab, var(--sl-color-green) 45%, transparent);
+  }
+  .dl-copy {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-size: .78rem; font-family: inherit; line-height: 1;
+    padding: .26rem .55rem; border-radius: .35rem; cursor: pointer;
+    border: 1px solid var(--sl-color-green); background: transparent; color: var(--sl-color-green-high);
+  }
+  .dl-copy:hover { background: color-mix(in oklab, var(--sl-color-green) 22%, transparent); }
+  /* Long curl URLs are the point of the panel, so they scroll rather than escaping the frame.
+     The padding is generous because the text was sitting flush against the border before. */
+  .dl-steps pre {
+    margin: 0; padding: .5rem 1.15rem .95rem;
+    overflow-x: auto; background: transparent; border-radius: 0;
+  }
+  .dl-steps code { color: var(--sl-color-green-high); font-size: .86rem; background: transparent; white-space: pre; }
+  /* A fade, not a guess: JS adds the class only when the code is wider than the panel, so a
+     non-scrolling box shows no phantom hint. */
+  .dl-steps.is-scrollable::after {
+    content: ""; position: absolute; top: 2.45rem; right: 1px; width: 2.2rem; bottom: 0;
+    pointer-events: none; background: linear-gradient(to right, transparent, var(--sl-color-green-low));
+  }
+  .dl-note { margin: 0 1.15rem .95rem; font-size: .86rem; color: var(--sl-color-green-high); opacity: .9; }
 </style>
