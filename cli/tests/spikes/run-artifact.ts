@@ -9,7 +9,10 @@ const node = process.execPath
 const cases: Array<{ id: string; args: string[]; keys: Array<{ after?: string; text: string }> }> = [
   // The shipped tty engine, at the artifact level: does `config set` return? (#151 hang class)
   { id: 'ART-set-prompted', args: [distBin, 'config', 'set', 'SAIP_SPIKE_SECRET'], keys: [{ after: 'SAIP_SPIKE_SECRET', text: 'spike-value\r' }] },
-  { id: 'ART-set-stdin', args: [distBin, 'config', 'set', 'SAIP_SPIKE_SECRET', '--stdin'], keys: [{ after: '', text: '' }] },
+  // `--stdin` under a pty reads the TERMINAL as stdin, so the value has to be typed and then ended
+  // with Ctrl+D — `printf x | saip … --stdin` only has an EOF because a pipe supplies one. Feeding
+  // nothing here is what made the earlier run look like a hang.
+  { id: 'ART-set-stdin', args: [distBin, 'config', 'set', 'SAIP_SPIKE_SECRET', '--stdin'], keys: [{ text: 'piped-value\n\x04' }] },
   { id: 'ART-list', args: [distBin, 'config', 'list'], keys: [] },
   { id: 'ART-status', args: [distBin, 'status'], keys: [] },
 ]

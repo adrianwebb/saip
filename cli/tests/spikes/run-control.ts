@@ -13,5 +13,6 @@ for (const c of cases) {
   const e = await runProbe(c, env)
   console.log(`\n### ${c.id} code=${e.result.code} signal=${e.result.signal} hung=${e.result.hung} clean=${e.result.clean}`)
   console.log('    rows:', JSON.stringify(e.screenRows, null, 0))
+  console.log('    raw-lines:', JSON.stringify(e.result.raw.split('\n').map((l) => l.replace(/\r/g, '').trimEnd()).filter(Boolean).slice(0, 10)))
   if (e.unparsed.length) console.log('    UNPARSED:', JSON.stringify(e.unparsed.slice(0, 6)))
 }

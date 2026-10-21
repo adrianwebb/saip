@@ -36,7 +36,14 @@ export interface InkOptions {
   interactive?: boolean
 }
 
-/** Un-consumed bytes, remembered per question so typed-ahead input survives to the next one (#99). */
+/**
+ * Un-consumed bytes, keyed by the TERMINAL STREAM — never by the question object.
+ *
+ * `promptTTY` keys its pending map by stream (`src/ui/prompt.ts:66`) for the reason this spike
+ * re-discovered the hard way: an object-per-question key is unreachable from the next question, so
+ * the remainder of a `one\rtwo\r` chunk is dropped and the second prompt waits for input that has
+ * already arrived — the #99 bug, reproduced.
+ */
 export const leftover = new WeakMap<object, string>()
 
 /** True when hidden input was asked for: secret wins, else echo unset means hidden. */
@@ -59,10 +66,13 @@ interface Scan {
  */
 export function feed(s: Scan, text: string, opts: { returned?: boolean; eof?: boolean } = {}): string | null {
   if (s.answered) return null
-  if (opts.eof) { s.answered = true; return s.value }
+  // MEASURED: a scripted/pasted `value\u0004` arrives as ONE text event whose ctrl flag is NOT set,
+  // so EOF has to be found inside the string and the bytes BEFORE it are the answer. Answering with
+  // the pre-scan value here is what produced `ANSWERED=""` — the typed value thrown away.
+  if (opts.eof && !text.includes('\u0004')) { s.answered = true; return s.value }
   let idx = -1
-  if (opts.returned) {
-    // A lone Enter keystroke: the terminal sent `\r` as its own event.
+  if (opts.returned && !text.includes('\r') && !text.includes('\n')) {
+    // A lone Enter keystroke: the terminal sent `\r` as its own event, with no text attached.
     s.answered = true
     return s.value
   }
@@ -78,6 +88,9 @@ export function feed(s: Scan, text: string, opts: { returned?: boolean; eof?: bo
   return null
 }
 
+/** The stream is the identity that outlives a question, so it is what carry must be keyed by. */
+export function keyFor(opts: InkOptions): object { return opts.stream ?? opts.stdout ?? globalThis }
+
 export function newScan(): Scan { return { value: '', carry: '', cancelled: false, answered: false } }
 
 interface Job {
@@ -88,31 +101,50 @@ interface Job {
   reject: (e: Error) => void
 }
 
-function Field({ job, onSettle }: { job: Job; onSettle: (answer: string | Error) => void }) {
+function Field({ job, onSettle, carryKey }: { job: Job; onSettle: (answer: string | Error) => void; carryKey: object }) {
   const [, tick] = useState(0)
   const ref = useRef(job)
   ref.current = job
 
   usePaste((pasted) => {
+    if (process.env.SPIKE_DEBUG) process.stderr.write(`PASTE ${JSON.stringify(pasted)}\n`)
     // Paste content NEVER consults the terminator logic: a clipboard secret's newline is content.
-    ref.current.scan.value += pasted
+    // CR specifically becomes LF, matching the tty reducer's `if (inPaste) value += '\n'`
+    // (src/ui/prompt.ts:142) — a stored value must never contain `\r` (#99's CRLF case).
+    ref.current.scan.value += pasted.replace(/\r\n?/g, '\n')
     tick((n) => n + 1)
   })
 
   useInput((input, key) => {
+    // SPIKE_DEBUG: show precisely what Ink hands the engine, because "my handler did not fire" and
+    // "Ink never delivered that byte" look identical from the outside and have opposite conclusions.
+    if (process.env.SPIKE_DEBUG) process.stderr.write(`EV input=${JSON.stringify(input)} ret=${key.return} ctrl=${key.ctrl} name=${JSON.stringify(key.name)} bs=${key.backspace}\n`)
     const s = ref.current.scan
     if (s.answered) return
-    if (key.ctrl && key.name === 'c') {
+    // MEASURED (SPIKE_DEBUG, real pty): Ink's `key` has NO `name` field, and a control chord arrives
+    // as `key.ctrl === true` with `input` set to the LETTER — Ctrl+C is `input:'c', ctrl:true`.
+    // Writing `key.name === 'c'` silently turns Cancel into a typed 'c' and the prompt never ends.
+    if (key.ctrl && input === 'c') {
       s.cancelled = true
       s.answered = true
       return onSettle(new WizardCancelled('cancelled by user'))
     }
+    // `key.return` is true ONLY when Enter arrived as its own event. A fast-typed or pasted chunk
+    // carries `\r` INSIDE the text (`input:"mybucket\r"`, ret=false), so the terminator has to be
+    // found by scanning the string — which is what `feed` does.
+    // MEASURED: backspace arrives as `input: ""` with `key.backspace: true` — no character at all,
+    // so any `input.length === 1 && key.backspace` guard is dead code and the edit is silently lost.
+    if (key.backspace || key.delete) {
+      s.value = s.value.slice(0, -1)
+      tick((n) => n + 1)
+      return
+    }
     const answer = feed(s, input, {
-      returned: input.length === 1 && key.return,
-      eof: key.ctrl && key.name === 'd',
+      returned: input === '\r' || (input.length === 1 && key.return),
+      eof: (key.ctrl && input === 'd') || input.includes('\u0004'),
     })
     if (s.answered) {
-      if (s.carry) leftover.set(ref.current, s.carry)
+      if (s.carry) leftover.set(carryKey, s.carry)
       onSettle(answer ?? s.value)
       return
     }
@@ -131,7 +163,8 @@ function Field({ job, onSettle }: { job: Job; onSettle: (answer: string | Error)
 export function askInkOnce(question: string, opts: InkOptions = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const job: Job = { question, hidden: isHidden(opts), scan: newScan(), resolve, reject }
-    const queued = leftover.get(job)
+    const carryKey = keyFor(opts)
+    const queued = leftover.get(keyFor(opts))
     let settled = false
     const settle = (answer: string | Error): void => {
       if (settled) return
@@ -141,14 +174,23 @@ export function askInkOnce(question: string, opts: InkOptions = {}): Promise<str
       if (answer instanceof Error) reject(answer)
       else resolve(answer)
     }
-    const instance = render(<Field job={job} onSettle={settle} />, {
+    const instance = render(<Field job={job} onSettle={settle} carryKey={carryKey} />, {
       stdin: opts.stream as never,
       stdout: (opts.stdout ?? process.stdout) as never,
       exitOnCtrlC: false,
       patchConsole: false,
       interactive: opts.interactive ?? true,
     } as never)
-    if (queued) queueMicrotask(() => settle(feed(job.scan, queued, {}) ?? job.scan.value))
+    if (queued && !/^[\r\n\u0004]+$/.test(queued)) {
+      leftover.delete(carryKey)
+      queueMicrotask(() => {
+        const answer = feed(job.scan, queued, {})
+        if (job.scan.answered) {
+          if (job.scan.carry) leftover.set(keyFor(opts), job.scan.carry)
+          settle(answer ?? job.scan.value)
+        } else if (answer !== null) settle(answer)
+      })
+    }
   })
 }
 
@@ -172,6 +214,9 @@ export class InkWizard {
 
   constructor(private readonly opts: InkOptions = {}) {}
 
+  /** Carry is keyed by the stream, which outlives every question (#99). */
+  get carryKey(): object { return keyFor(this.opts) }
+
   ask(question: string, opts: InkOptions = {}): Promise<string> {
     const job: Job = {
       question,
@@ -191,13 +236,21 @@ export class InkWizard {
     if (this.current || this.queue.length === 0) return
     const next = this.queue.shift()!
     this.current = next
-    const carry = leftover.get(next)
+    let carry = leftover.get(keyFor(this.opts))
+    // A remainder made only of line terminators is the tail of the PREVIOUS paste, not an answer
+    // (#99). Deleting the entry is not enough — the local `carry` must be cleared too, or this same
+    // newline-only string goes on to answer the question a few lines below. Measured failure:
+    // `discards a leftover made only of newlines` answered the next secret prompt with ''.
+    if (carry && /^[\r\n\u0004]+$/.test(carry)) {
+      leftover.delete(keyFor(this.opts))
+      carry = undefined
+    }
     if (carry) {
       // Typed-ahead bytes answer this question; the rest of the chunk waits for the one after.
       const answer = feed(next.scan, carry, {})
       if (next.scan.answered) {
-        if (next.scan.carry) leftover.set(next, next.scan.carry)
-        else leftover.delete(next)
+        if (next.scan.carry) leftover.set(keyFor(this.opts), next.scan.carry)
+        else leftover.delete(keyFor(this.opts))
         this.finish(next, answer ?? next.scan.value)
         // Recursion via microtask keeps ordering predictable while React catches up.
         queueMicrotask(() => this.drain())
@@ -212,6 +265,10 @@ export class InkWizard {
       this.current = null
       this.view?.(null)
     }
+    // The remainder of the chunk, if any, belongs to the NEXT question; nothing left means the
+    // stream's carry is empty, and a stale entry must not answer a later prompt (#99).
+    if (job.scan.carry) leftover.set(this.carryKey, job.scan.carry)
+    else leftover.delete(this.carryKey)
     if (job.hidden) (this.opts.stdout ?? process.stdout).write('\r\n')
     if (answer instanceof Error) job.reject(answer)
     else job.resolve(answer)
@@ -225,25 +282,36 @@ export class InkWizard {
       const [current, setCurrent] = useState<Job | null>(null)
       const [, tick] = useState(0)
       const app = useApp()
-      useEffect(() => { owner.view = (job) => { setCurrent(job); tick((n) => n + 1) } }, [])
+      useEffect(() => {
+        owner.view = (job) => { setCurrent(job); tick((n) => n + 1) }
+        // `ask()` may have queued a question before this effect ran — `start()` renders, and the
+        // effect that hands back the setter runs after. Without re-draining here the FIRST question
+        // is never painted: measured as an empty Ink frame with the child sitting on `Q1` forever.
+        owner.drain()
+      }, [])
       usePaste((pasted) => {
         if (!current || current.scan.answered) return
-        current.scan.value += pasted
+        // Same rule as the once shape: a stored value must never contain CR (#99's CRLF paste).
+        current.scan.value += pasted.replace(/\r\n?/g, '\n')
         tick((n) => n + 1)
       })
       useInput((input, key) => {
         if (!current || current.scan.answered) return
-        if (key.ctrl && key.name === 'c') {
+        if (key.ctrl && input === 'c') {
           current.scan.cancelled = true
           current.scan.answered = true
           return owner.finish(current, new WizardCancelled('cancelled by user'))
         }
+        if (key.backspace || key.delete) {
+          current.scan.value = current.scan.value.slice(0, -1)
+          return tick((n) => n + 1)
+        }
         const answer = feed(current.scan, input, {
-          returned: input.length === 1 && key.return,
-          eof: key.ctrl && key.name === 'd',
+          returned: input === '\r' || (input.length === 1 && key.return),
+          eof: (key.ctrl && input === 'd') || input.includes('\u0004'),
         })
         if (current.scan.answered) {
-          if (current.scan.carry) leftover.set(current, current.scan.carry)
+          if (current.scan.carry) leftover.set(owner.carryKey, current.scan.carry)
           return owner.finish(current, answer ?? current.scan.value)
         }
         tick((n) => n + 1)

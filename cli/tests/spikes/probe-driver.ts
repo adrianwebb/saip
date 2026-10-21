@@ -19,7 +19,7 @@ export interface ProbeCase {
   id: string
   args: string[]
   /** What to type, and when. `after` waits for that marker in the child's output first. */
-  keys: Array<{ after?: string; text: string; delayMs?: number }>
+  keys: Array<{ after?: string; text: string; delayMs?: number; afterSettleMs?: number }>
   settleMs?: number
   finishMs?: number
 }
@@ -33,18 +33,23 @@ export interface ProbeEvidence {
 }
 
 export async function runProbe(c: ProbeCase, env: NodeJS.ProcessEnv): Promise<ProbeEvidence> {
-  const run = new PtyRun({ cmd: tsx, args: [child, ...c.args], env, cols: 80, rows: 24 })
+  const run = new PtyRun({ cmd: tsx, args: [child, ...c.args], env, cols: 200, rows: 40 })
   for (const k of c.keys) {
     if (k.after !== undefined) {
       const found = await run.waitFor(k.after, 20_000)
       if (!found) break
     }
     if (k.delayMs) await new Promise((r) => setTimeout(r, k.delayMs))
+    // The prompt frame being written is NOT the same fact as raw mode being enabled: Ink turns raw
+    // mode on in the field's effect, after the first commit. Typing in between means the terminal's
+    // own line discipline ECHOES the value (a secret appears on screen!) and delivers it in canonical
+    // mode. Settle past the effect before typing — measured, not assumed.
+    if (k.after) await new Promise((r) => setTimeout(r, k.afterSettleMs ?? 250))
     run.write(k.text)
   }
   await run.settle(c.settleMs ?? 300)
   const result = await run.finish(c.finishMs ?? 8_000)
-  const screen = renderScreen(result.raw, 24, 80)
+  const screen = renderScreen(result.raw, 40, 200)
   return {
     id: c.id,
     result,

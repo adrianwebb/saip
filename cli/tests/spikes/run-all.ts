@@ -18,7 +18,7 @@ const cases: ProbeCase[] = [
   // 4 — paste with an embedded newline, then the real Enter
   { id: 'P4-paste-newline', args: ['--probe=4', '--engine=once'], keys: [{ after: 'SECRET_ACCESS_KEY', text: `${PASTE}very-long-secret-value\n${PASTE_END}` }, { delayMs: 60, text: '\r' }] },
   // 4 — Ctrl+D as EOF
-  { id: 'P4-ctrl-d', args: ['--probe=4', '--engine=once', '--mode=ctrld'], keys: [{ after: 'SECRET_ACCESS_KEY', text: 'value-then-eof\x04' }] },
+  { id: 'P4-ctrl-d', args: ['--probe=4', '--engine=once', '--mode=ctrld'], keys: [{ after: 'SAIP_R2_BUCKET', text: 'value-then-eof\x04' }] },
   // 4 — Ctrl+C cancels
   { id: 'P4-ctrl-c', args: ['--probe=4', '--engine=once', '--mode=cancel'], keys: [{ after: 'SAIP_R2_BUCKET', text: 'partial\x03' }] },
   // 5 — listener counts across a long-lived wizard
@@ -35,4 +35,25 @@ for (const c of cases) {
   for (const line of e.result.raw.split('\n')) if (line.startsWith('STATE[') || line.startsWith('ANSWERED') || line.startsWith('CANCELLED') || line.startsWith('ERROR') || line.startsWith('LEN=')) console.log('  ' + line.trim())
   if (e.unparsed.length) console.log('--- UNPARSED (model gap!) --- ' + JSON.stringify(e.unparsed.slice(0, 8)))
   if (/rawMode|isRaw=true/.test(e.result.raw)) console.log('  note: raw mode reported on')
+}
+
+// #87 asks bucket/endpoint with echo ON; the value must be readable ON the prompt line.
+// Typed char-by-char (human pace) vs one chunk (script/paste) — the two can differ under a throttled
+// live renderer, and only the terminal shows which.
+const echoCases: ProbeCase[] = [
+  { id: 'P6-echo-typed', args: ['--probe=1', '--engine=once'], keys: [
+    { after: 'SAIP_R2_BUCKET', text: 'mybucket' }, { delayMs: 120, text: '\r' }] },
+  { id: 'P6-echo-paste', args: ['--probe=1', '--engine=once'], keys: [
+    { after: 'SAIP_R2_BUCKET', text: `${PASTE}mybucket${PASTE_END}` }, { delayMs: 120, text: '\r' }] },
+  { id: 'P6-echo-chunk', args: ['--probe=1', '--engine=once'], keys: [{ after: 'SAIP_R2_BUCKET', text: 'mybucket\r' }] },
+  { id: 'P6-wizard-echo', args: ['--probe=3', '--engine=wizard'], keys: [
+    { after: 'SAIP_R2_BUCKET', text: 'vis-bucket' }, { delayMs: 150, text: '\r' }, { after: 'SAIP_R2_ENDPOINT', text: 'https://ep' }, { delayMs: 150, text: '\r' }] },
+]
+for (const c of echoCases) {
+  const e = await runProbe(c, env)
+  console.log(`\n########## ${c.id} ##########`)
+  console.log(`code=${e.result.code} hung=${e.result.hung}`)
+  console.log('--- SCREEN ROWS ---')
+  e.screenRows.forEach((r, i) => console.log(`  ${i}| ${r}`))
+  if (e.unparsed.length) console.log('--- UNPARSED --- ' + JSON.stringify(e.unparsed.slice(0, 6)))
 }
