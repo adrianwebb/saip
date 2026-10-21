@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALL_TARGETS, NPX, PLACEHOLDERS, artifactName, gitInfo, gitRun, hostTarget } from './build-lib.mjs'
+import { ALL_TARGETS, NPX, PLACEHOLDERS, artifactName, gitInfo, gitRun, hostTarget, runBun } from './build-lib.mjs'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BUN = 'bun@1.4.3' // pinned: a compiler upgrade must be a deliberate change, not a floating one
@@ -82,7 +82,9 @@ function build(target, { verify, provenance }) {
   // verification below had never been reached — nearly reported as tested.
   const args = ['--yes', BUN, 'build', '--compile', `--target=${target}`, ENTRY, '--outfile', outfile]
   console.log(`[binaries] ${target} -> dist/binaries/${name}`)
-  execFileSync(NPX, args, { cwd: provenance.dir, stdio: 'inherit' })
+  // Platform-correct invocation (#122): a direct spawn on POSIX, `cmd.exe /c` with validated
+  // arguments on Windows, where Node refuses to spawn the `npx.cmd` shim at all.
+  runBun(NPX, args, { cwd: provenance.dir, stdio: 'inherit' })
   const bytes = existsSync(outfile) ? readFileSync(outfile).byteLength : 0
   console.log(`[binaries]   ${bytes.toLocaleString()} bytes · commit ${provenance.commit}`)
   if (verify) {

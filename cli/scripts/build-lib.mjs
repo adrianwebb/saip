@@ -51,7 +51,11 @@ export function artifactName(target) {
  * Naming the executable is enough for a direct spawn. Deliberately NOT `shell: true`, because that
  * would put the burden of quoting on every argument handed to Bun.
  */
-export const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+// The bare shim name: on Windows `runBun` invokes it through `cmd.exe /c`, which resolves `npx.cmd`
+// itself — passing the `.cmd` name straight to `execFileSync` is what `EINVAL` refused (#122).
+export const NPX = 'npx'
+/** Marker so `runBun` can tell a Windows shell-spawn of the shim from a direct POSIX spawn. */
+export const NPX_WINDOWS_SPAWN = Symbol('npx-windows-shell-spawn')
 
 /**
  * The name an installed dev binary must have to be executable here (#122): Windows will not run
@@ -75,4 +79,38 @@ export function gitInfo(cwd, run = (args) => gitRun(args, cwd)) {
     dirty = run(['status', '--porcelain']).length > 0
   } catch { /* no git: keep the placeholders */ }
   return { commit: `${commit}${dirty ? '-dirty' : ''}`, dirty }
+}
+
+/**
+ * Run Bun through npx on every platform (#122).
+ *
+ * Two facts collide: on Windows the npm shim is `npx.cmd`, and since CVE-2024-27980 Node refuses to
+ * spawn `.cmd`/`.bat` at all unless a shell is used — so `execFileSync('npx.cmd', …)` fails with
+ * `EINVAL`, exactly as CI showed twice (first `ENOENT` naming the POSIX shim, then `EINVAL` once the
+ * name was right). Node's own advisory permits `shell: true` when the input is sanitized, so the
+ * safety lives here: every argument is validated before the command line is assembled, and anything
+ * that is not a plain token is refused rather than quoted-and-hoped.
+ *
+ * This is a build script whose arguments are all generated in this repo — a pinned package specifier,
+ * a target from `ALL_TARGETS`, a fixed entry path, and one output path — which is what makes a
+ * allowlist the right shape. User-supplied values never reach it.
+ */
+const SAFE_ARG = /^[\w.@:=/+\\-]+$/
+
+export function bunCommandLine(cmd, args) {
+  const parts = [cmd, ...args]
+  for (const part of parts) {
+    if (typeof part !== 'string' || !SAFE_ARG.test(part)) {
+      throw new TypeError(`refusing to pass a non-allowlisted argument through a shell: ${JSON.stringify(part)}`)
+    }
+  }
+  return parts.join(' ')
+}
+
+/** POSIX keeps the direct spawn (no shell needed for `npx`); Windows goes through the shell. */
+export function runBun(cmd, args, opts = {}) {
+  if (process.platform === 'win32') {
+    return execFileSync('cmd.exe', ['/d', '/s', '/c', bunCommandLine(cmd, args)], { ...opts })
+  }
+  return execFileSync(cmd, args, opts)
 }
