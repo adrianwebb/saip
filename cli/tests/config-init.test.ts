@@ -6,7 +6,7 @@
  * program (`saip config init --non-interactive` executed as a binary), because #76 established
  * that injected-collaborator tests cannot see wiring.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +26,34 @@ const baseConfig = {
   security: { api_tokens: [{ id: 'alice', name: 'Alice', token_secret: 'SAIP_TOKEN_ALICE' }], ui: { admin_secret: 'SAIP_UI_ADMIN' } },
 }
 const hosts = [{ name: 'lab', kind: 'local' }]
+
+/**
+ * Ambient isolation (#137 follow-up, found while cutting 0.6.2).
+ *
+ * The wizard reports where a value currently comes from — shell, `.env`, or the store — and shell
+ * wins. This file asserts about those sources while calling `runInit` without an explicit `env`, so
+ * it reads `process.env`: a developer shell that happens to export SAIP_R2_BUCKET (as this machine's
+ * does) makes "shows the current value from the .env file" report the shell value instead. CI has no
+ * such variables, so the suite is green there and red on a real machine — a test that encodes the CI
+ * environment rather than the behaviour under test.
+ *
+ * Snapshot, clear, restore: the tests that DO want a shell value pass `env: { … }` explicitly and are
+ * unaffected by this.
+ */
+let ambient: Record<string, string | undefined> = {}
+beforeEach(() => {
+  ambient = {}
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('SAIP_')) { ambient[key] = process.env[key]; delete process.env[key] }
+  }
+})
+afterEach(() => {
+  for (const [key, value] of Object.entries(ambient)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  ambient = {}
+})
 
 describe('planInitItems: questions are DERIVED, not hardcoded', () => {
   it('covers R2 in order, with bucket/endpoint as config and keys as secrets', () => {
