@@ -120,12 +120,22 @@ function installTeardown(): void {
  * cannot be followed or overwritten. Removal happens in `finally` AND via the registry, so a
  * callback that throws, cancels, or kills the process is covered identically.
  */
-export async function materialiseKey<T>(privatePem: string, host: string, fn: (path: string) => Promise<T>): Promise<T> {
+/**
+ * `dir` defaults to the host's key directory, but callers that know where the STORE lives must pass
+ * it: this function creates a real directory, and leaving it out meant `saip ssh verify` wrote a
+ * temporary key directory into `~/.saip/keys` even when the configured store was elsewhere (#113).
+ */
+export async function materialiseKey<T>(
+  privatePem: string,
+  host: string,
+  fn: (path: string) => Promise<T>,
+  dir = sshKeyDir(),
+): Promise<T> {
   installTeardown()
-  const dir = join(sshKeyDir(), `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  chmodSync(dir, 0o700)   // mkdir's mode is umask-filtered; be explicit about a key directory
-  const path = join(dir, 'id_ed25519')
+  const tmp = join(dir, `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
+  mkdirSync(tmp, { recursive: true, mode: 0o700 })
+  chmodSync(tmp, 0o700)   // mkdir's mode is umask-filtered; be explicit about a key directory
+  const path = join(tmp, 'id_ed25519')
   const fd = openSync(path, 'wx', 0o600)
   try {
     writeFileSync(fd, privatePem, { mode: 0o600 })
@@ -137,7 +147,9 @@ export async function materialiseKey<T>(privatePem: string, host: string, fn: (p
   try {
     return await fn(path)
   } finally {
-    try { rmSync(dir, { recursive: true, force: true }) } catch { /* already gone */ }
+    // `tmp`, never `dir`: the parent is the caller's real key directory. Renaming this variable
+    // without renaming the cleanup would have deleted it recursively.
+    try { rmSync(tmp, { recursive: true, force: true }) } catch { /* already gone */ }
     live.delete(path)
   }
 }

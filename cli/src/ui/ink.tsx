@@ -60,6 +60,7 @@ export const inkRenderer: Renderer = {
       case 'list': return renderInkToString(<List items={block.items} />)
       case 'note': return renderInkToString(<Note text={block.text} />)
       case 'blank': return renderInkToString(<Blank />)
+      case 'raw': return block.lines.join('\n')
       case 'rule': return renderInkToString(<Rule width={block.width} />)
     }
   },

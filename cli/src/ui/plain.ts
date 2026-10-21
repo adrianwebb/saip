@@ -47,6 +47,9 @@ export const plainRenderer: Renderer = {
         return `   ${block.text}`
       case 'blank':
         return ''
+      case 'raw':
+        // Verbatim: the wizard's own wording, prefix and indentation included.
+        return block.lines.join('\n')
       case 'rule':
         return '-'.repeat(Math.max(1, block.width))
     }

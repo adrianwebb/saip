@@ -102,6 +102,7 @@ describe.skipIf(!built)('every --json run emits parseable JSONL on stdout (#113)
       status: ['status'],
       profiles: ['profiles'],
       ssh: ['ssh', 'list'],
+      config: ['config', 'list'],
     }
     for (const name of [...STRUCTURED_COMMANDS]) {
       const args = invocations[name] ?? [name]
@@ -150,3 +151,4 @@ describe('the stdout quarantine (#113)', () => {
     expect(console.log, 'the guard must not leak past restore()').toBe(origLog)
   })
 })
+

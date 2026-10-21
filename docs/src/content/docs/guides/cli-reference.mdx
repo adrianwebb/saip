@@ -256,11 +256,20 @@ saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
 
 | Flag | Description |
 |------|-------------|
-| `--config <path>` | Path to `saip.yaml` (default: `./saip.yaml`) |
-| `--env <path>` | Path to `.env` file (default: `./.env`) |
-| `--quiet` | Suppress informational output |
-| `--verbose` | Enable debug logging |
+| `--json` | Machine-readable JSONL on stdout, for every command (see "Machine output" above) |
+| `--host <name>` | Target host from `hosts.yaml` on the commands that act on a host (`awake`, `sleep`, `down`, `status`, `ssh`, `deploy`) |
 | `--help` | Show help for any command |
+
+Configuration location is chosen by **environment**, not by a global flag: `SAIP_CONFIG` for
+`saip.yaml`, `SAIP_ENV_FILE` for the `.env` file, `SAIP_SECRETS_FILE` for the encrypted store,
+`SAIP_HOSTS_FILE` for `hosts.yaml`. Each is resolved by the shared loader, so a gateway and the CLI
+agree on which file is in play.
+
+> **Removed from this table (they were never implemented):** `--config`, `--env`, `--quiet`,
+> `--verbose`. Listing them was the same defect as documenting `${VAR}` interpolation that no code
+> performed — the flag is accepted by nothing, and `saip --config x` exits with
+> `error: unknown option`. Implementing them, with tests written first, is
+> [#149](https://github.com/adrianwebb/saip/issues/149).
 
 ---
 

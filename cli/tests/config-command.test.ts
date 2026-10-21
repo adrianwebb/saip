@@ -312,3 +312,71 @@ describe('unattended wrap is actually usable (#73 follow-up)', () => {
     expect(await store.activeWrap()).toBe('unattended')
   })
 })
+
+describe('the /dev/tty handle must not keep the process alive (#110 F1)', () => {
+  /**
+   * A prompted command used to print its result and never exit: the module-level tty ReadStream holds
+   * the event loop open. The fix refs the handle only while a question is open.
+   *
+   * Asserted on an injected stream on purpose. The obvious harness — running the CLI under `script` —
+   * cannot detect the bug: `script` exits when its own stdin hits EOF and reports success while the
+   * child is still alive. That harness produced a green test for a defect that was not yet fixed,
+   * which is the definition of an unfailable test.
+   */
+  const fakeStream = () => {
+    const calls: string[] = []
+    const handlers: Record<string, Array<(c: Buffer) => void>> = {}
+    const s = {
+      isTTY: true, isRaw: false, fd: 99,
+      setRawMode(v: boolean) { calls.push(`raw:${v}`); s.isRaw = v; return s },
+      setEncoding() { return s }, resume() { return s }, pause() { return s },
+      on(ev: string, fn: (c: Buffer) => void) { calls.push(`on:${ev}`); (handlers[ev] ??= []).push(fn); return s },
+      once(ev: string) { calls.push(`on:${ev}`); return s },
+      removeListener(ev: string) { calls.push(`off:${ev}`); return s },
+      ref() { calls.push('ref'); return s },
+      unref() { calls.push('unref'); return s },
+      destroy() { calls.push('destroy'); return s },
+      emit() { return true }, read() { return null },
+    }
+    return { stream: s, calls, deliver: (ev: string, chunk: Buffer) => handlers[ev]?.forEach((h) => h(chunk)) }
+  }
+
+  it('holds the loop while the question is open and releases it afterwards', async () => {
+    const { promptTTY } = await import('../src/commands/config.js')
+    const { stream, calls, deliver } = fakeStream()
+    const done = promptTTY('probe: ', { secret: true, stream: stream as never })
+    const refAt = calls.indexOf('ref')
+    const dataAt = calls.indexOf('on:data')
+    expect(refAt, 'the handle must be ref’d before listening').toBeGreaterThanOrEqual(0)
+    expect(dataAt, 'must actually listen').toBeGreaterThan(refAt)
+
+    deliver('data', Buffer.from('\r'))          // the user presses Enter
+    await done
+    // The property is ordering, not "last call": the handle is released during cleanup, before the
+    // listeners go away, and nothing re-refs it afterwards.
+    expect(calls.lastIndexOf('unref'), `calls were ${calls.join(',')}`).toBeGreaterThan(calls.lastIndexOf('ref'))
+    expect(calls.filter((c) => c === 'unref').length).toBeGreaterThanOrEqual(1)
+    expect(calls.slice(calls.lastIndexOf('unref')), 'nothing may re-hold the loop after release').not.toContain('ref')
+  })
+
+  it('releases the handle on the cancel path too, not only on success', async () => {
+    const { promptTTY } = await import('../src/commands/config.js')
+    const { stream, calls, deliver } = fakeStream()
+    const done = promptTTY('probe: ', { secret: true, stream: stream as never })
+    deliver('data', Buffer.from('\u0003'))      // Ctrl+C
+    await expect(done).rejects.toThrow(/cancelled/i)
+    expect(calls.lastIndexOf('unref'), `cancel path calls were ${calls.join(',')}`).toBeGreaterThan(calls.lastIndexOf('ref'))
+  })
+
+  it('releases before removing listeners, so a queued keystroke is not dropped (#99)', async () => {
+    const { promptTTY } = await import('../src/commands/config.js')
+    const { stream, calls, deliver } = fakeStream()
+    const done = promptTTY('probe: ', { secret: true, stream: stream as never })
+    deliver('data', Buffer.from('\r\rleftover'))   // Enter, then bytes for the next question
+    await done
+    const release = calls.indexOf('unref')
+    const removed = calls.indexOf('off:data')
+    expect(release).toBeGreaterThanOrEqual(0)
+    expect(removed).toBeGreaterThan(release)
+  })
+})
