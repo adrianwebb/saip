@@ -119,6 +119,27 @@ export class SecretAccess implements SecretsProvider {
     return value
   }
 
+  /**
+   * Read the STORE only — never the resolution chain — and record the access.
+   *
+   * This exists for one question: **"did my write land?"** `read()` deliberately resolves
+   * environment-first (a one-off `SAIP_X=y saip …` must override, #67), and that is right for
+   * "what would the platform use?" — but using it to verify a write compares the value just stored
+   * against whatever the shell happens to export, so a successful `config set` of a name that also
+   * exists in the environment reported `did not persist as written` and exited 1 (#146). Verification
+   * needs the object that was written, not the resolution winner.
+   *
+   * Recorded the same way `read()` records, because the audit trail is about the store being touched;
+   * skipping it would make the fix cost observability.
+   */
+  async readStored(name: string): Promise<string | undefined> {
+    if (!this.store.exists()) return undefined
+    if (!this.isUnlocked) throw new MissingSecretError(`${name} (the secret store has not been unlocked for this command; call unlock() after explain())`)
+    const value = await this.store.get(name)
+    if (value !== undefined) this.record(name, value)
+    return value
+  }
+
   async require(name: string): Promise<string> {
     const v = await this.read(name)
     if (v === undefined || v === '') throw new MissingSecretError(name)

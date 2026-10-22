@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 ### Fixed
+- cli: **`config set` no longer reports a successful write as a failure** (#146). Read-back verification used the access gateway's resolution chain, which is environment-first by design, so storing a name that was also exported in the shell compared the value against the *shadow* and printed `SAIP_R2_BUCKET did not persist as written` with exit 1 — while the value had in fact persisted. Verification now reads the store itself via a new `SecretAccess.readStored()` (still recorded in the access audit), and shadowing is reported as its own note on the success: `also set in your shell and still wins — unset SAIP_R2_BUCKET to use the stored value`. `config get` deliberately still follows the chain, because "what would the platform use?" is a different question from "did my write land?"
 - cli: **an unknown-host error now names which host failed and which flag sets it** (#117). `saip deploy --target box2` on a registry without a `default` host said `unknown host "default"`, blaming the implicit source while pointing at a flag the user never typed; `deploy` resolves two hosts, so the message now reads `unknown deploy source host "default" — set --source <name>`, with the matching form for `--target`. Single-host commands say `set --host <name> or SAIP_HOST`, and the known-host list truncates at eight names with `+N more` so a large inventory cannot bury the suggestion. `deploy` also gained the CLI-reference section it never had
 ### Changed
 
