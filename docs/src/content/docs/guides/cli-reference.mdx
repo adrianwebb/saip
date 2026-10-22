@@ -238,10 +238,30 @@ An empty stdout is deliberately treated as a failure of this guarantee, since a 
 "nothing to report" from "broken stream" — including when a command throws part way through, which
 still writes one `command_failed` record before exiting non-zero.
 
-**Scope of the guarantee:** it applies to a *valid invocation*. `saip ssh --json` with no subcommand is
-a commander usage error — a message on stderr and exit 1 — and produces no record, because no command
-ran. Distinguishing "you asked badly" from "the tool broke" is the caller's job, and the exit codes do
-that: 2 for refused/unsupported, 1 for failure, 0 for success.
+**The guarantee covers parse-level failures too (#147).** It used to stop at the command boundary, which
+let the worst possible output through: `saip config --json` with a missing argument printed **nothing on
+stdout** and exited 1. A consumer piping into `jq` received no input at all and could not distinguish
+"refused" from "the tool crashed" — the exact emptiness this section calls a failure of the guarantee.
+
+Commander handles usage errors, unknown commands, unknown options, `--help` and `--version` **before any
+command action runs**, so the rule could not be enforced where those are decided. It now is: `--json` is
+detected from argv before parsing, and every one of those paths writes exactly one record.
+
+| Invocation | Record `data.code` | stdout | exit |
+|---|---|---|---|
+| `saip config --json` (missing argument) | `usage_error` | one record | **1** |
+| `saip status --json --bogus` | `unknown_option` | one record | **1** |
+| `saip notacommand --json` | `unknown_command` | one record, with the known command names | **1** |
+| `saip --version --json` | `version` | one record carrying version, commit, target, builtAt | **0** |
+| `saip --help --json` / `saip config --help --json` | `help` | one record with the command's usage | **0** |
+
+Exit codes keep their meanings — **1** usage or failure, **2** refused/unstructured, **0** success — and
+`data.command` / `data.flag` / `data.name` say what was being parsed. Because records are built from
+blocks (#113), these carry `kind: "line"` with the condition in `data.code`, the same convention as
+`not_structured` and `command_failed`, rather than inventing a record kind per condition.
+
+The point is that **stdout is never empty under `--json`**. A consumer that reads zero lines is now
+reporting a real bug in this CLI, not observing a documented gap.
 
 **Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
 `saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
@@ -252,6 +272,7 @@ commands each remembering one rule is how that happened.
 saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
 saip profiles --json   | jq .resolution.profile
 saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
+saip config --json; echo $?       # 1 — usage error, still one record on stdout (#147)
 ```
 
 ## Global Options

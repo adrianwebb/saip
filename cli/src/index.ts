@@ -15,7 +15,7 @@ import { CommandRegistryService } from './lib/command-registry.js'
 import { SAIP_BUILD_COMMIT, SAIP_BUILD_DATE, SAIP_BUILD_TARGET, SAIP_VERSION } from './version.js'
 import { UiService } from './lib/ui.js'
 import { jsonlRenderer } from './ui/json.js'
-import { isStructuredCommand, jsonModeOn, redirectHumanStdout, setJsonMode, unsupportedRecord } from './lib/json-mode.js'
+import { classifyCommanderError, isStructuredCommand, jsonModeOn, parseRecord, redirectHumanStdout, setJsonMode, suppressHumanText, takeSuppressedText, unsupportedRecord } from './lib/json-mode.js'
 
 // Command plugins (each registers itself on load via ctx.commandRegistry).
 import awakePlugin from './commands/awake.js'
@@ -28,6 +28,23 @@ import configPlugin from './commands/config.js'
 import sshPlugin from './commands/ssh.js'
 
 const COMMAND_PLUGINS = [awakePlugin, sleepPlugin, downPlugin, statusPlugin, deployPlugin, profilesPlugin, configPlugin, sshPlugin]
+
+/**
+ * Hand commander's parse-level decisions back to the dispatcher instead of letting it exit.
+ *
+ * Applied to the program AND to every subcommand: `addCommand` does not carry `exitOverride` or
+ * `configureOutput` across, so setting only the program left `saip config --json` calling
+ * `process.exit` inside the subcommand — the reason the first version of #147 still printed nothing
+ * for a missing argument while working fine for `--version`.
+ */
+function parseGuard<T extends Command>(cmd: T): T {
+  return cmd
+    .exitOverride()
+    .configureOutput({
+      writeOut: (text) => { if (jsonModeOn()) suppressHumanText(text); else process.stdout.write(text) },
+      writeErr: (text) => { if (jsonModeOn()) suppressHumanText(text); else process.stderr.write(text) },
+    })
+}
 
 export async function buildProgram(): Promise<Command> {
   const ctx = new Context()
@@ -51,6 +68,8 @@ export async function buildProgram(): Promise<Command> {
     .name('saip')
     .description('Simple AI Platform — manage inference and training services')
     .version(SAIP_VERSION)
+    // #147: see parseGuard — applied to the program and to every subcommand.
+    
 
   for (const spec of ctx.commandRegistry!.list()) {
     const cmd = new Command(spec.name).description(spec.description)
@@ -127,10 +146,10 @@ export async function buildProgram(): Promise<Command> {
         process.exitCode = 1
       }
     })
-    program.addCommand(cmd)
+    program.addCommand(parseGuard(cmd))
   }
 
-  return program
+  return parseGuard(program)
 }
 
 /**
@@ -177,14 +196,85 @@ export function tolerateClosedReaders(): void {
   }
 }
 
-export async function runCli(argv: string[] = process.argv): Promise<number> {
-  tolerateClosedReaders()
-  if (argv.includes('--built')) {
-    const machine = argv.includes('--json')
-    ;(machine ? process.stderr : process.stdout).write(`${buildProvenance()}\n`)
+/**
+ * One record for a parse-level outcome, and nothing else on stdout (#147).
+ *
+ * `--version`/`--help` exit 0: they succeeded at what was asked. Everything else keeps commander's own
+ * non-zero exit code, so "you asked badly" (1) stays distinguishable from "refused for no records" (2).
+ */
+function reportParseOutcome(err: { code?: string; message?: string; exitCode?: number }, program: Command): number {
+  const message = String(err?.message ?? err ?? '').replace(/^error:\s*/i, '')
+  const version = /^version\b/i.test(message) || err?.code === 'commander.version'
+  // `exitOverride` reports help as the literal message '(outputHelp)', so the real usage text is taken
+  // from what commander tried to write (captured by parseGuard) rather than from err.message.
+  const captured = takeSuppressedText()
+  const help = err?.code === 'commander.helpDisplayed' || err?.code === 'commander.help'
+    || /Display help for command/i.test(captured) || /^Usage: /i.test(captured)
+
+  if (version) {
+    emit({ kind: 'line', level: 'info', text: SAIP_VERSION,
+      data: { code: 'version', version: SAIP_VERSION, commit: SAIP_BUILD_COMMIT, target: SAIP_BUILD_TARGET, builtAt: SAIP_BUILD_DATE } })
     return 0
   }
-  const program = await buildProgram()
-  await program.parseAsync(argv)
-  return typeof process.exitCode === 'number' ? process.exitCode : 0
+  if (help) {
+    const wanted = process.argv.slice(2).find((a) => !a.startsWith('-'))
+    const named = program.commands.find((c) => c.name() === wanted)
+    const usage = captured || message
+    emit(parseRecord('help', `${named ? `saip ${wanted}` : 'saip'}: ${usage.split('\n')[0]}`,
+      { command: named ? wanted : undefined, usage, commands: program.commands.map((c) => c.name()) }))
+    return 0
+  }
+
+  const condition = classifyCommanderError(err?.code)
+  const fullText = captured || message
+  const detail: Record<string, unknown> = {}
+  const flag = /unknown option '(.*?)'/i.exec(message)?.[1]
+  const name = /unknown command '(.*?)'/i.exec(message)?.[1]
+  const argument = /required argument '(.*?)'/i.exec(message)?.[1]
+  const cmd = process.argv.slice(2).find((a) => !a.startsWith('-'))
+  if (flag) detail.flag = flag
+  if (name) detail.name = name
+  if (argument) detail.argument = argument
+  if (cmd) detail.command = cmd
+  if (condition === 'unknown_command') detail.commands = program.commands.map((c) => c.name())
+  emit(parseRecord(condition, fullText && !/^\(.*\)$/.test(fullText) ? fullText.replace(/\n.*$/, '') : (message || `could not parse the command line (${err?.code ?? 'unknown error'})`), detail))
+  // Commander reports 0 for a usage *display* and 1 for a usage *error*; keep its number when it
+  // supplied one, since the documented contract is 1 = bad ask, 2 = refused, 0 = success.
+  return typeof err?.exitCode === 'number' && err.exitCode > 0 ? err.exitCode : 1
+}
+
+/** Write one record straight to stdout — the machine stream, bypassing the human sink. */
+function emit(block: Parameters<typeof jsonlRenderer.render>[0]): void {
+  process.stdout.write(`${jsonlRenderer.render(block)}\n`)
+}
+
+export async function runCli(argv: string[] = process.argv): Promise<number> {
+  tolerateClosedReaders()
+  // Detected from argv BEFORE commander parses, because the paths this protects are exactly the ones
+  // where no command action ever runs to turn it on (#147).
+  const machine = argv.includes('--json')
+  setJsonMode(machine)
+  try {
+    if (argv.includes('--built')) {
+      // Provenance is a diagnostic even when it is a record's worth of data: it stays off the machine
+      // stream (#115) — the line that used to corrupt `profiles --json`, in its original shape.
+      ;(machine ? process.stderr : process.stdout).write(`${buildProvenance()}\n`)
+      return 0
+    }
+    const program = await buildProgram()
+    try {
+      await program.parseAsync(argv)
+    } catch (err: any) {
+      // `exitOverride` removes commander's own `process.exit`, so the dispatcher owns the code now —
+      // in BOTH modes. Omitting this turned every usage error into exit 0 while the text still read
+      // like a failure, which is worse than the bug #147 set out to fix; the exit-code case in
+      // tests/json-parse-level.test.ts is what caught it.
+      const code = machine ? reportParseOutcome(err, program) : (typeof err?.exitCode === 'number' ? err.exitCode : 1)
+      process.exitCode = code
+      return code
+    }
+    return typeof process.exitCode === 'number' ? process.exitCode : 0
+  } finally {
+    setJsonMode(false)
+  }
 }
