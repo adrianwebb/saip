@@ -19,9 +19,13 @@ const spec: CommandSpec = {
     const targetName = options.target as string | undefined
     if (!targetName) { console.error('[saip] deploy requires --target <host>'); process.exitCode = 1; return }
 
-    // Resolve source + target through the shared registry (fail-closed on unknown).
-    const source = withHost(ctx, (options.source as string | undefined) ?? 'default')
-    const target = withHost(ctx, targetName)
+    // Resolve source + target through the shared registry, fail-closed, and say WHICH side failed
+    // (#117): `deploy --target box2` with no `default` host used to report `unknown host "default"`,
+    // blaming the implicit source while pointing at nothing the user could act on. `deploy` does not
+    // read --host or SAIP_HOST for these two, so the fix names the flag that does.
+    const source = withHost(ctx, (options.source as string | undefined) ?? 'default',
+      { role: 'source', fix: 'set --source <name>' })
+    const target = withHost(ctx, targetName, { role: 'target', fix: 'set --target <name>' })
     const params = parseParams(options.param as string[] | undefined)
 
     const plan = renderDeployPlan(source, target, params, { revealParams: !!options.revealParams })

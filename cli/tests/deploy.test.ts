@@ -63,6 +63,9 @@ describe('saip deploy command', () => {
       const program = await buildProgram()
       await program.parseAsync(['deploy', '--target', 'ghost'], { from: 'user' })
     } finally { console.error = origErr; delete process.env.SAIP_HOSTS_FILE }
-    expect(err).toMatch(/unknown host "ghost"/i)
+    // #117: deploy takes two hosts, so the message names WHICH one and the flag that sets it.
+    // The intent is unchanged — fail closed, name the host, list the known ones.
+    expect(err).toMatch(/unknown deploy target host "ghost"/i)
+    expect(err).toMatch(/set --target <name>/)
   })
 })
