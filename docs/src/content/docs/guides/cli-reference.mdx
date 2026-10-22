@@ -454,15 +454,15 @@ Display the current state of SAIP services, GPU, and configuration.
 ### Synopsis
 
 ```bash
-saip status [--json] [--adapter-resolution <user>]
+saip status [--json] [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--json` | false | Output as JSON (for scripting) |
-| `--adapter-resolution <user>` | — | Show which adapter a specific user would receive |
+| `--json` | false | JSONL records on stdout (see *Machine output* above) |
+| `--host <name>` | `SAIP_HOST` or `default` | Which host from `hosts.yaml` to interrogate |
 
 ### Output Format
 
@@ -470,28 +470,44 @@ saip status [--json] [--adapter-resolution <user>]
 $ saip status
 [saip] Platform Status
 ─────────────────────
-[sip] default (local): reachable=true mode=?
-Mode:       TODO (awake / asleep / down)
+Host:       default (local): reachable
+Mode:       awake
 Adapters:   3 defined (1 composite), registry valid
 GPU:        NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.07 GiB free, cc 8.6
 Profile:    full-loop-12gb (auto-resolved), ceiling 11 GiB
-            gpu_memory_utilization=0.6875 (derived), context 65536 tokens
+            gpu_memory_utilization=06875 (derived), context 65536 tokens
 Bucket:     saip-local
-Uptime:     TODO
+Uptime:     3 hours (inference stack)
 ```
 
-The `GPU` and `Profile` lines come from the same `ProfileService` resolution
-`saip profiles` performs, so status and the tier report cannot disagree. When the card
-cannot hold the resolved ceiling, the profile line is followed by
-`NOT STARTABLE: insufficient_free_vram: …` naming the deficit.
+**Where every field comes from.** No line is a constant, and no line is a placeholder dressed up as a
+measurement (#114):
 
-:::caution[Not yet implemented]
-These fields are still `TODO` in the shipped CLI and are shown as such rather than invented:
-service mode (awake/asleep/down), uptime, GPU temperature and per-process utilization,
-loaded-adapter names with their `@latest` resolution, and the last R2 sync timestamp. The
-richer layout previously documented here was a design sketch, not output — it is why
-`saip status` is the command to compare against `saip profiles` when the two look wrong.
+| Line | Source | When it cannot be known |
+|---|---|---|
+| `Host` | the host's `DeploymentProvider.status()` reachability | names the failure: unknown host, no registry, unreachable |
+| `Mode` | `HostStatus.mode` — awake / asleep / down / unknown, derived from container state | `unknown — <why>`, e.g. `no state reported by the local provider` |
+| `Adapters` | the **shared** registry service, same validator the gateways use | `0 defined — none in saip.yaml`, or `INVALID (N errors)` |
+| `GPU`, `Profile` | the same `ProfileService` resolution `saip profiles` performs, so the two commands cannot disagree | the provider's own reason (`no nvidia-smi`, `insufficient_free_vram: …`) |
+| `Bucket` | `saip.yaml storage.r2.bucket`, interpolated like the gateways do | `not set — storage.r2.bucket in saip.yaml (or run saip config init)` |
+| `Uptime` | `HostStatus.uptime`, read from the container's reported running time | `not reported — the stack is not awake`, or `not reported by the <kind> host` |
+
+A field that cannot be known **says so and says why**, in the same sentence as the source that was
+asked. That is deliberately not a blank and not a `TODO`: `status` is the command an operator runs to
+decide whether their platform is healthy, and a placeholder shaped like a value trains them to distrust
+the whole report.
+
+:::caution[Still not reported]
+GPU temperature, per-process utilisation, loaded-adapter names with their `@latest` resolution, and the
+last R2 sync timestamp are **absent from this command**, not guessed at. They need the gateway's own
+telemetry (#63) and are tracked there rather than approximated here.
 :::
+
+:::note[Removed from these docs]
+`--adapter-resolution <user>` appeared in this page's synopsis while the flag had never existed — the
+binary answered `error: unknown option '--adapter-resolution'` and exited 1. It is the same class as the
+four phantom globals in #149 and is dropped rather than re-promised (#30 covers adapter resolution as
+its own command surface).
 
 :::caution[Fields still TODO]
 `saip status` prints host reachability, adapter registry validity, GPU + profile
