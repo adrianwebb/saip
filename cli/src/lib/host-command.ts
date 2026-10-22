@@ -9,7 +9,6 @@ import type { HostConfig } from '@saip/shared'
 import type { HostStatus } from '@saip/shared'
 import { resolveTargetHost } from './host-target.js'
 import { providerFor } from './providers/index.js'
-import { uiOr } from '../ui/output.js'
 
 export function withHost(ctx: Context, requested: string | undefined): HostConfig {
   const hosts = (ctx as any).hosts?.list() ?? []
@@ -53,21 +52,22 @@ export async function probeHost(ctx: Context, requestedHost?: string): Promise<H
   }
 }
 
+/**
+ * Run a state-changing verb. It changes state and stays silent about presentation.
+ *
+ * The `status` verb was removed here (#114): it used to `showLine` a host summary, which made it a
+ * second formatting path for the same fact `saip status` renders — the direct cause of a report that
+ * printed a real mode above `Mode: TODO`. Reading state is {@link probeHost}'s job; presenting it
+ * belongs to the command. Any future caller that wants to print must go through the `ui` seam.
+ */
 export async function runVerb(
   ctx: Context,
-  verb: 'up' | 'down' | 'status',
+  verb: 'up' | 'down',
   requestedHost?: string,
   opts?: { bucket?: string; stack?: 'inference' | 'training' },
 ): Promise<void> {
   const host = withHost(ctx, requestedHost)
   const provider = providerFor(host.kind)
   if (verb === 'up') await provider.up(host, opts)
-  else if (verb === 'down') await provider.down(host, opts)
-  else {
-    // The verb still reports to the operator when it is what they asked for (`awake`/`sleep`/`down`
-    // call their own status), but it no longer *formats* anything for `saip status` — that command
-    // owns its rendering, which is the whole point of the seam (#113). `probeHost` is the data path.
-    const st = await provider.status(host)
-    uiOr(ctx).showLine(`${host.name} (${host.kind}): reachable=${st.reachable} mode=${st.mode ?? '?'}${st.detail ? ` — ${st.detail}` : ''}`)
-  }
+  else await provider.down(host, opts)
 }
