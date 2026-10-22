@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 ### Fixed
+- cli: **an unknown-host error now names which host failed and which flag sets it** (#117). `saip deploy --target box2` on a registry without a `default` host said `unknown host "default"`, blaming the implicit source while pointing at a flag the user never typed; `deploy` resolves two hosts, so the message now reads `unknown deploy source host "default" — set --source <name>`, with the matching form for `--target`. Single-host commands say `set --host <name> or SAIP_HOST`, and the known-host list truncates at eight names with `+N more` so a large inventory cannot bury the suggestion. `deploy` also gained the CLI-reference section it never had
 ### Changed
 
 ## [0.7.0] - 2026-10-21

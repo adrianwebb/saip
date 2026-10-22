@@ -7,12 +7,19 @@
 import type { Context } from 'cordis'
 import type { HostConfig } from '@saip/shared'
 import type { HostStatus } from '@saip/shared'
-import { resolveTargetHost } from './host-target.js'
+import { resolveTargetHost, type HostRole } from './host-target.js'
 import { providerFor } from './providers/index.js'
 
-export function withHost(ctx: Context, requested: string | undefined): HostConfig {
+/**
+ * Resolve the host a command was pointed at, with the wording that belongs to THAT command (#117).
+ *
+ * `deploy` calls this twice — once for the implicit source, once for the explicit target — and the
+ * reader needs to know which one failed, because only one of them was something they typed. Single-host
+ * commands pass no hint and get the `--host`/`SAIP_HOST` sentence.
+ */
+export function withHost(ctx: Context, requested: string | undefined, hint?: HostRole): HostConfig {
   const hosts = (ctx as any).hosts?.list() ?? []
-  return resolveTargetHost(hosts, requested)
+  return resolveTargetHost(hosts, requested, hint)
 }
 
 /**

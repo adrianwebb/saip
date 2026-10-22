@@ -10,4 +10,5 @@
 - fixed in the harness itself: a child that exited before `finish()` was called was reported as **hung**, which briefly produced a false claim that the shipped CLI's `config set` never returned; the case is now pinned by a test that fails when the fix is reverted (#154)
 - CLI skeleton with awake, sleep, down, status commands (#1)
 ### Fixed
+- unknown-host errors carry the role and flag that fixes them (`unknown deploy source host … — set --source <name>`), and the known-host list truncates at eight with `+N more` (#117)
 - `saip status` placeholders (`TODO (awake / asleep / down)`, `TODO`, `TODO (R2 bucket name)`, a zero adapter count rendered as `TODO`) are replaced by real values or explained absences; an unreachable host reports `unknown` with its reason rather than `down`; `--adapter-resolution` had been documented while the flag never existed and is removed from the CLI reference (#114)

@@ -259,7 +259,7 @@ saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
 | Flag | Description |
 |------|-------------|
 | `--json` | Machine-readable JSONL on stdout, for every command (see "Machine output" above) |
-| `--host <name>` | Target host from `hosts.yaml` on the commands that act on a host (`awake`, `sleep`, `down`, `status`, `ssh`, `deploy`) |
+| `--host <name>` | Target host from `hosts.yaml` on the commands that act on one host (`awake`, `sleep`, `down`, `status`, `ssh`). `deploy` takes **two** hosts and uses `--source`/`--target` instead — see `saip deploy` |
 | `--help` | Show help for any command |
 
 Configuration location is chosen by **environment**, not by a global flag: `SAIP_CONFIG` for
@@ -541,6 +541,51 @@ Adapter resolution for 'alice':
 :::
 
 ---
+
+## `saip deploy`
+
+Copy a parameterized stack from one host to another. **Plan-only by default is not the behaviour — see
+`--dry-run` below — so read the two host flags carefully before running it.**
+
+### Synopsis
+
+```bash
+saip deploy --target <host> [--source <host>] [-p key=value ...] [--dry-run] [--reveal-params]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target <name>` | — required | Destination host from `hosts.yaml` |
+| `--source <name>` | `SAIP_HOST`, else `default` | Source host. **This is the one that surprises people**: `deploy` takes two hosts, so omitting `--source` still resolves a host named `default` |
+| `-p, --param <kv...>` | — | `key=value`, or `key=secret:NAME` to reference a stored secret by name. Repeatable |
+| `--dry-run` | false | Print the plan and apply nothing |
+| `--reveal-params` | false | Print parameter **values** in the plan. Off by default: a `secret:` reference is rendered as its name, never its value |
+
+### How the two hosts are resolved
+
+Both are resolved against the host registry and both **fail closed** — a typo never silently targets
+another machine. Because they are different roles, the error names the role and the flag that fixes it:
+
+```
+$ saip deploy --target box2                  # hosts.yaml has box2, no `default` host
+[saip] error: unknown deploy source host "default" — set --source <name>. Known hosts: box2
+
+$ saip deploy --source local --target box9
+[saip] error: unknown deploy target host "box9" — set --target <name>. Known hosts: local
+```
+
+`awake`, `sleep`, `down`, `status` and `ssh` take a single host, so their wording names the one flag and the
+environment variable that can supply it:
+
+```
+[saip] error: unknown host "default" — set --host <name> or SAIP_HOST. Known hosts: local
+```
+
+The known-host list is truncated when an inventory is large: the first eight names, then `+N more`, so a
+40-host registry cannot bury the suggestion that matters. `(none)` is shown when `hosts.yaml` has no hosts
+at all, which is the sign that the file was never found rather than that a name is wrong.
 
 ## `saip profiles`
 
