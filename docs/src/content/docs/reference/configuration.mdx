@@ -331,7 +331,18 @@ Resolution order, highest first:
    overrides anything on disk, and CI or a secrets store can inject without touching files.
 2. **A `.env` file**, loaded with `override: false` so it only fills variables not already set.
    This is what makes native CLI and gateway runs work without exporting anything by hand.
-   Resolved from `--env <path>`, then `$SAIP_ENV_FILE`, then `./.env`; absence is not an error.
+   Resolved by SAIP's own loader — `$SAIP_ENV_FILE` if set, otherwise the nearest existing `./.env`
+   found by walking up from the working directory, otherwise `<cwd>/.env`. Absence is not an error.
+
+   > **The compiled CLI does not load `.env` implicitly** (since 0.7.0, #148). Bun's single-file
+   > executables autoload the current working directory's `.env` by default, which bypassed
+   > `$SAIP_ENV_FILE`, folded a project's secrets into every `saip` invocation made from its directory,
+   > and reported them as shell-provenance. Builds pass `--no-compile-autoload-dotenv`, and CI asserts
+   > it against the artifact with a canary value, so the loader above is the only reader.
+   >
+   > `--env` / `--config` flags do not exist; setting them was never possible. Configuration location is
+   > chosen by environment variables only — see the CLI reference's Global Options note (#149 tracks
+   > implementing or permanently dropping them).
 3. **Docker Compose**, which reads `env_file` for containerized runs and inherits the calling
    shell. Compose performs its own `${VAR}` substitution on the compose file itself; SAIP
    interpolates `saip.yaml` after the process starts, so the two never compete.

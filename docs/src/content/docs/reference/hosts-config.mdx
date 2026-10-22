@@ -109,7 +109,15 @@ Where things live:
 | Part | Location | Secret? |
 |---|---|---|
 | Private key (PEM) | encrypted store, name `SAIP_SSH_KEY_<host>` | yes — never written to disk at rest |
-| Public key | `~/.saip/keys/<host>.ed25519.pub` | no, and safe to share |
+| Public key | `<dir of the store>/keys/<host>.ed25519.pub` | no, and safe to share |
+| Temporary identity file | `<dir of the store>/keys/.tmp-<pid>-<rand>/id_ed25519` | yes, and only for the duration of one command |
+
+**The key directory follows the store, never `$HOME`.** With `SAIP_SECRETS_FILE=/srv/saip/secrets.enc.json`
+the public keys live in `/srv/saip/keys/`, not `~/.saip/keys` — so relocating the store relocates the
+keys with it. It is written this way because the earlier behaviour (derive the directory from the
+environment, fall back to the home folder) meant a command still touched `~/.saip` when the store lived
+elsewhere, and a **test** run could write key material into the maintainer's home (#145, #159). Every
+call site now passes the store-relative directory explicitly rather than relying on a default.
 
 **How a key reaches `ssh`.** OpenSSH needs a file, so for the duration of a command SAIP writes the
 private key into a private directory (`0700`) as a `0600` file, passes that path with `-i`, and

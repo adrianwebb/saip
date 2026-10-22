@@ -1,0 +1,16 @@
+
+### CTRL-tty code=0 signal=0 hung=false clean=true
+    rows: ["SAIP_R2_BUCKET: plain-tty","ANSWERED=plain-tty","STATE[after-answer] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]"]
+    raw-lines: ["SAIP_R2_BUCKET: plain-tty","ANSWERED=plain-tty","STATE[after-answer] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]"]
+
+### CTRL-tty-hidden code=0 signal=0 hung=false clean=true
+    rows: ["SAIP_R2_BUCKET: hunter2","ANSWERED=hunter2","STATE[after-answer] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]"]
+    raw-lines: ["SAIP_R2_BUCKET: hunter2","ANSWERED=hunter2","STATE[after-answer] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=3 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\"]"]
+
+### INK-once code=0 signal=0 hung=false clean=true
+    rows: ["SAIP_R2_BUCKET:","ANSWERED=ink","STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Immediate\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Immediate\"]"]
+    raw-lines: ["\u001b[?2026h\u001b[?25lSAIP_R2_BUCKET:","\u001b[?2026l\u001b[?2004h\u001b[?25h\u001b[?2004l\u001b[?25hANSWERED=ink","STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Immediate\"]","STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Immediate\"]","\u001b[?25h"]
+
+### INK-wizard code=0 signal=0 hung=false clean=true
+    rows: ["STATE[wizard-done] readable=1 data=0 isRaw=true total=7 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Timeout\",\"Immediate\"]","ANSWERED=one|two","STATE[exit-point] readable=0 data=0 isRaw=false total=6 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Timeout\",\"Immediate\"]"]
+    raw-lines: ["\u001b[?2026h\u001b[?25l","\u001b[?2026l\u001b[?2004h\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[GSAIP_R2_BUCKET:","\u001b[?2026l\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G","\u001b[?2026l\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[GSAIP_R2_ENDPOINT:","\u001b[?2026l\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G","\u001b[?2026lSTATE[wizard-done] readable=1 data=0 isRaw=true total=7 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Timeout\",\"Immediate\"]","ANSWERED=one|two","\u001b[?25h\u001b[?2004l\u001b[?25hSTATE[exit-point] readable=0 data=0 isRaw=false total=6 resources=[\"TTYWrap\",\"TTYWrap\",\"TTYWrap\",\"Timeout\",\"Timeout\",\"Immediate\"]","\u001b[?25h"]

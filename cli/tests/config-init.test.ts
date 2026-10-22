@@ -370,7 +370,10 @@ describe('Ctrl+C during the wizard (#78 follow-up, maintainer-reported)', () => 
     expect(readFileSync(env, 'utf8')).toMatch(/SAIP_R2_BUCKET=value-1/)
     expect(readFileSync(env, 'utf8')).toMatch(/SAIP_R2_ENDPOINT=value-2/)
     expect(await store.get('SAIP_R2_ACCESS_KEY_ID')).toBeUndefined()
-    expect(r.lines.join(' ')).toMatch(/still not set/)
+    // Phrase changed by #150: `still not set` → `still to fill`, so the cancellation summary uses the
+    // SAME gap vocabulary as every other report instead of a second word for the same fact. The
+    // assertion's intent is untouched — the run must name what remains.
+    expect(r.lines.join(' ')).toMatch(/still to fill/)
   })
 
   it('writes nothing for the item that was interrupted', async () => {

@@ -6,19 +6,33 @@
  */
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { STRUCTURED_COMMANDS, setJsonMode, redirectHumanStdout } from '../src/lib/json-mode.js'
+import { isClosedReader } from '../src/index.js'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 const distBin = join(repoRoot, 'cli/dist/bin.js')
 const built = existsSync(distBin)
 
+/** A throwaway home for every probe: without this the CLI reads the developer's real ~/.saip store. */
+function sandbox(): Record<string, string> {
+  const dir = mkdtempSync(join(tmpdir(), 'saip-json-'))
+  writeFileSync(join(dir, 'hosts.yaml'), 'hosts: []\n', 'utf8')
+  return {
+    SAIP_SECRETS_FILE: join(dir, 'secrets.enc.json'),
+    SAIP_ENV_FILE: join(dir, '.env'),
+    SAIP_HOSTS_FILE: join(dir, 'hosts.yaml'),
+    SAIP_SECRETS_PASSPHRASE: 'json-mode-test-passphrase',
+  }
+}
+
 function runJson(args: string[]): { code: number | null; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, [distBin, ...args, '--json'], {
     encoding: 'utf8', cwd: repoRoot, timeout: 60_000,
-    env: { ...process.env, SAIP_CONFIG: join(repoRoot, 'saip.yaml') },
+    env: { ...process.env, SAIP_CONFIG: join(repoRoot, 'saip.yaml'), ...sandbox() },
   })
   return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
 }
@@ -82,10 +96,28 @@ describe.skipIf(!built)('every --json run emits parseable JSONL on stdout (#113)
 
   it('every declared structured command really emits records', () => {
     // The list is a claim about the CLI; this makes it checked rather than maintained by hand.
+    // Each command is invoked the way a caller actually invokes it: a bare `ssh` is a commander
+    // usage error (stderr, exit 1), not a stream violation, and asserting on it would test the
+    // argument parser rather than the invariant.
+    const invocations: Record<string, string[]> = {
+      status: ['status'],
+      profiles: ['profiles'],
+      ssh: ['ssh', 'list'],
+      config: ['config', 'list'],
+    }
     for (const name of [...STRUCTURED_COMMANDS]) {
-      const { stdout } = runJson([name])
+      const args = invocations[name] ?? [name]
+      const { stdout } = runJson(args)
       expectJsonl(stdout, name)
     }
+  })
+
+  it('a structured command that fails mid-action still leaves a record, not silence (#113)', () => {
+    // `ssh show --host <unknown>` cannot produce a key, but the caller must still be able to tell
+    // "no results" from "broken": a record plus a non-zero exit, never an empty stdout.
+    const { stdout } = runJson(['ssh', 'show', '--host', 'definitely-not-configured'])
+    const [rec] = expectJsonl(stdout, 'ssh show')
+    expect(['line', 'keyValues']).toContain(rec.kind)
   })
 })
 
@@ -118,5 +150,37 @@ describe('the stdout quarantine (#113)', () => {
     expect(err.join('')).toContain('stray human line')
     expect(out.join('')).not.toContain('stray human line')
     expect(console.log, 'the guard must not leak past restore()').toBe(origLog)
+  })
+})
+
+describe('a closed reader must not look like a failed command (#113)', () => {
+  /**
+   * `console.log` swallowed write errors, so this only broke once output moved to the ui sink: CI's
+   * smoke step pipes `config doctor | grep -qi …`, and an unhandled EPIPE printed a stack trace with
+   * exit 1 as though the command had failed.
+   *
+   * The decision is asserted directly. Two earlier attempts could not fail: piping into `head -1`
+   * never raised EPIPE at all (the 64 KB pipe buffer absorbs ten lines), and emitting `'error'` on
+   * the real `process.stdout` threw regardless of the handler because Node installs its own handling
+   * on that stream. Both were green against a build with the fix removed.
+   */
+  it('recognises the reader-gone codes as benign', () => {
+    expect(isClosedReader(Object.assign(new Error('EPIPE'), { code: 'EPIPE' }))).toBe(true)
+    expect(isClosedReader(Object.assign(new Error('closed'), { code: 'ERR_STREAM_DESTROYED' }))).toBe(true)
+  })
+
+  it('does not hush a real write failure', () => {
+    for (const code of ['ENOSPC', 'EBADF', 'EACCES']) {
+      expect(isClosedReader(Object.assign(new Error(code), { code })), code).toBe(false)
+    }
+    expect(isClosedReader(undefined)).toBe(false)
+    expect(isClosedReader(new Error('no code'))).toBe(false)
+  })
+
+  it('the handler is installed by the composition root, not by each command', () => {
+    const src = readFileSync(join(repoRoot, 'cli/src/index.ts'), 'utf8')
+    expect(src).toMatch(/tolerateClosedReaders\(\)/)
+    // …and it is the FIRST thing runCli does, before --built or any parse.
+    expect(src.indexOf('tolerateClosedReaders()')).toBeLessThan(src.indexOf("argv.includes('--built')"))
   })
 })

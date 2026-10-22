@@ -4,7 +4,7 @@
  * still drawing Unicode boxes).
  */
 import { describe, it, expect } from 'vitest'
-import { renderCard, detectDisplay, type CardSpec } from '../src/lib/display.js'
+import { renderCard, detectDisplay, type CardSpec } from '../src/ui/card.js'
 
 const spec: CardSpec = {
   title: 'SAIP_R2_BUCKET', badge: 'required',

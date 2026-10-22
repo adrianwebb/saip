@@ -104,7 +104,9 @@ saip ssh <generate|show|verify|rotate|remove|migrate> --host <name>
 | `saip ssh migrate` | Moves a legacy `SAIP_SSH_PRIVATE_KEY` value into a managed per-host key and clears the old name. |
 
 The private key is materialised as a temporary `0600` file only for the duration of an SSH call and
-removed on every exit path, including interruption and signals. `Ctrl+C` is handled explicitly: raw
+removed on every exit path, including interruption and signals. The file is created **beside the store**
+(`<dir of SAIP_SECRETS_FILE>/keys/.tmp-…/id_ed25519`), not under `~/.saip`, so a relocated or test store
+cannot leave key material in a real home directory (#159). `Ctrl+C` is handled explicitly: raw
 mode disables `ISIG`, so a keypress arrives as a byte and nothing would otherwise clean up.
 
 ## How output is presented
@@ -233,7 +235,33 @@ That means, for a script or agent:
   action. Ask for machine output from a side-effecting command and you get a refusal, not a deployment.
 
 An empty stdout is deliberately treated as a failure of this guarantee, since a consumer cannot tell
-"nothing to report" from "broken stream".
+"nothing to report" from "broken stream" — including when a command throws part way through, which
+still writes one `command_failed` record before exiting non-zero.
+
+**The guarantee covers parse-level failures too (#147).** It used to stop at the command boundary, which
+let the worst possible output through: `saip config --json` with a missing argument printed **nothing on
+stdout** and exited 1. A consumer piping into `jq` received no input at all and could not distinguish
+"refused" from "the tool crashed" — the exact emptiness this section calls a failure of the guarantee.
+
+Commander handles usage errors, unknown commands, unknown options, `--help` and `--version` **before any
+command action runs**, so the rule could not be enforced where those are decided. It now is: `--json` is
+detected from argv before parsing, and every one of those paths writes exactly one record.
+
+| Invocation | Record `data.code` | stdout | exit |
+|---|---|---|---|
+| `saip config --json` (missing argument) | `usage_error` | one record | **1** |
+| `saip status --json --bogus` | `unknown_option` | one record | **1** |
+| `saip notacommand --json` | `unknown_command` | one record, with the known command names | **1** |
+| `saip --version --json` | `version` | one record carrying version, commit, target, builtAt | **0** |
+| `saip --help --json` / `saip config --help --json` | `help` | one record with the command's usage | **0** |
+
+Exit codes keep their meanings — **1** usage or failure, **2** refused/unstructured, **0** success — and
+`data.command` / `data.flag` / `data.name` say what was being parsed. Because records are built from
+blocks (#113), these carry `kind: "line"` with the condition in `data.code`, the same convention as
+`not_structured` and `command_failed`, rather than inventing a record kind per condition.
+
+The point is that **stdout is never empty under `--json`**. A consumer that reads zero lines is now
+reporting a real bug in this CLI, not observing a documented gap.
 
 **Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
 `saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
@@ -244,17 +272,27 @@ commands each remembering one rule is how that happened.
 saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
 saip profiles --json   | jq .resolution.profile
 saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
+saip config --json; echo $?       # 1 — usage error, still one record on stdout (#147)
 ```
 
 ## Global Options
 
 | Flag | Description |
 |------|-------------|
-| `--config <path>` | Path to `saip.yaml` (default: `./saip.yaml`) |
-| `--env <path>` | Path to `.env` file (default: `./.env`) |
-| `--quiet` | Suppress informational output |
-| `--verbose` | Enable debug logging |
+| `--json` | Machine-readable JSONL on stdout, for every command (see "Machine output" above) |
+| `--host <name>` | Target host from `hosts.yaml` on the commands that act on one host (`awake`, `sleep`, `down`, `status`, `ssh`). `deploy` takes **two** hosts and uses `--source`/`--target` instead — see `saip deploy` |
 | `--help` | Show help for any command |
+
+Configuration location is chosen by **environment**, not by a global flag: `SAIP_CONFIG` for
+`saip.yaml`, `SAIP_ENV_FILE` for the `.env` file, `SAIP_SECRETS_FILE` for the encrypted store,
+`SAIP_HOSTS_FILE` for `hosts.yaml`. Each is resolved by the shared loader, so a gateway and the CLI
+agree on which file is in play.
+
+> **Removed from this table (they were never implemented):** `--config`, `--env`, `--quiet`,
+> `--verbose`. Listing them was the same defect as documenting `${VAR}` interpolation that no code
+> performed — the flag is accepted by nothing, and `saip --config x` exits with
+> `error: unknown option`. Implementing them, with tests written first, is
+> [#149](https://github.com/adrianwebb/saip/issues/149).
 
 ---
 
@@ -437,15 +475,15 @@ Display the current state of SAIP services, GPU, and configuration.
 ### Synopsis
 
 ```bash
-saip status [--json] [--adapter-resolution <user>]
+saip status [--json] [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--json` | false | Output as JSON (for scripting) |
-| `--adapter-resolution <user>` | — | Show which adapter a specific user would receive |
+| `--json` | false | JSONL records on stdout (see *Machine output* above) |
+| `--host <name>` | `SAIP_HOST` or `default` | Which host from `hosts.yaml` to interrogate |
 
 ### Output Format
 
@@ -453,28 +491,44 @@ saip status [--json] [--adapter-resolution <user>]
 $ saip status
 [saip] Platform Status
 ─────────────────────
-[sip] default (local): reachable=true mode=?
-Mode:       TODO (awake / asleep / down)
+Host:       default (local): reachable
+Mode:       awake
 Adapters:   3 defined (1 composite), registry valid
 GPU:        NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.07 GiB free, cc 8.6
 Profile:    full-loop-12gb (auto-resolved), ceiling 11 GiB
-            gpu_memory_utilization=0.6875 (derived), context 65536 tokens
+            gpu_memory_utilization=06875 (derived), context 65536 tokens
 Bucket:     saip-local
-Uptime:     TODO
+Uptime:     3 hours (inference stack)
 ```
 
-The `GPU` and `Profile` lines come from the same `ProfileService` resolution
-`saip profiles` performs, so status and the tier report cannot disagree. When the card
-cannot hold the resolved ceiling, the profile line is followed by
-`NOT STARTABLE: insufficient_free_vram: …` naming the deficit.
+**Where every field comes from.** No line is a constant, and no line is a placeholder dressed up as a
+measurement (#114):
 
-:::caution[Not yet implemented]
-These fields are still `TODO` in the shipped CLI and are shown as such rather than invented:
-service mode (awake/asleep/down), uptime, GPU temperature and per-process utilization,
-loaded-adapter names with their `@latest` resolution, and the last R2 sync timestamp. The
-richer layout previously documented here was a design sketch, not output — it is why
-`saip status` is the command to compare against `saip profiles` when the two look wrong.
+| Line | Source | When it cannot be known |
+|---|---|---|
+| `Host` | the host's `DeploymentProvider.status()` reachability | names the failure: unknown host, no registry, unreachable |
+| `Mode` | `HostStatus.mode` — awake / asleep / down / unknown, derived from container state | `unknown — <why>`, e.g. `no state reported by the local provider` |
+| `Adapters` | the **shared** registry service, same validator the gateways use | `0 defined — none in saip.yaml`, or `INVALID (N errors)` |
+| `GPU`, `Profile` | the same `ProfileService` resolution `saip profiles` performs, so the two commands cannot disagree | the provider's own reason (`no nvidia-smi`, `insufficient_free_vram: …`) |
+| `Bucket` | `saip.yaml storage.r2.bucket`, interpolated like the gateways do | `not set — storage.r2.bucket in saip.yaml (or run saip config init)` |
+| `Uptime` | `HostStatus.uptime`, read from the container's reported running time | `not reported — the stack is not awake`, or `not reported by the <kind> host` |
+
+A field that cannot be known **says so and says why**, in the same sentence as the source that was
+asked. That is deliberately not a blank and not a `TODO`: `status` is the command an operator runs to
+decide whether their platform is healthy, and a placeholder shaped like a value trains them to distrust
+the whole report.
+
+:::caution[Still not reported]
+GPU temperature, per-process utilisation, loaded-adapter names with their `@latest` resolution, and the
+last R2 sync timestamp are **absent from this command**, not guessed at. They need the gateway's own
+telemetry (#63) and are tracked there rather than approximated here.
 :::
+
+:::note[Removed from these docs]
+`--adapter-resolution <user>` appeared in this page's synopsis while the flag had never existed — the
+binary answered `error: unknown option '--adapter-resolution'` and exited 1. It is the same class as the
+four phantom globals in #149 and is dropped rather than re-promised (#30 covers adapter resolution as
+its own command surface).
 
 :::caution[Fields still TODO]
 `saip status` prints host reachability, adapter registry validity, GPU + profile
@@ -508,6 +562,51 @@ Adapter resolution for 'alice':
 :::
 
 ---
+
+## `saip deploy`
+
+Copy a parameterized stack from one host to another. **Plan-only by default is not the behaviour — see
+`--dry-run` below — so read the two host flags carefully before running it.**
+
+### Synopsis
+
+```bash
+saip deploy --target <host> [--source <host>] [-p key=value ...] [--dry-run] [--reveal-params]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target <name>` | — required | Destination host from `hosts.yaml` |
+| `--source <name>` | `SAIP_HOST`, else `default` | Source host. **This is the one that surprises people**: `deploy` takes two hosts, so omitting `--source` still resolves a host named `default` |
+| `-p, --param <kv...>` | — | `key=value`, or `key=secret:NAME` to reference a stored secret by name. Repeatable |
+| `--dry-run` | false | Print the plan and apply nothing |
+| `--reveal-params` | false | Print parameter **values** in the plan. Off by default: a `secret:` reference is rendered as its name, never its value |
+
+### How the two hosts are resolved
+
+Both are resolved against the host registry and both **fail closed** — a typo never silently targets
+another machine. Because they are different roles, the error names the role and the flag that fixes it:
+
+```
+$ saip deploy --target box2                  # hosts.yaml has box2, no `default` host
+[saip] error: unknown deploy source host "default" — set --source <name>. Known hosts: box2
+
+$ saip deploy --source local --target box9
+[saip] error: unknown deploy target host "box9" — set --target <name>. Known hosts: local
+```
+
+`awake`, `sleep`, `down`, `status` and `ssh` take a single host, so their wording names the one flag and the
+environment variable that can supply it:
+
+```
+[saip] error: unknown host "default" — set --host <name> or SAIP_HOST. Known hosts: local
+```
+
+The known-host list is truncated when an inventory is large: the first eight names, then `+N more`, so a
+40-host registry cannot bury the suggestion that matters. `(none)` is shown when `hosts.yaml` has no hosts
+at all, which is the sign that the file was never found rather than that a name is wrong.
 
 ## `saip profiles`
 

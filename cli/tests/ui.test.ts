@@ -9,7 +9,7 @@ import { Context } from 'cordis'
 import { CommandRegistryService } from '../src/lib/command-registry.js'
 import { UiService, chooseMode, renderInkToString, CardView } from '../src/lib/ui.js'
 import { buildProgram } from '../src/index.js'
-import type { CardSpec } from '../src/lib/display.js'
+import type { CardSpec } from '../src/ui/card.js'
 
 const spec: CardSpec = {
   title: 'SAIP_R2_BUCKET', badge: 'required',

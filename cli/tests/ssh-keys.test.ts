@@ -82,6 +82,7 @@ describe('keypair generation (no ssh-keygen dependency)', () => {
 describe('the materialised key never outlives the command', () => {
   it('is readable with the right modes inside the callback and gone after', async () => {
     const kp = generateKeypair('h1')
+    const keys = join(dir(), 'keys')
     let seen: { path: string; mode: number; dirMode: number; matches: boolean } | undefined
     const result = await materialiseKey(kp.privatePem, 'h1', async (path) => {
       seen = {
@@ -91,7 +92,7 @@ describe('the materialised key never outlives the command', () => {
         matches: readFileSync(path, 'utf8') === kp.privatePem,
       }
       return 'ok'
-    })
+    }, keys)
     expect(result).toBe('ok')
     expect(seen!.matches).toBe(true)
     expect(seen!.mode).toBe(0o600)
@@ -106,7 +107,7 @@ describe('the materialised key never outlives the command', () => {
     await expect(materialiseKey(kp.privatePem, 'h2', async (path) => {
       captured = path
       throw new Error('ssh exited 255')
-    })).rejects.toThrow(/ssh exited 255/)
+    }, join(dir(), 'keys'))).rejects.toThrow(/ssh exited 255/)
     expect(existsSync(captured)).toBe(false)
     expect(existsSync(dirname(captured))).toBe(false)
   })
@@ -117,14 +118,14 @@ describe('the materialised key never outlives the command', () => {
     await expect(materialiseKey(kp.privatePem, 'h3', async (path) => {
       captured = path
       throw new Error('cancelled by user')
-    })).rejects.toThrow(/cancelled/)
+    }, join(dir(), 'keys'))).rejects.toThrow(/cancelled/)
     expect(existsSync(captured)).toBe(false)
   })
 
   it('registers live files so process teardown can remove them', async () => {
     const kp = generateKeypair('h5')
     let inner = ''
-    const pending = materialiseKey(kp.privatePem, 'h5', async (p) => { inner = p; await new Promise((r) => setTimeout(r, 30)); return 1 })
+    const pending = materialiseKey(kp.privatePem, 'h5', async (p) => { inner = p; await new Promise((r) => setTimeout(r, 30)); return 1 }, join(dir(), 'keys'))
     await new Promise((r) => setTimeout(r, 10))
     expect(liveMaterialisedKeys()).toContain(inner)
     await pending

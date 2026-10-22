@@ -7,7 +7,7 @@
  */
 import type { HostConfig } from '@saip/shared'
 import { buildStore } from '../commands/config.js'
-import { materialiseKey, sshKeyName } from './ssh-keys.js'
+import { materialiseKey, sshKeyName, storeKeyDir } from './ssh-keys.js'
 import type { SshIdentityScope } from './providers/hyperstack.js'
 
 /**
@@ -35,5 +35,8 @@ export const withManagedIdentity: SshIdentityScope = async <T>(host: HostConfig,
     throw new Error(`could not open the secret store for host "${host.name}": ${msg}`)
   }
   if (!pem) throw new Error(`host "${host.name}" has no SSH key named ${name}. Create one: saip ssh generate --host ${host.name}`)
-  return materialiseKey(pem, host.name, fn)
+  // The directory comes from the store THIS call just built, not from `sshKeyDir()`'s ambient view of
+  // the environment (#159): with an injected storePath the two disagree, and the key landed in the
+  // real home instead of beside the store.
+  return materialiseKey(pem, host.name, fn, storeKeyDir(store))
 }
