@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- cli: **`scripts/acceptance-110.ts` runs #110's acceptance list against the compiled binary**, in a real pty, in a scrubbed temp workspace — and prints a verdict per row instead of asking to be trusted. First run: 6 rows pass, row 2 fails on a real defect (filed as #169: `config init` prompts for the passphrase twice), and the ARM row is blocked on hardware this host lacks. The screen model now treats SGR as handled, so `unparsed` means what it says (#110)
 
 ### Fixed
 - cli: **the CLI's reports now describe what actually happened** (#150). `config init --non-interactive` wrote nothing — correctly — yet labelled already-set values `missing` and closed with `stored 4 value(s): …`, so an agent parsing the footer reported a mutation that never took place. The vocabulary is now split by reality: `to fill:` only for genuinely unset values, `already set — source: (store | .env | shell)` for what exists, and the footer distinguishes `written now: N` from `present in store/env: N`; `InitResult` gained a required `present` field so no return path can merge the two again. Separately, `awake`, `sleep` and `down` now resolve the host **before** announcing the action, so an unknown name no longer prints `Shutting down all services...` above an error for a request that was never valid
