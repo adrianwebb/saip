@@ -21,7 +21,7 @@ import { uiOr } from '../ui/output.js'
 import { buildStore } from './config.js'
 import {
   generateKeypair, importPrivateKey, managedKeyName, publicPath, writePublicKeypair,
-  materialiseKey, sshKeyDir, sshKeyName, type Keypair,
+  materialiseKey, storeKeyDir, sshKeyName, type Keypair,
 } from '../lib/ssh-keys.js'
 
 export interface SshRunner { run(cmd: string, args: string[]): { code: number; stdout: string; stderr: string } }
@@ -35,7 +35,8 @@ const defaultRunner: SshRunner = {
 export interface SshDeps { store?: SecretStore; runner?: SshRunner; hosts?: () => HostConfig[] }
 
 /** Key directory for this store, so relocated stores keep their keys together. */
-const keyDirFor = (store: SecretStore): string => join(dirname(store.filePath), 'keys')
+// Every key path in this command is derived from the store it is unlocking (#159) — never from the
+// environment, which can disagree with an injected storePath.
 
 /**
  * Results are **blocks**, not pre-formatted lines (#113): the command decides what a result *says*,
@@ -101,7 +102,7 @@ export async function runSsh(
       if (!names.length) return ok('no managed SSH keys. Create one: saip ssh generate --host <name>')
       return res(0,
         lineBlock('managed keys:'),
-        listBlock(names.map((n) => `${n}  (public: ${join(keyDirFor(store), n.replace(/^SAIP_SSH_KEY_/, '').toLowerCase() + '.ed25519.pub')})`)),
+        listBlock(names.map((n) => `${n}  (public: ${join(storeKeyDir(store), n.replace(/^SAIP_SSH_KEY_/, '').toLowerCase() + '.ed25519.pub')})`)),
       )
     }
 
@@ -111,7 +112,7 @@ export async function runSsh(
       }
       const kp = generateKeypair(hostName!)
       await store.set(keyName(), kp.privatePem)
-      const pub = await writePublicKeypair(kp, hostName!, keyDirFor(store))
+      const pub = await writePublicKeypair(kp, hostName!, storeKeyDir(store))
       return ok(
         `generated Ed25519 keypair for "${hostName}"`,
         `  private: encrypted store as ${keyName()}`,
@@ -125,7 +126,7 @@ export async function runSsh(
     }
 
     case 'show': {
-      const pubPath = publicPath(hostName!, keyDirFor(store))
+      const pubPath = publicPath(hostName!, storeKeyDir(store))
       if (existsSync(pubPath)) return ok(readFileSync(pubPath, 'utf8').trimEnd())
       const pem = await store.get(keyName())
       if (!pem) return fail(`no managed key for "${hostName}". Create one: saip ssh generate --host ${hostName}`)
@@ -146,7 +147,7 @@ export async function runSsh(
         const why = (r.stderr || r.stdout).trim().split('\n')[0]
         return fail(`ssh to ${user}@${addr} failed (exit ${r.code}): ${why}. `
           + `If the host is new, authorise the public key there first: saip ssh show --host ${hostName}`)
-      })
+      }, storeKeyDir(store))
     }
 
     case 'rotate': {
@@ -154,7 +155,7 @@ export async function runSsh(
       if (!old) return fail(`no managed key for "${hostName}". Create one: saip ssh generate --host ${hostName}`)
       const kp = generateKeypair(hostName!)
       await store.set(keyName(), kp.privatePem)
-      const pub = await writePublicKeypair(kp, hostName!, keyDirFor(store))
+      const pub = await writePublicKeypair(kp, hostName!, storeKeyDir(store))
       return ok(
         `rotated the keypair for "${hostName}"`,
         `  public: ${pub}`,
@@ -167,7 +168,7 @@ export async function runSsh(
     case 'remove': {
       const had = await store.unset(keyName())
       let removedFile = false
-      const pubPath = publicPath(hostName!, keyDirFor(store))
+      const pubPath = publicPath(hostName!, storeKeyDir(store))
       if (existsSync(pubPath)) { try { unlinkSync(pubPath); removedFile = true } catch { /* gone already */ } }
       if (!had && !removedFile) return fail(`no managed key for "${hostName}"`)
       return ok(`removed the managed key for "${hostName}"${host?.ssh?.host ? `; the host may still trust the old public key` : ''}`)
@@ -189,7 +190,7 @@ export async function runSsh(
       }
       const kp = importPrivateKey(pem, hostName)
       await store.set(keyName(), kp.privatePem)
-      await writePublicKeypair(kp, hostName!, keyDirFor(store))
+      await writePublicKeypair(kp, hostName!, storeKeyDir(store))
       await store.unset('SAIP_SSH_PRIVATE_KEY')
       return ok(
         `migrated ${looksLikePath ? 'a key file' : 'the stored key'} into ${keyName}`,

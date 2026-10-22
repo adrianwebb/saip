@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- cli: **the SSH key directory follows the store, never `$HOME`** (#159). `materialiseKey`'s default argument was the last place still deriving the temporary identity directory from the environment, so `saip ssh verify` and the deploy provider created `0700` key directories under the real `~/.saip/keys` whenever the store was relocated — and six tests wrote private key material into the maintainer's home. The directory parameter is now **required** (omitting it is a compile error), `storeKeyDir(store)` is the single derivation, `sshKeyDir(env)` honours the `HOME` it is given instead of reading the process's, and the suite passes on a read-only `$HOME`. Docs corrected: public keys are documented at `~/.saip/keys`, which has not been true since #145
 
 ### Fixed
 
