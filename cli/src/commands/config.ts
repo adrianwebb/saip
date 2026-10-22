@@ -254,11 +254,22 @@ export async function runConfig(
           // Read it back: proves the write landed and puts the write in the access record.
           // An unverified store is the shape every silent failure in this issue set has taken.
           await writer.unlock()
-          if ((await writer.read(name)) !== value) return fail(`${name} did not persist as written`)
+          // STORE, not chain (#146): `read()` resolves environment-first, so verifying with it
+          // compared the written value against a shell shadow and reported a successful write as
+          // `did not persist as written`. The two questions need two instruments — resolution for
+          // `get`, the store itself here.
+          const back = await writer.readStored(name)
+          if (back !== value) return fail(`${name} did not persist as written`)
+          // The shell may still win at resolution — worth saying, because the user will otherwise
+          // conclude the store did not take. That is a NOTE on a success, never a failure.
         } catch (e) { return fail(`stored ${name} but could not read it back: ${(e as Error).message}`) }
       } catch (e) { return fail((e as Error).message) }
       // Never echo what was just stored, including on the success path.
-      return res(0, lineBlock(`stored ${name} (${value.length} chars)`))
+      const lines = [`stored ${name} (${value.length} chars)`]
+      if (env[name] !== undefined && env[name] !== '') {
+        lines.push(`note: ${name} is also set in your shell and still wins — unset ${name} to use the stored value`)
+      }
+      return res(0, ...lines.map((l) => lineBlock(l)))
     }
 
     case 'unset':
