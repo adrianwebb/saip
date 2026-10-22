@@ -97,6 +97,11 @@ export class Screen {
         else row.fill(' ')
         return
       }
+      case 'm':
+        // SGR (colour/bold) changes rendition only — no glyph, no cursor move — so it is handled, not
+        // recorded as a gap. Before this, every `ESC[2m`/`ESC[36m` in an Ink frame landed in
+        // `unparsed`, which made that field useless as the "the model met something new" signal.
+        return
       case 's': this.saved = { x: this.cx, y: this.cy }; return
       case 'u': if (this.saved) { this.cx = this.saved.x; this.cy = this.saved.y } return
       case 'h': case 'l': {

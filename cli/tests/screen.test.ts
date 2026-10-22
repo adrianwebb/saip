@@ -116,9 +116,13 @@ describe('the screen model does what a terminal does', () => {
   it('FAILS LOUDLY on a sequence it does not model — no silent swallowing', () => {
     // The unfailable-test guard: if `?2004h` were handled by the default branch, an ordering probe
     // could pass while the model ignored half the stream.
-    const s = new Screen(2, 20).feed('\x1b[1;2r\x1b[4m')
-    expect(s.unparsed.length).toBeGreaterThan(0)
+    // DECSTBM (scroll region) and DSR (cursor report) have no glyph effect and are not modelled.
+    // SGR is now handled (rendition only), so it must NOT appear here — that distinction is the point.
+    const s = new Screen(2, 20).feed('\x1b[1;2r\x1b[6n\x1b[31mred')
     expect(s.unparsed.join('')).toContain('r')
+    expect(s.unparsed.join('')).toContain('n')
+    expect(s.unparsed.join('')).not.toContain('31')
+    expect(s.lineAt(0)).toBe('red')
   })
 
   it('bracketed paste markers arriving as OUTPUT are recorded, not painted as glyphs', () => {
