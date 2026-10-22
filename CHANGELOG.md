@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - cli: **the SSH key directory follows the store, never `$HOME`** (#159). `materialiseKey`'s default argument was the last place still deriving the temporary identity directory from the environment, so `saip ssh verify` and the deploy provider created `0700` key directories under the real `~/.saip/keys` whenever the store was relocated — and six tests wrote private key material into the maintainer's home. The directory parameter is now **required** (omitting it is a compile error), `storeKeyDir(store)` is the single derivation, `sshKeyDir(env)` honours the `HOME` it is given instead of reading the process's, and the suite passes on a read-only `$HOME`. Docs corrected: public keys are documented at `~/.saip/keys`, which has not been true since #145
 
 ### Fixed
-
+- cli: **`saip status` no longer prints placeholders as measurements** (#114). `Mode`, `Uptime`, `Bucket` and a zero adapter count rendered literal `TODO …` strings that CI never looked at, because the only pinned assertions were the three finished lines. Each field now comes from a named source: mode and uptime from the host's `DeploymentProvider` (a new `HostStatus.uptime`, read from docker's `{{.Status}}`), the bucket from interpolated `saip.yaml`, and an absent value says how to set it. A failed `compose ps` reports `unknown` with the reason instead of `down` — the conflation #89 already refused for SSH authentication. `status` also stops sharing its rendering with a helper: `probeHost()` returns data, so `runVerb` can no longer print a real mode above a `TODO` one. Verified against a live container: `Mode: awake`, `Uptime: Less than a second (probe stack)`
 ### Changed
 
 ## [0.7.0] - 2026-10-21
