@@ -13,12 +13,13 @@ const spec: CommandSpec = {
     { flag: '--profile <name>', description: 'Service profile to run (default: resolve from the GPU)' },
   ],
   action: async (ctx: Context, options) => {
+    // Resolve the target host FIRST — before any line is printed (#150). An unknown host is a
+    // mistake regardless of hardware, and announcing "Switching to AWAKE mode" above the error made
+    // a request that was never valid read as an action that then failed.
+    const host = withHost(ctx, options.host as string | undefined)
+
     uiOr(ctx).showLine('Switching to AWAKE mode...')
     if (options.bucket) uiOr(ctx).showLine(`Using bucket override: ${options.bucket}`)
-
-    // Resolve the target host FIRST: an unknown host is a mistake regardless of hardware,
-    // and probing this machine's GPU to validate a remote host would be meaningless.
-    const host = withHost(ctx, options.host as string | undefined)
 
     // For a local host, resolve the hardware contract BEFORE starting compose. A tier the
     // card cannot hold otherwise surfaces as a vLLM crash loop that keeps reserving VRAM —
