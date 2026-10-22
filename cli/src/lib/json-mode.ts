@@ -34,6 +34,73 @@ export function isStructuredCommand(name: string): boolean {
 }
 
 /**
+ * Parse-level records (#147): the same guarantee, applied where no command action ever ran.
+ *
+ * Commander decides missing arguments, unknown options, unknown commands, `--help` and `--version`
+ * BEFORE `cmd.action` is reached, so a rule enforced inside the action could not cover them — and the
+ * result was the one output a machine consumer must not get: empty stdout with exit 1, or 1 KB of human
+ * prose where a record was promised.
+ *
+ * These deliberately reuse the established record shape (`kind: "line"` + `data.code`) rather than
+ * inventing a `kind` per condition: records are rendered from blocks (#113), and `not_structured` /
+ * `command_failed` / `profile_report` already set the convention of naming the condition in `data`.
+ */
+/**
+ * Text commander wanted to print while `--json` was active.
+ *
+ * Suppressed at the write (never written and then retracted), because two outputs on one stream is how
+ * #115's provenance bug happened. Kept anyway so a `help` record can carry the real usage text rather
+ * than commander's internal exception message — under `exitOverride` that message is the literal
+ * string `(outputHelp)`, which is worthless to a caller.
+ */
+let suppressed = ''
+
+export function suppressHumanText(text: string): void { suppressed += text }
+
+export function takeSuppressedText(): string {
+  const t = suppressed
+  suppressed = ''
+  return t
+}
+
+export type ParseCondition =
+  | 'usage_error' | 'unknown_option' | 'unknown_command' | 'version' | 'help'
+
+export interface ParseDetail {
+  command?: string
+  flag?: string
+  name?: string
+  argument?: string
+  commands?: string[]
+  [k: string]: unknown
+}
+
+export function parseRecord(condition: ParseCondition, text: string, detail: ParseDetail = {}): Block {
+  const level = condition === 'version' || condition === 'help' ? 'info' : 'error'
+  return {
+    kind: 'line',
+    level,
+    text,
+    data: { code: condition, ...Object.fromEntries(Object.entries(detail).filter(([, v]) => v !== undefined)) },
+  }
+}
+
+/**
+ * Map a commander failure onto the condition it represents.
+ *
+ * The library's own codes are stable strings, so this table is checked against the installed
+ * commander rather than remembered — an unmapped code still yields a valid `usage_error` record,
+ * because "some new commander error prints nothing" is exactly the bug being fixed.
+ */
+export function classifyCommanderError(code: string | undefined): ParseCondition {
+  switch (code) {
+    case 'commander.unknownOption': return 'unknown_option'
+    case 'commander.unknownCommand': case 'commander.invalidArgument': return 'unknown_command'
+    default: return 'usage_error'      // missingArgument, missingMandatoryOptionValue, excessArguments, …
+  }
+}
+
+/**
  * The record emitted instead of running an unsupported command. Valid JSONL, non-zero exit, and it
  * names the issue — so an agent gets a machine-readable "not yet" rather than silence or garbage.
  */
