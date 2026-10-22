@@ -104,7 +104,9 @@ saip ssh <generate|show|verify|rotate|remove|migrate> --host <name>
 | `saip ssh migrate` | Moves a legacy `SAIP_SSH_PRIVATE_KEY` value into a managed per-host key and clears the old name. |
 
 The private key is materialised as a temporary `0600` file only for the duration of an SSH call and
-removed on every exit path, including interruption and signals. `Ctrl+C` is handled explicitly: raw
+removed on every exit path, including interruption and signals. The file is created **beside the store**
+(`<dir of SAIP_SECRETS_FILE>/keys/.tmp-…/id_ed25519`), not under `~/.saip`, so a relocated or test store
+cannot leave key material in a real home directory (#159). `Ctrl+C` is handled explicitly: raw
 mode disables `ISIG`, so a keypress arrives as a byte and nothing would otherwise clean up.
 
 ## How output is presented
