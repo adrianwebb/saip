@@ -140,6 +140,15 @@ export class EnvSecrets implements SecretsProvider {
 export interface HostStatus {
   reachable: boolean
   mode?: 'awake' | 'asleep' | 'down' | 'unknown'
+  /**
+   * How long the stack has been running, as the host's own runtime reports it — e.g. `9 hours`.
+   *
+   * Optional by contract, not by laziness: a host that is not awake has no uptime, and a provider
+   * that cannot see one must leave this undefined so the CLI can say *why* rather than invent a
+   * value. `saip status` renders the absence in words (#114) — the placeholder this replaced was a
+   * bare `TODO`, which read as a measurement of zero.
+   */
+  uptime?: string
   adapters?: string[]
   detail?: string
 }

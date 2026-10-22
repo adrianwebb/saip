@@ -9,6 +9,7 @@
 
 import { execFileSync } from 'node:child_process'
 import type { DeploymentProvider, HostConfig, HostStatus, UpDownOpts, DeployResult } from '@saip/shared'
+import { uptimeOf } from './local.js'
 
 export interface Runner {
   run(cmd: string, args: string[]): string
@@ -96,9 +97,12 @@ export class HyperstackDeploymentProvider implements DeploymentProvider {
     // perfectly healthy host as `down` — a failed authentication dressed up as a state.
     try {
       return await this.withIdentity(host, async (identity) => {
+        // `.State` plus `.Status`: the second is what carries the duration (#114). Same keys the local
+        // provider uses, verified against a real docker; the remote just runs the same command.
         const out = this.runner.capture('ssh', ['-i', identity, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
-          `${host.ssh?.user ?? 'ubuntu'}@${host.ssh?.host}`, `docker compose -f ${stackFile(host)} ps --format '{{.State}}'`])
-        return { reachable: true, mode: /Up|running/i.test(out) ? 'awake' : 'down', detail: out.trim() || undefined }
+          `${host.ssh?.user ?? 'ubuntu'}@${host.ssh?.host}`, `docker compose -f ${stackFile(host)} ps --format '{{.State}} {{.Status}}'`])
+        const awake = /Up|running/i.test(out)
+        return { reachable: true, mode: awake ? 'awake' : 'down', uptime: awake ? uptimeOf(out) : undefined, detail: out.trim() || undefined }
       })
     } catch (e: any) {
       // An unresolvable identity is not "the host is down"; saying so is the difference between a
