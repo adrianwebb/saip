@@ -221,9 +221,11 @@ Every SAIP command accepts `--json`. The rule (#113):
 
 That means, for a script or agent:
 
-- **Commands that emit records** (`status`, `profiles`) put blocks on stdout: `{"kind":"keyValues",…}`,
-  one compact line each. Nothing else ever reaches stdout — provenance lines like
-  `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+- **Commands that emit records** (`status`, `profiles`, `config`, `ssh`) put blocks on stdout:
+  `{"kind":"keyValues",…}`, one compact line each. Nothing else ever reaches stdout — provenance lines
+  like `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+  `profiles` joined this list from #156: it used to be described as emitting records while actually
+  writing one hand-rolled object with **no `kind` at all**, which a consumer could not dispatch on.
 - **Commands that have not migrated yet** answer with a single record and exit **2**:
 
   ```json
@@ -270,7 +272,7 @@ commands each remembering one rule is how that happened.
 
 ```bash
 saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
-saip profiles --json   | jq .resolution.profile
+saip profiles --json   | jq -r 'select(.kind=="keyValues") | .rows[] | select(.label=="Profile") | .value'
 saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
 saip config --json; echo $?       # 1 — usage error, still one record on stdout (#147)
 ```
@@ -624,7 +626,7 @@ saip profiles [--profile <name>] [--json]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profile <name>` | auto-resolved | Resolve as if this tier were selected, to check whether the card can hold it and what it would run. |
-| `--json` | false | Machine-readable output for scripting and CI. |
+| `--json` | false | One JSONL record per block on stdout, each carrying `kind` (see "How this output is produced"). Refusals and an unreadable GPU are records too, never an empty stream. |
 
 ### What It Does
 
@@ -670,6 +672,41 @@ $ saip profiles --profile full-loop-12gb
 | 0 | A profile resolved for this GPU |
 | 1 | Configuration error (no `profiles:` block, invalid tier declaration) |
 | 2 | No profile fits this GPU, or the GPU could not be read |
+
+### How this output is produced (#156)
+
+`profiles` used to be the one command whose prose was assembled before it reached the screen: the
+resolver returned a finished string and the command printed it. It now behaves like every other command.
+The resolver returns **data** — card facts, every declared tier with whether this card fits and why not,
+the resolved profile, the derived utilization, and the engine arguments as an argv list — the command
+turns that data into [blocks](#how-output-is-presented), and the `ui` seam renders the blocks.
+
+That split is what makes three things true at once, none of them by luck:
+
+- **A terminal gets framing; a pipe never does.** Piped `saip profiles` containing no box-drawing and no
+  ANSI is a property of **renderer selection**, not of the text happening to be plain — so it cannot
+  regress into a decorative character landing in `… | jq`.
+- **`--json` is one record per block, and every record carries `kind`.** A consumer dispatches on `kind`
+  instead of guessing which shape this command emitted, and the numbers ride in `data`, so nothing has to
+  be parsed back out of prose:
+
+  ```bash
+  saip profiles --json | jq -r 'select(.kind=="keyValues") | .rows[] | "\(.label)=\(.value)"'
+  saip profiles --json | jq -c 'select(.kind=="columns") | .rows[]'          # the tier table
+  saip profiles --json | jq -r 'select(.kind=="keyValues") | .rows[]
+                                 | select(.label=="Profile") | .value'
+  ```
+
+  Nothing has to be scraped back out of prose: the tier table is a `columns` record, and every fact is a
+  labelled row. Values stay strings because that is what a human was shown — an agent that needs the
+  utilization as a number reads the tier table plus `ceiling`, the same way `saip status --json` works.
+
+- **A refusal is still a record.** With no readable GPU, `saip profiles --json` exits 2 and writes one
+  `line` record at `level: "error"` naming the reason — never an empty stream, which a consumer cannot
+  tell apart from a crash.
+
+The engine-argument line is content the command reports, not a snippet generator: copy it, or read
+`engineArgs` off the record stream.
 
 :::tip[Use it before buying hardware or booting]
 `saip profiles` is the cheapest answer to "will this run here" — it reads the card and does
