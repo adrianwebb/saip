@@ -54,7 +54,12 @@ describe('entry guard under a symlinked launcher (#70 cause 1)', () => {
     // Code, not prose: bin.ts necessarily names the expression it removed while explaining why.
     const binCode = bin.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
     expect(binCode).not.toMatch(/import\.meta\.url/)
-    expect(binCode).toMatch(/^await runCli\(\)/m)
+    // Unconditional, at the top level, with nothing gating it. #172 made the entry point capture the
+    // exit code so it can end a run that prompted (Bun does not drain its loop after a /dev/tty read),
+    // which changed the line's SHAPE — `const code = await runCli()` — and not the property under
+    // test. Asserted both ways: the call happens, and no conditional may wrap it.
+    expect(binCode).toMatch(/^const code = await runCli\(\)/m)
+    expect(binCode).not.toMatch(/(^|\s)if \([^)]*\)\s*(void )?await runCli/m)
   })
 
   it('the library entry can be imported with no side effects (a compiled bin must not double-run)', () => {

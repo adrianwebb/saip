@@ -27,6 +27,8 @@ export class FakeTTY extends EventEmitter {
   readonly rawModeLog: boolean[] = []
   refCount = 0
   unrefCount = 0
+  /** #172: unref and destroy are DIFFERENT releases; a fake that conflates them proves nothing. */
+  destroyCount = 0
   private readonly queue: Buffer[] = []
   private encoding: BufferEncoding = 'utf8'
 
@@ -79,7 +81,7 @@ export class FakeTTY extends EventEmitter {
     this.feed(text.slice(mid))
   }
 
-  destroy(): void { this.emit('close'); this.emit('end') }
+  destroy(): void { this.destroyCount++; this.emit('close'); this.emit('end') }
   override on(event: 'readable', listener: () => void): this
   override on(event: string, listener: (...args: any[]) => void): this
   override on(event: string, listener: (...args: any[]) => void): this { return super.on(event, listener) }
