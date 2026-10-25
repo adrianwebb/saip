@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Added
+- `scripts/check-artifact-exit.ts` drives the COMPILED binary through a real pty and fails if a prompted command reports and then never exits; run by `binaries.yml` on every PR and on each native architecture (Windows excluded, not skipped — `node-pty` needs a different spawn path there) (#172)
+- `ui/prompt.ts` gains `releaseTty()` (destroy + close the `/dev/tty` descriptor) and `promptingHappened()`; `UiService` exposes `releaseTerminal()`/`terminalHeld`; `runCli` releases in its `finally`, and `bin.ts` ends the process for any run that prompted, after draining buffered writes (#172)
+- `tests/tty-release.test.ts` pins the three separate releases that #172 conflated — un-ref between questions (so #99's typed-ahead bytes survive), destroy at command end, and the entry point ending the process — including the ablation table as the record of what does NOT release Bun
 - `config init` takes the `SecretAccess` gateway its command already owns and unlocks, lists and stores through it (`runInit` gained an `access` option, defaulting to a gateway over the same store so an embedder cannot ask twice either); `scripts/acceptance-110.ts` no longer answers a second passphrase prompt, so the row fails instead of absorbing the defect (#169)
 - `tests/init-one-unlock.test.ts` drives the assembled command in a real pty and asserts exactly one `SAIP secret store passphrase:` across two secret writes, then reads the store back in a **second** process to prove the values landed rather than trusting the wizard's own report (#169)
 - `probeHost()` returns a host's `HostStatus` to the caller and `saip status` renders mode, uptime, bucket and adapter count from it; `HostStatus.uptime` is read from docker's `{{.Status}}` field (#114)
@@ -12,6 +15,7 @@
 - fixed in the harness itself: a child that exited before `finish()` was called was reported as **hung**, which briefly produced a false claim that the shipped CLI's `config set` never returned; the case is now pinned by a test that fails when the fix is reverted (#154)
 - CLI skeleton with awake, sleep, down, status commands (#1)
 ### Fixed
+- **a prompted command no longer leaves the terminal frozen in the compiled binary** (#172). `config init` printed its full report and never exited; measured, Bun will not drain its loop once a `/dev/tty` reader has delivered data — `destroy()`, `closeSync()`, `pause()` and never-`ref()` all fail to release it while Node exits from each. The entry point now ends a run that prompted, after flushing so piped output cannot be truncated. Survived #145/#151 because every artifact check to date ran the binary only non-interactively
 - `saip config init` asks for the store passphrase **once**, not twice: the wizard's writes went past the gateway to `store.set()`, and a store created by that write had no cached key for the read that followed — so the second prompt appeared and consumed the answer to the next question, leaving `SAIP_R2_SECRET_ACCESS_KEY` reported as stored and then listed as `still to fill` (#169)
 `config init --non-interactive` reports `written now: 0` and `to fill:` instead of calling set values `missing` and claiming `stored N value(s)`; `awake`/`sleep`/`down` resolve the host before printing their action line (#150)
 - `--json` produces one parseable record for parse-level outcomes too (missing argument, unknown option, unknown command, `--help`, `--version`), so stdout is never empty under `--json`; the guard is applied per subcommand and exit codes are restored after `exitOverride` (#147)

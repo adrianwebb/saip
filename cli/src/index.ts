@@ -14,6 +14,8 @@ import { EnvSecrets, SecretAccessService } from '@saip/shared'
 import { CommandRegistryService } from './lib/command-registry.js'
 import { SAIP_BUILD_COMMIT, SAIP_BUILD_DATE, SAIP_BUILD_TARGET, SAIP_VERSION } from './version.js'
 import { UiService } from './lib/ui.js'
+// The terminal handle is released by whoever owns the process lifecycle (#172).
+import { releaseTty } from './ui/prompt.js'
 import { jsonlRenderer } from './ui/json.js'
 import { classifyCommanderError, isStructuredCommand, jsonModeOn, parseRecord, redirectHumanStdout, setJsonMode, suppressHumanText, takeSuppressedText, unsupportedRecord } from './lib/json-mode.js'
 
@@ -276,5 +278,11 @@ export async function runCli(argv: string[] = process.argv): Promise<number> {
     return typeof process.exitCode === 'number' ? process.exitCode : 0
   } finally {
     setJsonMode(false)
+    // Give the terminal back before the process is allowed to end (#172). Once a prompt has put the
+    // tty stream into flowing mode, `unref()` alone drains the loop under Node but NOT under Bun — and
+    // Bun compiles the artifact users run — so a command could print its whole report and leave the
+    // user's shell frozen. The dispatcher owns the process lifecycle, so the release happens once
+    // here instead of at every command's exit path; it is a no-op when nothing was ever prompted.
+    releaseTty()
   }
 }

@@ -9,7 +9,7 @@
  * cannot answer two prompts. Any replacement engine — including an Ink-based one — must pass the same
  * tests, which is why the engine is selected behind the seam rather than called directly.
  */
-import { openSync } from 'node:fs'
+import { closeSync, fstatSync, openSync } from 'node:fs'
 // tty.ReadStream, not fs.ReadStream: only the tty one carries isRaw/setRawMode, which the
 // hidden-input path depends on (#73).
 import { ReadStream } from 'node:tty'
@@ -26,19 +26,31 @@ export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
  * a key that nobody knows, which would look like success and be unrecoverable.
  */
 /**
- * One stream for the controlling terminal, opened once and reused — so bytes typed ahead of the
- * next prompt survive in `pending` rather than being lost with a closed fd (#99).
+ * One stream for the controlling terminal, opened once and reused **within a command** — so bytes
+ * typed ahead of the next prompt survive in `pending` rather than being lost with a closed fd (#99).
  *
  * Reusing it, however, is what made every prompted command hang: an active ReadStream keeps the
  * event loop alive, so `config set NAME` printed `stored …` and then sat in `ep_poll` with the tty
  * fd open until the user killed it (#110 F1). The handle is therefore **unref'd between prompts and
  * ref'd during one**: it stops holding the process open, while still existing so buffered leftovers
  * and the open fd survive from one question to the next.
+ *
+ * And when the command is over it is **destroyed** and its descriptor closed — see `releaseTty()`.
+ * Honest about what that buys (#172, measured in a real pty across `node`, `bun run` and
+ * `bun build --compile`): releasing the handle is correct hygiene, it closes the descriptor Bun
+ * leaks, and it lets an embedder open a clean terminal for the next command. It does NOT make the
+ * compiled artifact exit — once a `/dev/tty` reader has delivered data, Bun keeps the process
+ * alive through destroy, close, pause and never-ref'ing alike, while Node exits from the same
+ * shapes. What ends the process is the entry point (`bin.ts`), which is why that file exists (#101).
  */
 let ttyStream: ReadStream | undefined
+/** Has this process ever opened the controlling terminal? Set once, never cleared (#172). */
+let prompted = false
 function holdTty(stream: ReadStream, hold: boolean): void {
   // Node exposes ref/unref on fd-backed streams, but the type is on WriteStream; guard rather than
-  // assume, because an injected test stream has neither.
+  // assume, because an injected test stream has neither. The guard is for INJECTED streams only —
+  // `ttyInput()` asserts the capability on a stream it created itself, so a runtime that grew a
+  // different answer cannot degrade silently the way this function once did.
   const fn = hold ? (stream as unknown as { ref?: () => void }).ref : (stream as unknown as { unref?: () => void }).unref
   if (typeof fn === 'function') { try { fn.call(stream) } catch { /* a fake stream in tests */ } }
 }
@@ -48,11 +60,81 @@ export function ttyInput(): ReadStream {
   let fd: number
   try { fd = openSync('/dev/tty', 'r+') }
   catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
-  ttyStream = new ReadStream(fd)
+  const stream = new ReadStream(fd)
+  // A stream this function created is a real fd-backed tty stream, so `destroy()` is not optional:
+  // it is the only release that works in every runtime (#172). Saying so here turns a silent
+  // degradation into a named failure, which is what the guard in `holdTty` could not do.
+  if (typeof (stream as unknown as { destroy?: () => void }).destroy !== 'function') {
+    throw new Error(`ttyInput(): cannot manage /dev/tty on this runtime — the handle has no destroy(), so a prompted command could not release it and would never exit (#172)`)
+  }
+  ttyStream = stream
+  prompted = true
   // Unref'd at creation: opening the terminal must not by itself keep a non-prompting command alive.
   holdTty(ttyStream, false)
   return ttyStream
 }
+
+/**
+ * Give the terminal back. Call once, when the process is done prompting (#172).
+ *
+ * `unref()` between questions is still right — it keeps a command that is mid-flow from holding the
+ * loop — but it does not end one, and the correction belongs on the record. Ablation across
+ * `node` (tsc output), `bun run` and `bun build --compile`, one hypothesis per mode:
+ *
+ *   delivered data, then destroy + closeSync(fd)   node: exit    bun: HANG
+ *   delivered data, then destroy only              node: exit    bun: HANG
+ *   delivered data, then closeSync(fd) only        node: exit    bun: HANG
+ *   delivered data, then pause + destroy + close   node: exit    bun: HANG
+ *   delivered data, handle never ref'd             node: exit    bun: HANG
+ *   listener attached and removed, nothing arrives node: exit    bun: exit
+ *   Ink + React imported, terminal never opened    node: exit    bun: exit
+ *
+ * The trigger is Bun's tty reader having *delivered* something, and nothing the stream offers
+ * undoes it; Ink and React are exonerated by the last row.
+ *
+ * The handle is dropped before anything else so a later prompt in the same process opens a fresh one
+ * rather than resurrecting a destroyed stream; `pending` is a `WeakMap` keyed by the stream, so the
+ * bytes that belonged to a finished command go with it, which is the intent.
+ */
+export function releaseTty(): void {
+  const stream = ttyStream
+  if (!stream) return
+  ttyStream = undefined
+  try { stream.destroy() } catch { /* already destroyed, or a mid-teardown error we must not raise */ }
+  // destroy() is not enough on Bun: measured, `_getActiveHandles()` comes back EMPTY and the process
+  // still never exits, because the descriptor `ttyInput()` opened stays open. Node closes it on
+  // destroy; Bun does not. So the fd is given back explicitly, and EBADF (already closed, which is
+  // Node's normal path) is not an error worth raising at teardown.
+  const fd = fdOf(stream)
+  if (typeof fd === 'number' && isFdOpen(fd)) {
+    try { closeSync(fd) } catch { /* already closed by destroy() — the Node path */ }
+  }
+}
+
+/** `tty.ReadStream` carries the descriptor at runtime but its .d.ts does not declare it. */
+function fdOf(stream: ReadStream): number | undefined {
+  return (stream as unknown as { fd?: number }).fd
+}
+
+/** True when `fd` is a live descriptor. `fstat` is the cheapest probe that cannot block. */
+function isFdOpen(fd: number | undefined): boolean {
+  if (typeof fd !== 'number') return false
+  try { fstatSync(fd); return true } catch { return false }
+}
+
+
+/** Test/diagnostic seam: is a terminal handle currently being held? */
+export function ttyHeld(): boolean { return ttyStream !== undefined }
+
+/**
+ * Did this process ever prompt? The executable uses this to decide whether it must
+ * end the process itself (#172): once a tty reader has delivered data, Bun does not let the loop
+ * drain — measured, `destroy()`, an explicit `closeSync()` of the descriptor, `pause()` and never
+ * calling `ref()` all fail to release it, while Node exits from the same shape. Under Node this flag
+ * changes nothing (the process was going to exit anyway); under Bun it is the difference between a
+ * shell that comes back and one that does not.
+ */
+export function promptingHappened(): boolean { return prompted }
 
 /**
  * Bytes that arrived but were not consumed by the previous prompt.

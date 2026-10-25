@@ -36,6 +36,9 @@ import { plainRenderer } from '../ui/plain.js'
 import { inkRenderer } from '../ui/ink.js'
 import { jsonlRenderer } from '../ui/json.js'
 import { ttyEngine, type InputEngine } from '../ui/input.js'
+// Already in this module's graph via `ui/input.js`; named directly because the release belongs to the
+// seam, not to the engine list (#172).
+import { releaseTty, ttyHeld } from '../ui/prompt.js'
 
 declare module 'cordis' {
   interface Context { ui?: UiService }
@@ -139,6 +142,18 @@ export class UiService extends Service {
   prompt(question: string, opts: { secret?: boolean; echo?: boolean; stream?: import('node:tty').ReadStream } = {}): Promise<string> {
     return this.activeInput.ask(question, opts)
   }
+
+  /**
+   * Give the terminal back at the end of a command (#172). The process lifecycle owner calls this,
+   * not each command: a handle that is still flowing when the command reports is a command that
+   * prints its answer and then never exits, and only the seam knows which engine is holding it.
+   *
+   * `releaseTty` is a no-op when nothing was ever opened, so non-prompting commands pay nothing.
+   */
+  releaseTerminal(): void { releaseTty() }
+
+  /** Whether the prompt engine still holds the controlling-terminal handle (diagnostics, tests). */
+  get terminalHeld(): boolean { return ttyHeld() }
 
   /** True when the active renderer produces machine records, so commands skip decoration. */
   get structured(): boolean { return this.active.kind === 'jsonl' }
