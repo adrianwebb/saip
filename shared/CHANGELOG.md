@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 ### Added
+- `vitest.config.ts` loads the shared `tools/vitest/env-isolation.ts`, so this package's suite cannot pass by depending on an empty CI environment (#138)
+### Added
 - `SshConfig.port` (1–65535, optional) plus `sshConnectionArgs()` / `sshDestination()`, the single builders every SAIP→host connection uses (#98). Validation gained `invalid_ssh_port`, `unknown_host_key` and `unknown_ssh_key`, so a `hosts.yaml` key with no field behind it is an error instead of a silent no-op
 - `hosts.example.yaml` is now asserted to validate clean, which keeps the allowed-key lists in `validateHostRegistry` honest against the file users copy
 - *(nothing changed in `shared` for #156, recorded deliberately.)* The issue said the profile report's prose was assembled in `shared/src/profiles.ts`. It was not — `shared` returned data, and the string was built in `cli/src/commands/profiles.ts`. Checked by reading the file rather than editing the place the ticket named, because "fix what the issue says" and "fix what the code does" are different changes

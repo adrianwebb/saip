@@ -88,6 +88,14 @@ Therefore, for **every injectable seam**:
   observes it. Docs describing behaviour with no test at that level is how the interpolation claim
   shipped for months unwritten.
 
+**A suite must be hermetic against the developer's own machine.** Every package's vitest run loads
+`tools/vitest/env-isolation.ts`, which deletes ambient `SAIP_*` variables before any test executes, so a
+test cannot pass by depending on the CI environment being empty (#138: the suite was green at 0.6.2 on CI
+and red on a laptop whose shell exports `SAIP_R2_BUCKET` — a value the wizard then reported honestly as
+coming from the shell, which the assertion could never match). A test that wants a shell value sets it
+explicitly via the injectable `env`/`envPath` deps. If a suite reports failure that disappears under
+`env -i`, the environment leaked in; fix the test, not the machine.
+
 **A green test suite is not the gate.** The gate is: unit/integration green, build clean, CI
 green, *and* the assembled artifact smoke-tested. If any is missing, say so rather than reporting
 "tests pass".
