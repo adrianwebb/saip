@@ -3,6 +3,8 @@ import type { CommandSpec } from '../lib/command-registry.js'
 import { runVerb, withHost } from '../lib/host-command.js'
 import { resolveForHost } from './profiles.js'
 import { uiOr } from '../ui/output.js'
+import { profileBlocks } from './profiles.js'
+import type { GpuInfo } from '@saip/shared'
 
 const spec: CommandSpec = {
   name: 'awake',
@@ -27,12 +29,17 @@ const spec: CommandSpec = {
     if (host.kind === 'local') {
       const report = await resolveForHost(options)
       if (report.exitCode !== 0) {
-        console.error(`[saip] ${report.text}`)
+        // The refusal goes through the seam like every other line this command produces (#156): the
+        // renderer decides the prefix, and a pipe still gets plain text. `ui.line` returns the rendered
+        // string rather than writing it, because a command that cannot start must still answer on stderr
+        // — the failure is not payload, and a caller separating the streams is the case it is for.
+        const ui = uiOr(ctx)
+        for (const b of profileBlocks(report)) console.error(ui.render(b))
         process.exitCode = report.exitCode
         return
       }
       if (report.resolution?.ok) {
-        const gpu = (report.resolution as any).gpu
+        const gpu = report.gpu ?? (report.resolution as { gpu?: GpuInfo }).gpu
         uiOr(ctx).showLine(`Profile: ${report.resolution.profile}${report.resolution.auto ? ' (auto-resolved)' : ''} — ${gpu?.name}, ${gpu?.total_gib} GiB total, ${gpu?.free_gib} GiB free, cc ${gpu?.capability}`)
         if (report.utilization?.ok) uiOr(ctx).showLine(`Derived gpu_memory_utilization=${report.utilization.utilization}`)
       }

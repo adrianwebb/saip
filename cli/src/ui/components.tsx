@@ -55,14 +55,24 @@ export function KeyValues(props: { rows: KvRow[] }): React.ReactElement {
 }
 
 export function Columns(props: { header: string[]; rows: string[][] }): React.ReactElement {
+  // Widths computed exactly as `plainRenderer` computes them, and the first column padded like the
+  // rest, for the same reason (#156): two renderers that each invent their own alignment is the
+  // divergence the seam exists to prevent. Padding is spacing, not content — the content-parity test
+  // in `ui-components.test.ts` compares the values themselves.
+  const widths = props.header.map((h, i) =>
+    Math.max(h.length, ...props.rows.map((r) => (r[i] ?? '').length)))
+  const cells = (row: string[]): string[] =>
+    row.map((c, i) => (i === 0 ? c.padEnd(widths[0]) : c.padStart(widths[i])))
   return (
     <Box flexDirection="column">
-      <Text>
-        {props.header.map((h, i) => (i === 0 ? <Text key={h} bold>{h}</Text> : <Text key={h} bold>{`  ${h}`}</Text>))}
+      <Text wrap="truncate">
+        {cells(props.header).map((c, i) => <Text key={`h${i}`} bold={i === 0}>{i === 0 ? c : `  ${c}`}</Text>)}
       </Text>
       {props.rows.map((r, ri) => (
-        <Text key={`row${ri}`}>
-          {r.map((c, i) => <Text key={`${ri}-${i}`}>{i === 0 ? c : `  ${c}`}</Text>)}
+        <Text key={`row${ri}`} wrap="truncate">
+          {cells(props.header.map((_, i) => r[i] ?? '')).map((c, i) => (
+            <Text key={`${ri}-${i}`}>{i === 0 ? c : `  ${c}`}</Text>
+          ))}
         </Text>
       ))}
     </Box>

@@ -643,25 +643,45 @@ saip profiles [--profile <name>] [--json]
 
 ### Example Output
 
+Piped output, which is what a log or an agent sees — rendered by the plain renderer from the same blocks
+a terminal gets framed (#156):
+
 ```
 $ saip profiles
-[saip] GPU: NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6
+  profile         min VRAM  min cc  ceiling  fits
+  inference-8gb      8 GiB     7.5    7 GiB   yes
+  full-loop-12gb    12 GiB       8   11 GiB   yes
 
-  profile           min VRAM   min cc    ceiling  fits
-  inference-8gb        8 GiB      7.5     7.0 GiB  yes
-  full-loop-12gb      12 GiB      8.0    11.0 GiB  yes
-
-[saip] Resolved: full-loop-12gb (auto)
-[saip] Derived --gpu-memory-utilization=0.6875 (11 GiB ceiling / 16 GiB total)
-[saip] Engine: --model QuantTrio/Qwen3.5-4B-AWQ --max-model-len 65536 --language-model-only
-        --max-num-seqs 128 --enable-lora --max-loras 4 --max-lora-rank 16
+  GPU:         NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6
+  Profile:     full-loop-12gb (auto)   (ceiling 11 GiB)
+  Utilization: 0.6875   (--gpu-memory-utilization, from 11 GiB ceiling / 16 GiB total)
+  Engine:      --model QuantTrio/Qwen3.5-4B-AWQ --served-model-name saip-instruct saip-systemone --max-model-len 65536 --gpu-memory-utilization 0.6875 --max-num-seqs 128 --host 0.0.0.0 --port 8000
 ```
 
-When the card cannot hold the requested tier:
+`saip profiles --json` renders those same blocks as records, so the table arrives structured rather than
+as text to re-parse:
+
+```json
+{"kind":"columns","header":["profile","min VRAM","min cc","ceiling","fits"],"rows":[["inference-8gb","8 GiB","7.5","7 GiB","yes"],["full-loop-12gb","12 GiB","8","11 GiB","yes"]]}
+{"kind":"blank"}
+{"kind":"keyValues","rows":[{"label":"GPU","value":"NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6"},{"label":"Profile","value":"full-loop-12gb (auto)","hint":"ceiling 11 GiB"},{"label":"Utilization","value":"0.6875","hint":"--gpu-memory-utilization, from 11 GiB ceiling / 16 GiB total"},{"label":"Engine","value":"--model QuantTrio/Qwen3.5-4B-AWQ … (the full argv, truncated here for reading)"}]}
+```
+
+(The `Engine` value above is the only part abbreviated: it is the whole argv list joined by one space,
+exactly as the `Engine:` row shows it. Nothing else in these samples is edited — they are the bytes the
+plain renderer produced on a 16 GiB card, captured rather than typed.)
+
+When the card cannot hold the requested tier, the reasons stay legible: the table says `no`, and each
+deficit gets its own line, because a `no — needs 12 GiB VRAM…` cell is 70 characters wide and shoves
+every header away from its value.
 
 ```
-$ saip profiles --profile full-loop-12gb
-[saip] GPU: NVIDIA GeForce RTX 2060 — 6 GiB total, 5.1 GiB free, cc 7.5
+$ saip profiles --profile full-loop-12gb      # exit 2
+  profile         min VRAM  min cc  ceiling  fits
+  inference-8gb      8 GiB     7.5    7 GiB    no
+  full-loop-12gb    12 GiB       8   11 GiB    no
+   inference-8gb: needs 8 GiB VRAM, card has 6 GiB
+   full-loop-12gb: needs 12 GiB VRAM, card has 6 GiB; needs compute capability 8, card has 7.5
 [saip] insufficient_vram: profile "full-loop-12gb" needs 12 GiB VRAM; this card has 6 GiB total
 ```
 

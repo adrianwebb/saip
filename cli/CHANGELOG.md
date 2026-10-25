@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Added
+- `profiles` returns data (`profileReport`) and a block builder (`profileBlocks`); the command renders through `ctx.ui`, so its human, log and machine outputs come from one content path — `--json` yields one record per block, each carrying `kind` (#156)
+- `UiService`/`uiOr` gained `render(block)`, so a command can obtain a rendered string for a non-stdout sink (`awake`'s refusal) without rebuilding presentation by hand (#156)
+- `tests/profiles-seam.test.ts` (14 cases: data-not-prose, block shape, plain/ink content parity, `--json` kind on every record, and a source-level guard that `console.log(` in `cli/src/commands` stays at zero); `tests/awake-profile-gate.test.ts` (3 cases covering `awake`'s and `status`'s deficit branches, with a `docker` tripwire); two alignment cases in `tests/ui-components.test.ts` (#156)
 - `scripts/check-artifact-exit.ts` drives the COMPILED binary through a real pty and fails if a prompted command reports and then never exits; run by `binaries.yml` on every PR and on each native architecture (Windows excluded, not skipped — `node-pty` needs a different spawn path there) (#172)
 - `ui/prompt.ts` gains `releaseTty()` (destroy + close the `/dev/tty` descriptor) and `promptingHappened()`; `UiService` exposes `releaseTerminal()`/`terminalHeld`; `runCli` releases in its `finally`, and `bin.ts` ends the process for any run that prompted, after draining buffered writes (#172)
 - `tests/tty-release.test.ts` pins the three separate releases that #172 conflated — un-ref between questions (so #99's typed-ahead bytes survive), destroy at command end, and the entry point ending the process — including the ablation table as the record of what does NOT release Bun
