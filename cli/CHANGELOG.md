@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 ### Added
+- `--config <path>` / `--env <path>` global options that bind `SAIP_CONFIG` / `SAIP_ENV_FILE` before anything resolves a path, accepted before or after the command, refused with the path named when it does not exist (#149)
+- `tests/global-flags.test.ts` — 9 cases at the level a user observes them (which file `status` interpolated, what the wizard names as a source, flag-beats-env, missing-path refusal, both flag positions, help listing); `tests/json-parse-level.test.ts` gains the record-attribution case (#149)
 - `profiles` returns data (`profileReport`) and a block builder (`profileBlocks`); the command renders through `ctx.ui`, so its human, log and machine outputs come from one content path — `--json` yields one record per block, each carrying `kind` (#156)
 - `UiService`/`uiOr` gained `render(block)`, so a command can obtain a rendered string for a non-stdout sink (`awake`'s refusal) without rebuilding presentation by hand (#156)
 - `tests/profiles-seam.test.ts` (14 cases: data-not-prose, block shape, plain/ink content parity, `--json` kind on every record, and a source-level guard that `console.log(` in `cli/src/commands` stays at zero); `tests/awake-profile-gate.test.ts` (3 cases covering `awake`'s and `status`'s deficit branches, with a `docker` tripwire); two alignment cases in `tests/ui-components.test.ts` (#156)
