@@ -19,6 +19,14 @@ export interface LinePrinter {
   showLine(text: string, level?: 'info' | 'warn' | 'error'): void
   show(block: Block): void
   showAll(blocks: Block[]): void
+  /**
+   * A block rendered to a string, for a destination that is NOT the seam's own sink.
+   *
+   * `awake` reports a profile refusal on stderr, because "I could not start" is not payload a caller
+   * wants mixed into the stream it parses — and duplicating the renderer's rules to build that line by
+   * hand is exactly the drift #156 removes. So the seam renders, the command chooses the stream.
+   */
+  render(block: Block): string
   /** A card spec, rendered by whichever engine this stream gets. */
   card(spec: CardSpec): string
   /** Read one value. The fallback uses the tty engine, which is the same engine the service uses. */
@@ -38,6 +46,7 @@ export function uiOr(ctx: any): LinePrinter {
     showAll: (blocks: Block[]): void => {
       process.stdout.write(`${plainRenderer.renderAll(blocks)}\n`)
     },
+    render: (block: Block): string => plainRenderer.render(block),
     card: (spec: CardSpec): string => plainRenderer.render({ kind: 'card', spec }),
     prompt: (question, opts) => ttyEngine.ask(question, opts),
   }

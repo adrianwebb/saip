@@ -107,17 +107,23 @@ const spec: CommandSpec = {
     // because its job is to describe state, unlike `saip profiles` which gates on it.
     try {
       const report = await resolveForHost({})
+      if (report.gpu) {
+        const g = report.gpu
+        rows.push({ label: 'GPU', value: `${g.name} — ${g.total_gib} GiB total, ${g.free_gib} GiB free, cc ${g.capability}` })
+      }
       if (report.resolution?.ok) {
-        const gpu = (report.resolution as any).gpu as { name: string; total_gib: number; free_gib: number; capability: number }
-        rows.push({ label: 'GPU', value: `${gpu.name} — ${gpu.total_gib} GiB total, ${gpu.free_gib} GiB free, cc ${gpu.capability}` })
         rows.push({ label: 'Profile', value: `${report.resolution.profile} (${report.resolution.auto ? 'auto-resolved' : 'explicit'}), ceiling ${report.resolution.args.vram_ceiling_gib} GiB` })
         if (report.utilization?.ok) {
           rows.push({ label: '', value: `gpu_memory_utilization=${report.utilization.utilization} (derived), context ${report.resolution.args.engine?.max_model_len ?? '?'} tokens` })
-        } else if (report.text.match(/insufficient_free_vram/)) {
-          rows.push({ label: '', value: `NOT STARTABLE: ${report.text.replace(/^insufficient_free_vram: /, '')}` })
         }
-      } else {
-        rows.push({ label: 'GPU', value: report.text })
+      }
+      // The deficit is a FIELD, matched by name. This used to be `report.text.match(/insufficient_free_vram/)`
+      // — one command pattern-matching another command's prose, so rewording a sentence could silence a
+      // safety warning (#156).
+      if (report.error?.code === 'insufficient_free_vram') {
+        rows.push({ label: '', value: `NOT STARTABLE: ${report.error.message}` })
+      } else if (!report.resolution?.ok && report.error) {
+        rows.push({ label: 'GPU', value: `${report.error.code}: ${report.error.message}` })
       }
     } catch (e: any) {
       rows.push({ label: 'GPU', value: `unreadable — ${e?.message ?? e}` })

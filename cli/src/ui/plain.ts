@@ -35,11 +35,13 @@ export const plainRenderer: Renderer = {
       case 'columns': {
         const widths = block.header.map((h, i) =>
           Math.max(h.length, ...block.rows.map((r) => (r[i] ?? '').length)))
+        // The FIRST column is padded as well. It was not, so `row()` emitted each row's remaining cells
+        // at an offset measured from its own name: a two-character label and a fourteen-character one
+        // put `min VRAM` in different places on consecutive lines. The table is the whole point of a
+        // columns block, and nothing asserted the alignment until #156 produced real bytes to look at.
         const row = (cells: string[]): string =>
-          `  ${cells.map((c, i) => (i === 0 ? c : c.padStart(widths[i]))).join('  ')}`
-        // Header cells are padded like the rest so column alignment survives any label length.
-        return [row(block.header.map((h, i) => (i === 0 ? h : h.padStart(widths[i]))).slice()),
-          ...block.rows.map((r) => row(block.header.map((_, i) => r[i] ?? '')))].join('\n')
+          `  ${cells.map((c, i) => (i === 0 ? c.padEnd(widths[0]) : c.padStart(widths[i]))).join('  ')}`
+        return [row(block.header.slice()), ...block.rows.map((r) => row(block.header.map((_, i) => r[i] ?? '')))].join('\n')
       }
       case 'line': {
         const level = block.level ?? 'info'

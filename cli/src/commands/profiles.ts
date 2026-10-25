@@ -26,23 +26,46 @@ import {
   type UtilizationResult,
 } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { jsonModeOn } from '../lib/json-mode.js'
+import { uiOr } from '../ui/output.js'
+import { blankBlock, columnsBlock, kvBlock, lineBlock, noteBlock, type Block, type KvRow } from '../ui/blocks.js'
 
 export interface TierRow {
   name: string
   fits: boolean
   /** Why it does not fit, when it does not. */
   why?: string
+  /**
+   * The declared numbers, as data. The table used to be padded into a string here, which meant the
+   * only way to render it at all was to reproduce that padding — so `--json` had nothing to emit and
+   * the command became its own renderer (#156).
+   */
+  min_vram_gib: number
+  min_capability: number
+  vram_ceiling_gib: number
 }
 
+/**
+ * What the resolver returns: facts, no sentences (#156).
+ *
+ * `profileReport` used to end in a `text` field holding the finished transcript — `[saip] ` prefixes,
+ * aligned columns, a joined engine-argument string — and `profiles` printed it with `console.log` while
+ * `--json` re-parsed that same field. That is why this command was the one whose machine output had no
+ * `kind`: the presentation was built before anyone knew whether a human, a log or an agent was reading.
+ * Presentation is `profileBlocks`' job now, and `ctx.ui` decides how those blocks look.
+ */
 export interface ProfileReport {
   /** 0 resolved · 1 configuration error · 2 no profile fits / GPU unreadable */
   exitCode: number
-  text: string
+  /** Named failure. `status` pattern-matched the old prose for this; it reads the field now. */
+  error?: { code: string; message: string }
+  /** Every declaration error, when the `profiles:` block itself is invalid. */
+  validation?: { code: string; path: string; message: string }[]
+  gpu?: GpuInfo
   tiers: TierRow[]
   resolution?: ProfileResolution
   utilization?: UtilizationResult
-  engineArgs?: string
+  /** argv, not a joined command line: joining is a presentation decision and belongs to the renderer. */
+  engineArgs?: string[]
 }
 
 export interface ReportInput {
@@ -51,7 +74,6 @@ export interface ReportInput {
   /** Treat this tier as explicitly selected, the way `--profile` does. */
   require?: string
   model?: string
-  json?: boolean
 }
 
 function tierRows(profiles: ProfileMap, gpu: GpuInfo): TierRow[] {
@@ -59,30 +81,46 @@ function tierRows(profiles: ProfileMap, gpu: GpuInfo): TierRow[] {
     const reasons: string[] = []
     if (gpu.total_gib < p.min_vram_gib) reasons.push(`needs ${p.min_vram_gib} GiB VRAM, card has ${gpu.total_gib} GiB`)
     if (gpu.capability < p.min_capability) reasons.push(`needs compute capability ${p.min_capability}, card has ${gpu.capability}`)
-    return { name, fits: reasons.length === 0, why: reasons.length ? reasons.join('; ') : undefined }
+    return {
+      name, fits: reasons.length === 0, why: reasons.length ? reasons.join('; ') : undefined,
+      min_vram_gib: p.min_vram_gib, min_capability: p.min_capability, vram_ceiling_gib: p.vram_ceiling_gib,
+    }
   })
 }
 
-/** Probe, resolve, and render. Never throws: every failure becomes a report + exit code. */
+/** Probe and resolve. Never throws: every failure becomes a report + exit code. */
 export async function profileReport(input: ReportInput): Promise<ProfileReport> {
-  const { profiles, probe, require: requested, model, json } = input
+  const { profiles, probe, require: requested, model } = input
 
   // Validate here too rather than trusting the caller: this is the exported primitive, and
   // an unusable tier declaration should read as a configuration error, not a crash.
   const errors = validateProfiles(profiles)
   if (errors.length) {
-    return { exitCode: 1, text: `invalid profiles:\n${errors.map((e) => `  ${e.code} @ ${e.path}: ${e.message}`).join('\n')}`, tiers: [] }
+    const first = errors[0]
+    return {
+      exitCode: 1,
+      // The whole list is carried, not just the first: a renderer must be able to show all of them and
+      // an agent must be able to count them. `text` used to be the only place they appeared.
+      error: {
+        code: first.code,
+        message: errors.length === 1
+          ? `${first.path}: ${first.message}`
+          : `${first.path}: ${first.message} (+${errors.length - 1} more)`,
+      },
+      validation: errors.map((e) => ({ code: e.code, path: e.path, message: e.message })),
+      tiers: [],
+    }
   }
 
   let gpu: GpuInfo
   try {
     gpu = await probe.probe()
   } catch (err) {
-    return { exitCode: 2, text: `gpu_unavailable: ${(err as Error).message}`, tiers: [] }
+    return { exitCode: 2, error: { code: 'gpu_unavailable', message: (err as Error).message }, tiers: [] }
   }
 
   const tiers = tierRows(profiles, gpu)
-  const fail = (code: string, message: string): ProfileReport => ({ exitCode: 2, text: `${code}: ${message}`, tiers })
+  const fail = (code: string, message: string): ProfileReport => ({ exitCode: 2, error: { code, message }, tiers, gpu })
 
   const resolution = resolveProfile(profiles, requested, gpu)
   if (!resolution.ok) return fail(resolution.error.code, resolution.error.message)
@@ -94,7 +132,7 @@ export async function profileReport(input: ReportInput): Promise<ProfileReport> 
   const util = deriveGpuMemoryUtilization(args.vram_ceiling_gib, gpu.total_gib, gpu.free_gib)
   if (!util.ok) return fail(util.error.code, util.error.message)
 
-  let engineArgs: string | undefined
+  let engineArgs: string[] | undefined
   if (model) {
     try {
       engineArgs = renderVllmArgs(args, {
@@ -102,39 +140,80 @@ export async function profileReport(input: ReportInput): Promise<ProfileReport> 
         servedNames: ['saip-instruct', 'saip-systemone'],
         utilization: util.utilization,
         capability: gpu.capability,
-      }).join(' ')
+      })
     } catch (err) {
       return fail('forbidden_kv_cache_dtype', (err as Error).message)
     }
   }
 
-  if (json) {
-    return {
-      exitCode: 0,
-      tiers,
-      resolution,
-      utilization: util,
-      engineArgs,
-      text: JSON.stringify({ gpu, resolved: resolution.profile, auto: resolution.auto, utilization: util.utilization, ceiling_gib: args.vram_ceiling_gib, tiers, engineArgs }, null, 2),
+  return { exitCode: 0, gpu, tiers, resolution, utilization: util, engineArgs }
+}
+
+/**
+ * The command's presentation, as data the seam can render (#156).
+ *
+ * Exported separately from the report so the *facts* stay renderable by anything — `awake` prints two
+ * lines of them, `status` folds them into a key/value row, an agent reads JSONL — and none of them has
+ * to re-parse a sentence to get a number back.
+ */
+export function profileBlocks(report: ProfileReport): Block[] {
+  const blocks: Block[] = []
+  const gpu = report.gpu
+  const rows: KvRow[] = []
+  if (gpu) {
+    rows.push({ label: 'GPU', value: `${gpu.name} — ${gpu.total_gib} GiB total, ${gpu.free_gib} GiB free, cc ${gpu.capability}` })
+  }
+  if (report.tiers.length) {
+    // The `fits` column is yes/no ONLY, and the reasons go underneath as their own lines. A cell
+    // carrying `no — needs 12 GiB VRAM, card has 6 GiB; needs compute capability 8…` is 70+ characters
+    // wide, and a right-aligned column that wide puts a canyon between every header and its value —
+    // visible in the real bytes the first time this table was rendered by the seam. The old
+    // hand-built string had the same shape and nobody saw it, because the tiers always fitted on the
+    // machine it was written on.
+    blocks.push(columnsBlock(
+      ['profile', 'min VRAM', 'min cc', 'ceiling', 'fits'],
+      report.tiers.map((t) => [t.name, `${t.min_vram_gib} GiB`, String(t.min_capability), `${t.vram_ceiling_gib} GiB`, t.fits ? 'yes' : 'no']),
+    ))
+    for (const t of report.tiers) {
+      if (!t.fits && t.why) blocks.push(noteBlock(`${t.name}: ${t.why}`))
     }
   }
+  if (report.exitCode !== 0) {
+    const err = report.error
+    // Every validation error, not just the one the message string happens to mention: `invalid
+    // profiles:` used to interpolate a counted list into prose, which a machine reader could not use.
+    for (const v of report.validation ?? []) {
+      blocks.push(lineBlock(`${v.code} @ ${v.path}: ${v.message}`, 'error'))
+    }
+    blocks.push(lineBlock(err ? `${err.code}: ${err.message}` : 'no profile resolved', 'error'))
+    return blocks
+  }
 
-  const width = Math.max(...tiers.map((t) => t.name.length), 7)
-  const lines = [
-    `[saip] GPU: ${gpu.name} — ${gpu.total_gib} GiB total, ${gpu.free_gib} GiB free, cc ${gpu.capability}`,
-    '',
-    `  ${'profile'.padEnd(width)}   min VRAM  min cc   ceiling  fits`,
-    ...tiers.map((t) => {
-      const p = profiles[t.name]
-      const fit = t.fits ? 'yes' : `no — ${t.why}`
-      return `  ${t.name.padEnd(width)}  ${`${p.min_vram_gib} GiB`.padStart(8)}  ${String(p.min_capability).padStart(6)}  ${`${p.vram_ceiling_gib} GiB`.padStart(8)}  ${fit}`
-    }),
-    '',
-    `[saip] Resolved: ${resolution.profile} (${resolution.auto ? 'auto' : 'explicit'})`,
-    `[saip] Derived --gpu-memory-utilization=${util.utilization} (${args.vram_ceiling_gib} GiB ceiling / ${gpu.total_gib} GiB total)`,
-  ]
-  if (engineArgs) lines.push(`[saip] Engine: ${engineArgs}`)
-  return { exitCode: 0, text: lines.join('\n'), tiers, resolution, utilization: util, engineArgs }
+  const resolution = report.resolution
+  const util = report.utilization
+  if (resolution?.ok) {
+    const ceiling = resolution.args.vram_ceiling_gib
+    rows.push({
+      label: 'Profile',
+      value: `${resolution.profile} (${resolution.auto ? 'auto' : 'explicit'})`,
+      hint: `ceiling ${ceiling} GiB`,
+    })
+    if (util?.ok && gpu) {
+      rows.push({
+        label: 'Utilization',
+        value: String(util.utilization),
+        hint: `--gpu-memory-utilization, from ${ceiling} GiB ceiling / ${gpu.total_gib} GiB total`,
+      })
+    }
+    if (report.engineArgs?.length) {
+      rows.push({ label: 'Engine', value: report.engineArgs.join(' ') })
+    }
+  }
+  if (rows.length) {
+    if (blocks.length) blocks.push(blankBlock())   // the table and the facts are different answers; they read as one block without this
+    blocks.push(kvBlock(rows))
+  }
+  return blocks
 }
 
 /**
@@ -164,21 +243,29 @@ export async function resolveForHost(options: Record<string, unknown> = {}, deps
   let profiles = deps.profiles
   let model = deps.model
   let requested = (options.profile as string | undefined) ?? deps.profile
+  // Config-level refusals are named the same way a resolution failure is: a code and a message. The
+  // old shape was a `[saip] `-prefixed sentence, which is why `status` had to regex-match it (#156).
+  const refuse = (code: string, message: string): ProfileReport => ({ exitCode: 1, error: { code, message }, tiers: [] })
   if (!profiles) {
     const loaded = loadProfiles()
-    if (loaded.error) return { exitCode: 1, text: `[saip] ${loaded.error}`, tiers: [] }
+    if (loaded.error) return refuse('config_unreadable', loaded.error)
     profiles = loaded.profiles
     model ??= loaded.model
     requested ??= loaded.profile
     if (!profiles || !Object.keys(profiles).length) {
-      return { exitCode: 1, text: '[saip] no `profiles:` block in saip.yaml — declare at least one tier', tiers: [] }
+      return refuse('no_profiles_block', 'no `profiles:` block in saip.yaml — declare at least one tier')
     }
   }
   const errors = validateProfiles(profiles)
   if (errors.length) {
-    return { exitCode: 1, text: `[saip] invalid profiles:\n${errors.map((e) => `  ${e.code} @ ${e.path}: ${e.message}`).join('\n')}`, tiers: [] }
+    return {
+      exitCode: 1,
+      error: { code: errors[0].code, message: `${errors[0].path}: ${errors[0].message}` },
+      validation: errors.map((e) => ({ code: e.code, path: e.path, message: e.message })),
+      tiers: [],
+    }
   }
-  return profileReport({ profiles, probe: deps.probe ?? new NvidiaSmiProbe(), require: requested, model, json: !!options.json })
+  return profileReport({ profiles, probe: deps.probe ?? new NvidiaSmiProbe(), require: requested, model })
 }
 
 const spec: CommandSpec = {
@@ -186,7 +273,9 @@ const spec: CommandSpec = {
   description: 'Show hardware service profiles and which one resolves for this GPU',
   options: [
     { flag: '--profile <name>', description: 'Resolve as if this tier were selected' },
-    { flag: '--json', description: 'Output as JSON for scripting' },
+    // No `--json` entry here: the dispatcher declares it for every command, and the seam activates the
+    // JSONL renderer. A command declaring its own copy is how the machine flag ended up pointing at
+    // hand-built prose (#156).
   ],
   action: async () => { /* replaced at registration */ },
 }
@@ -216,23 +305,12 @@ export default {
           // the JSON itself was fine (#113). stderr in both modes.
           if (from) console.error(`[saip] config: ${from}`)
         }
-        if (jsonModeOn()) {
-          // The invariant is "valid JSONL on stdout", which means the FAILURE path must emit a record
-          // too. CI caught this: on a GPU-less runner `profiles --json` exited 2 and wrote nothing,
-          // because only the success branch had a structured path — an empty machine stream is
-          // indistinguishable from a broken one, which is the exact thing #113 exists to prevent.
-          const body = report.text.trimStart().startsWith('{')
-            ? JSON.stringify(JSON.parse(report.text))
-            : JSON.stringify({
-                kind: 'line',
-                level: report.exitCode === 0 ? 'info' : 'error',
-                text: report.text.replace(/^\[saip\]\s*/, ''),
-                data: { code: 'profile_report', exitCode: report.exitCode },
-              })
-          process.stdout.write(`${body}\n`)
-        } else {
-          console.log(report.text)
-        }
+        // One content path for human, log and machine (#156): the blocks are built once and `ctx.ui`
+        // renders them — an Ink frame on a terminal, plain labelled lines in a pipe, JSONL records when
+        // the dispatcher has already activated the `jsonl` renderer for `--json`. Piped output is free of
+        // box-drawing because the RENDERER chose that, which is the property #110 could not previously
+        // claim for this command.
+        uiOr(c).showAll(profileBlocks(report))
         process.exitCode = report.exitCode
       },
     })

@@ -184,9 +184,12 @@ export class UiService extends Service {
     this.active = r
   }
 
-  /** Render any block. Commands may use this directly when a convenience method does not fit. */
+  /**
+   * Render any block. Commands use this directly when a convenience method does not fit — and
+   * when the destination is not the seam's own sink: `awake` renders its refusal to stderr with
+   * this rather than rebuilding the line by hand (#156).
+   */
   render(block: Block): string { return this.active.render(block) }
-
   card(spec: CardSpec): string { return this.active.render({ kind: 'card', spec }) }
   keyValues(rows: KvRow[]): string { return this.active.render(kvBlock(rows)) }
   columns(header: string[], rows: string[][]): string { return this.active.render(columnsBlock(header, rows)) }
