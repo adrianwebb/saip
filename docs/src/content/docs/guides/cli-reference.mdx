@@ -305,62 +305,60 @@ Start SAIP services and load the model into GPU memory.
 ### Synopsis
 
 ```bash
-saip awake [--bucket <name>] [--profile <name>] [--model <identifier>] [--gpu <device>]
+saip awake [--host <name>] [--profile <name>] [--bucket <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bucket <name>` | `$R2_BUCKET_NAME` | R2 bucket to sync models and adapters from |
+| `--host <name>` | `default` | The host in `hosts.yaml` to bring up. |
 | `--profile <name>` | auto-resolved | Service profile to run (`inference-8gb` or `full-loop-12gb`). Overrides `saip.yaml`; without it, the GPU is probed and the highest tier the card satisfies is chosen. Fails with exit 2 if no profile fits. |
-| `--model <identifier>` | `$SAIP_MODEL` | Model to load (overrides `.env`) |
-| `--gpu <device>` | `$SAIP_GPU_DEVICE` | GPU device index (overrides `.env`) |
-| `--no-sync` | false | Skip R2 model sync; use local cache only |
-| `--port <port>` | 8000 | API listen port |
+| `--bucket <name>` | — | **Accepted and currently ignored** by the local provider: it is threaded into the deployment call and no provider reads it. See [#179](https://github.com/adrianwebb/saip/issues/179); the bucket the stack uses comes from `saip.yaml` / `SAIP_R2_BUCKET`. |
+
+:::caution[Flags that used to be listed here]
+`--model`, `--gpu`, `--no-sync` and `--port` were documented and implemented nowhere — every one exited
+`error: unknown option`. They are listed as candidate features in
+[#179](https://github.com/adrianwebb/saip/issues/179) rather than silently deleted, because they
+describe real behaviour the platform will want: the model and port are set in `saip.yaml` and the
+compose files today, and there is no per-run override. The rows went because
+`tests/docs-flag-parity.test.ts` (#162) now fails on any documented flag the built program rejects —
+which is how all eight were found.
+:::
 
 ### What It Does
 
-1. **Validates configuration** — checks `.env` for required variables and verifies GPU availability.
-2. **Resolves the service profile** — probes the GPU for name, total/free VRAM, and compute capability; selects the tier; rejects any `kv_cache_dtype` the card cannot use; derives `gpu_memory_utilization` from measured free memory.
-3. **Pulls Docker images** — pulls the inference container image if not cached locally.
-4. **Syncs model from R2** — downloads model weights and adapter files from the specified bucket (skipped with `--no-sync`).
-5. **Starts inference container** — launches the vLLM server with GPU passthrough.
-5. **Runs health check** — polls `/health` until the server responds or times out (60s default).
-6. **Reports readiness** — prints the API endpoint and loaded model info.
+What the command actually does, in order (see [#179](https://github.com/adrianwebb/saip/issues/179) —
+this list previously described a pull/sync/health-check pipeline the CLI never performed, with sample
+output it never printed):
 
-### Example Output
+1. **Resolves the host** from `--host` / `SAIP_HOST` / the `default` entry, failing closed with the
+   known names before anything is announced.
+2. **Resolves the service profile** (local hosts only) — probes the GPU for name, total and free VRAM
+   and compute capability; selects the tier; rejects a `kv_cache_dtype` the card cannot use; derives
+   `gpu_memory_utilization` from measured free memory. **An unsatisfiable tier exits 2 and nothing
+   starts** — that gate exists because a tier the card cannot hold surfaces as a vLLM crash loop that
+   keeps reserving VRAM.
+3. **Runs `docker compose -f <stack>/docker-compose.yml up -d`** for the host's inference stack. Pulls,
+   sync, container start and health are compose's and the image's, not this command's;
+   `SAIP_PROFILE` is exported so the engine renders its own arguments.
 
-```
-$ saip awake --bucket saip-production
-[awake] Validating configuration... OK
-[awake] GPU 0: NVIDIA RTX A4000 (16 GB VRAM, 4.2 GB free, compute capability 8.6)
-[awake] Resolving profile... full-loop-12gb (ceiling 11.0 GiB; free 4.2 GiB is below it)
-[awake] Deriving gpu_memory_utilization... 0.26 (free VRAM minus headroom, over total)
-[awake] Pulling saip-inference:v0.3.1... done (cached)
-[awake] Syncing model from R2 (saip-production)...
-  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB ✓
-  ├─ adapters/general@000042 ... 128 MB ✓
-  └─ adapters/coding@000018 ... 96 MB ✓
-[awake] Starting inference container... running (pid 48291)
-[awake] Waiting for health check... ✓ (8.3s)
-[awake] Ready — http://localhost:8000/v1
-  Model: QuantTrio/Qwen3.5-4B-AWQ
-  Profile: full-loop-12gb
-  Adapters: general@000042, coding@000018 (4 slots, rank 16)
-  Max context: 65536 tokens
-  KV cache: auto (16-bit — fp8/int8 forbidden below compute capability 8.9)
-```
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
+
 
 ### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Services started successfully |
-| 1 | Configuration error (missing env var, invalid YAML, invalid profile) |
-| 2 | GPU unavailable or insufficient VRAM (names the measured deficit and the tier's ceiling) |
-| 3 | R2 sync failed (network, auth, or missing bucket) |
-| 4 | Health check timeout (container started but API unresponsive) |
+| 0 | compose reported the stack up |
+| 1 | Host could not be resolved (names the registry and the known hosts), or a configuration error |
+| 2 | No profile fits this card, or the GPU could not be read — names the measured deficit |
+
+Codes 3 (R2 sync failed) and 4 (health check timeout) were listed here and removed: there is no CLI-side
+sync or health poll to fail, so nothing returns them (#179).
 
 ---
 
@@ -371,36 +369,32 @@ Gracefully stop SAIP services while preserving cached models and data.
 ### Synopsis
 
 ```bash
-saip sleep [--bucket <name>]
+saip sleep [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bucket <name>` | `$R2_BUCKET_NAME` | R2 bucket (used for final adapter sync-back) |
-| `--force` | false | Skip graceful shutdown; kill containers immediately |
-| `--no-sync-back` | false | Skip uploading local adapter changes to R2 |
+| `--host <name>` | `default` | Which host in `hosts.yaml` to stop. |
+
+`--force` and `--no-sync-back` were documented and implemented nowhere (`error: unknown option`), and are
+now covered by the flag-parity guard (#162) with the feature decision tracked in
+[#179](https://github.com/adrianwebb/saip/issues/179).
 
 ### What It Does
 
-1. **Drains active requests** — waits for in-flight inference requests to complete (30s timeout).
-2. **Syncs adapter changes** — uploads any locally modified adapters back to R2 (skipped with `--no-sync-back`).
-3. **Stops containers** — sends SIGTERM to the inference container; waits up to 15s before SIGKILL.
-4. **Preserves cache** — model weights and adapter files remain on disk for fast restart.
-5. **Reports status** — confirms clean shutdown.
+`sleep` is the same code path as `awake` and `down` with the **training** stack instead of inference:
+it resolves the host, then runs `docker compose -f training/docker-compose.yml up -d`. Graceful
+draining and adapter sync-back are compose's and the gateway's concern, not this command's — the earlier
+five-step description of a 30-second drain, a sync-back, a SIGTERM/SIGKILL sequence and a shutdown report
+described code that does not exist (#179).
 
-### Example Output
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
 
-```
-$ saip sleep
-[sleep] Draining active requests... 2 in-flight, waiting...
-[sleep] Requests drained (3.1s)
-[sleep] Syncing adapter changes to R2... no changes
-[sleep] Stopping inference container (pid 48291)... stopped
-[sleep] Services stopped. Cache preserved at ~/.cache/saip/
-  Next 'saip awake' will skip model download.
-```
 
 ### Exit Codes
 
@@ -424,38 +418,31 @@ Fully tear down SAIP services and remove all local caches.
 ### Synopsis
 
 ```bash
-saip down [--purge-cache]
+saip down [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--purge-cache` | true | Remove cached model weights and adapters |
-| `--keep-images` | false | Preserve Docker images (speeds up next `awake`) |
+| `--host <name>` | `default` | Which host in `hosts.yaml` to tear down. |
+
+`--purge-cache` and `--keep-images` were documented and implemented nowhere; `down` runs
+`docker compose down` and removes nothing from the model cache or the image store. The decision about
+whether it *should* is [#179](https://github.com/adrianwebb/saip/issues/179).
 
 ### What It Does
 
-1. **Stops containers** — force-stops any running SAIP containers.
-2. **Removes containers** — deletes container instances and anonymous volumes.
-3. **Clears model cache** — removes downloaded weights and adapters from `~/.cache/saip/` (unless `--purge-cache=false`).
-4. **Optionally removes images** — deletes SAIP Docker images (unless `--keep-images`).
-5. **Reports cleanup** — lists removed resources and freed disk space.
+Resolves the host, then runs `docker compose -f <stack>/docker-compose.yml down` for each stack file the
+host uses. Containers and their anonymous volumes go with compose's own defaults; **cached model weights
+and images are untouched**, contrary to the "removes all local caches" description above and the
+four-step list that used to sit here (#179).
 
-### Example Output
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
 
-```
-$ saip down
-[down] Stopping containers...
-  ├─ saip-inference ... stopped and removed
-  └─ saip-worker ... stopped and removed
-[down] Removing model cache (~/.cache/saip/)...
-  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB removed
-  ├─ adapters/general@000042 ... 128 MB removed
-  └─ adapters/coding@000018 ... 96 MB removed
-[down] Total freed: 4.4 GB
-[down] Docker images preserved (use --keep-images=false to remove)
-```
 
 ### Exit Codes
 
