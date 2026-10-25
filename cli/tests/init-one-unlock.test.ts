@@ -22,6 +22,7 @@
  *     second write actually landed, not merely that a count looks reasonable.
  */
 import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PtyRun, isolatedEnv, type PtyResult } from './support/pty.js'
@@ -95,15 +96,31 @@ describe('config init asks for the store passphrase once (#169)', () => {
     expect(r.hung).toBe(false)
 
     const rows = renderScreen(r.raw, 50, 100).visible()
-    const text = rows.join('\n')
+    // Assert on the VERBATIM stream, not the reconstructed screen. Measured, and it is the reason an
+    // earlier draft of this failed against a correct product: `renderScreen` keeps the last 50 rows,
+    // and the cards for the items AFTER the second write scroll the `stored …` line off the model.
+    // The screen model is the right instrument for placement questions (is the prompt on its own
+    // line?) and the wrong one for "did this line ever print".
+    const plain = r.raw.replace(/\x1b\[[0-9;?]*[0-9a-zA-Z]/g, '').replace(/\r/g, '')
     // Not a count alone: the second write must have been STORED under the answer typed for it,
     // which is the observable difference between one unlock and a swallowed keystroke.
-    expect(text).toMatch(/stored SAIP_R2_ACCESS_KEY_ID \(\d+ chars\)/)
-    expect(text).toMatch(/stored SAIP_R2_SECRET_ACCESS_KEY \(\d+ chars\)/)
-    expect(text).not.toMatch(/still to fill.*SAIP_R2_SECRET_ACCESS_KEY/)
+    expect(plain).toMatch(/stored SAIP_R2_ACCESS_KEY_ID \(\d+ chars\)/)
+    expect(plain).toMatch(/stored SAIP_R2_SECRET_ACCESS_KEY \(\d+ chars\)/)
+    expect(plain).not.toMatch(/still to fill \(\d+\):[^\n]*SAIP_R2_SECRET_ACCESS_KEY/)
     expect(asks(r.raw)).toBe(1)
     // And nothing about the cancel summary may claim a value was written that was not (#150).
-    expect(text).toMatch(/written now: \d value\(s\)/)
+    expect(plain).toMatch(/written now: \d value\(s\)/)
+    expect(rows.length).toBeGreaterThan(0)
+
+    // Proof on disk, in a SECOND process that never prompts: the wizard's own report is a claim, the
+    // store is the fact. `config list` masks values but names them, so this shows both secrets landed
+    // without a passphrase prompt being involved at all (SAIP_SECRETS_PASSPHRASE answers for it).
+    const listed = spawnSync(node, [distBin, 'config', 'list'], {
+      env: { ...env, SAIP_SECRETS_PASSPHRASE: PASSPHRASE }, encoding: 'utf8', timeout: 30_000,
+    })
+    expect(listed.stdout).toContain('SAIP_R2_ACCESS_KEY_ID')
+    expect(listed.stdout).toContain('SAIP_R2_SECRET_ACCESS_KEY')
+    expect(listed.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
     } finally {
       if (!done) { try { run.kill('SIGKILL') } catch { /* already reaped */ } }
     }

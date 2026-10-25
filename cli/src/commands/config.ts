@@ -436,6 +436,9 @@ export async function runConfig(
       try {
         const r = await runInit({
           store, items, io,
+          // The gateway this command already owns (#169): the wizard unlocks and writes through the
+          // same instance, so the KEK cache is shared and a second unlock cannot occur.
+          access,
           formatItem,
           deprecations: cfgDeprecations,
           envPath,

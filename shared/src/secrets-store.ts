@@ -398,11 +398,20 @@ export class SecretStore {
     if (!primary?.provision) throw new SecretStoreError('no key source available to create a secret store')
     const { key: wrapKey, salt } = await primary.provision()
     const kek = randomBytes(KEY_BYTES)
-    this.write({
+    const created: StoreFileV2 = {
       v: 2,
       wraps: [{ id: primary.id, salt: salt?.toString('base64'), ...seal(wrapKey, kek) }],
       data: seal(kek, Buffer.from(JSON.stringify(map), 'utf8')),
-    })
+    }
+    this.write(created)
+    // Creating the store IS this command's unlock (#169). This KEK is the one that just sealed the
+    // file, so keeping it is not an optimisation: dropping it left the cache cold, and the very next
+    // read re-derived the key. In `saip config init` that re-derivation surfaced as a second
+    // passphrase prompt — and the prompt consumed the answer to the following question, shifting the
+    // whole wizard by one item. The signature is taken from the object that hit disk, so the cache
+    // can never claim validity against a wrap set that is not the one in the file.
+    this.usedWrap = primary.id
+    this.kekCache = { sig: this.wrapSignature(created), kek, wrap: primary.id }
   }
 
   private write(f: StoreFileV2): void {

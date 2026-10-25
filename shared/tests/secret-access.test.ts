@@ -242,19 +242,25 @@ describe('writes go through the same gateway, and share its unlock (#169)', () =
     // There is no pre-unlock to do here: `unlock()` refuses an absent store because there is nothing
     // to open, which is exactly why the wizard's first write is where the passphrase legitimately
     // belongs. Creating the store must therefore be the command's ONE unlock.
-    await gw.write('SAIP_R2_ACCESS_KEY_ID', 'AK')
-    await gw.write('SAIP_R2_SECRET_ACCESS_KEY', 'SK')
+    await gw.write('SAIP_R2_ACCESS_KEY_ID', 'value-one')
+    await gw.write('SAIP_R2_SECRET_ACCESS_KEY', 'value-two')
 
     expect(provisions).toBe(1)
     expect(derivations).toBe(0)
-    expect(await gw.readStored('SAIP_R2_ACCESS_KEY_ID')).toBe('AK')
+    // A write is an access: "why did that command touch my store" has to be answered by the same log
+    // a read writes to.
+    expect(gw.accessLog().map((r) => r.name)).toEqual(['SAIP_R2_ACCESS_KEY_ID', 'SAIP_R2_SECRET_ACCESS_KEY'])
+
+    // Reading back costs nothing and is recorded like any other access.
+    expect(await gw.readStored('SAIP_R2_ACCESS_KEY_ID')).toBe('value-one')
+    expect(gw.accessLog().length).toBe(3)
     expect(derivations).toBe(0)
     expect(gw.unlocked).toBe(true)
 
-    // A write is an access: "why did that command touch my store" is answered by the same log, and
-    // it still never contains the value.
-    expect(gw.accessLog().map((r) => r.name)).toEqual(['SAIP_R2_ACCESS_KEY_ID', 'SAIP_R2_SECRET_ACCESS_KEY'])
-    expect(readFileSync(join(d, 'audit.json'), 'utf8')).not.toContain('AK')
+    // Values never reach the audit file, whichever path recorded the access.
+    const audit = readFileSync(join(d, 'audit.json'), 'utf8')
+    expect(audit).not.toContain('value-one')
+    expect(audit).not.toContain('value-two')
   })
 
   it('writing to an existing store unlocks once through the gateway, not once per operation', async () => {
