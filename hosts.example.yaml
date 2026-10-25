@@ -31,6 +31,7 @@ hosts:
   #   ssh:
   #     host: "<inference_floating_ip>"   # output of the tofu module
   #     user: ubuntu
+  #     port: 22                          # omit for 22; honoured by every SAIP connection (#98)
   #     key_secret: SAIP_SSH_PRIVATE_KEY  # SECRET NAME, not value
   #   secrets:
   #     api_key: SAIP_HYPERSTACK_API_KEY  # SECRET NAME, not value
