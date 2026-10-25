@@ -39,6 +39,17 @@ Plan/Issue → Documentation → Tests → Implementation → Release
 1. **Documentation FIRST.** Write or update docs BEFORE writing any code. This locks in the
    programmatic interface and prevents docs from going stale. Update all affected pages (site
    docs, repo docs, README, skills, AGENTS.md). Commit the docs.
+
+   **A documented flag, option or output shape is an interface contract, not prose.** A table row
+   claiming `--flag <x>` exists obliges a check that the built program accepts it; a code block
+   presenting a transcript obliges a check that some code path prints it. Three incidents, all with a
+   green docs build behind them: `--config/--env/--quiet/--verbose` (#149), `status
+   --adapter-resolution` (#114), and eight rows across `awake`/`sleep`/`down` found in one run by the
+   guard that now covers the first two (`cli/tests/docs-flag-parity.test.ts`, #162) — plus the
+   `[awake] Pulling… / Syncing model from R2…` transcripts in #179, which no code ever emitted. The docs
+   build validates rendering and internal links, i.e. the docs referring to *themselves*; that is not a
+   check against the artefact. If a claim cannot be checked yet, do not document it as fact — name the
+   issue that will check it.
 2. **Tests outside-in.** Acceptance/smoke → regression → integration → unit. The interface must
    be stable before internals are built. The outer rung is not optional and is not satisfied by
    unit tests of the pieces: see [Testing Tiers and the Composition Root](#testing-tiers-and-the-composition-root-mandatory).
