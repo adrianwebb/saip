@@ -24,6 +24,43 @@ describe('sshComposeArgs (pure)', () => {
   })
 })
 
+describe('the declared port reaches the command line (#98)', () => {
+  const ported: HostConfig = {
+    name: 'cloud-inference', kind: 'hyperstack', role: 'inference',
+    ssh: { host: '1.2.3.4', user: 'ubuntu', port: 2222, key_secret: 'SAIP_SSH_PRIVATE_KEY' },
+    tofu: { workspace: 'infra/tofu/hyperstack' },
+  }
+
+  it('sshComposeArgs passes -p 2222', () => {
+    const [, args] = sshComposeArgs(ported, 'up', '/tmp/id')[0]
+    expect(args.slice(0, 4)).toEqual(['-i', '/tmp/id', '-p', '2222'])
+  })
+
+  it('up and status both use it — the reason this is one helper and not three call sites', () => {
+    const r = new FakeRunner()
+    const p = new HyperstackDeploymentProvider(r as any, async (_h: any, fn: any) => fn('/tmp/id'))
+    return p.up(ported).then(() => {
+      const withPort = r.runCalls.filter((c) => c[0] === 'ssh')
+      expect(withPort.length).toBeGreaterThan(0)
+      for (const call of withPort) expect(call.slice(1, 5), `up argv: ${call.join(' ')}`).toEqual(['-i', '/tmp/id', '-p', '2222'])
+    })
+  })
+
+  it('status probes with the port too', async () => {
+    const r = new FakeRunner()
+    const p = new HyperstackDeploymentProvider(r as any, async (_h: any, fn: any) => fn('/tmp/id'))
+    await p.status(ported)
+    const calls = r.captureCalls.filter((c) => c[0] === 'ssh')
+    expect(calls.length).toBe(1)
+    expect(calls[0].slice(1, 5), `status argv: ${calls[0].join(' ')}`).toEqual(['-i', '/tmp/id', '-p', '2222'])
+  })
+
+  it('a host with no port produces no -p at all', () => {
+    const [, args] = sshComposeArgs(host, 'down', '/tmp/id')[0]
+    expect(args).not.toContain('-p')
+  })
+})
+
 describe('HyperstackDeploymentProvider', () => {
   it('up drives compose over ssh via the injected runner', async () => {
     const r = new FakeRunner()

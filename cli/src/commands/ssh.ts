@@ -13,7 +13,7 @@ import type { Context } from 'cordis'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { type HostConfig, type SecretStore } from '@saip/shared'
+import { sshConnectionArgs, type HostConfig, type SecretStore } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { lineBlock, listBlock, type Block } from '../ui/blocks.js'
 import { plainRenderer } from '../ui/plain.js'
@@ -142,7 +142,9 @@ export async function runSsh(
       // Materialised inside the helper: removal is guaranteed even if ssh hangs, throws, or the user
       // interrupts — the reason this command exists rather than asking for a key path.
       return materialiseKey(pem, hostName!, async (path) => {
-        const r = runner.run('ssh', ['-i', path, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', `${user}@${addr}`, 'true'])
+        // Same builder as the provider paths (#98), with verify's own timeout. The port is the reason:
+        // `saip ssh verify` against a host declaring `port: 2222` used to report a refusal on 22.
+        const r = runner.run('ssh', [...sshConnectionArgs(host!, path, ['-o', 'ConnectTimeout=10']), `${user}@${addr}`, 'true'])
         if (r.code === 0) return ok(`"${hostName}" authenticates with the managed key (${user}@${addr})`)
         const why = (r.stderr || r.stdout).trim().split('\n')[0]
         return fail(`ssh to ${user}@${addr} failed (exit ${r.code}): ${why}. `
