@@ -29,6 +29,23 @@ if (!existsSync(BIN)) {
 }
 
 const results: Array<{ row: string; verdict: 'PASS' | 'FAIL' | 'BLOCKED'; evidence: string }> = []
+/**
+ * The byte stream as a person would have read it: escape sequences removed, CR dropped (raw mode has no
+ * OPOST, so breaks arrive as `\r\n` or not at all), blank rows gone.
+ *
+ * #176 exists because this was missing: content questions belong to the verbatim stream, placement
+ * questions belong to `renderScreen`. Asking a scrolling-less screen model "did the wizard print its
+ * summary" produced a confident false failure.
+ */
+const plainLines = (text: string): string[] => text
+  .replace(/\x1b\[[0-9;?]*[0-9a-zA-Z]/g, '')
+  .replace(/\x1b\][^\x07]*\x07/g, '')
+  .replace(/\x1b[()][0-9A-Za-z]/g, '')
+  .replace(/\x1b/g, '')
+  .split('\n')
+  .map((l) => l.replace(/\r/g, '').trimEnd())
+  .filter((l) => l.length > 0)
+
 const record = (row: string, verdict: 'PASS' | 'FAIL' | 'BLOCKED', evidence: string): void => {
   results.push({ row, verdict, evidence })
   console.log(`\n[${verdict}] ${row}\n    ${evidence.replace(/\n/g, '\n    ')}`)
@@ -157,17 +174,28 @@ const BOX = /[\u2500-\u257f]/
   run.write('\u0003')                                                  // Ctrl+C
   const r = await run.finish(20_000)
   const rows = renderScreen(r.raw, 40, 100).visible()
+  // Two instruments, and #176 is why they are named here. "Was this line ever printed?" is a question
+  // about the VERBATIM stream; "where did it land on the screen?" is a question about the screen, and
+  // only the model can answer that. This row asked the model the first question, which is how it
+  // reported `cancel summary: []` against a product whose byte stream plainly contained the summary —
+  // the model had no bottom margin, so a transcript longer than the viewport braided its last rows.
+  // Content reads `plain` now; `rows` stays for placement, and row 3 is where a placement claim is made.
+  const plain = plainLines(r.raw)
   // One unlock per command (#86) is the claim: exactly one passphrase PROMPT across the whole run.
 
-  const summary = rows.filter((l) => /written now|still to fill|stopped by/.test(l)).map((l) => l.trim())
-  const storedLine = rows.filter((l) => /stored \d+ value\(s\)/.test(l))
+  const summary = plain.filter((l) => /written now|still to fill|stopped by/.test(l))
+  const storedLine = plain.filter((l) => /stored \d+ value\(s\)/.test(l))
+  const wroteBothSecrets = /stored SAIP_R2_ACCESS_KEY_ID \(\d+ chars\)/.test(plain.join('\n'))
+    && /stored SAIP_R2_SECRET_ACCESS_KEY \(\d+ chars\)/.test(plain.join('\n'))
   record('config init on a fresh store: explanation precedes prompt, passphrase once, paste works, Ctrl+C exits 130',
-    r.code === 130 && guidanceBefore && passExplain && passphraseAsks === 1 && pasteDidNotSubmit && summary.length >= 2 && storedLine.length === 0
+    r.code === 130 && guidanceBefore && passExplain && passphraseAsks === 1 && pasteDidNotSubmit
+    && summary.length >= 2 && storedLine.length === 0 && wroteBothSecrets
       ? 'PASS' : 'FAIL',
     `exit=${r.code}; guidance before the prompt=${guidanceBefore}; passphrase explanation preceded its prompt=${passExplain}; `
     + `passphrase asked ${passphraseAsks}x (confirm shown: ${wantsConfirm}); `
     + `paste-with-newline did not submit=${pasteDidNotSubmit}; no "stored N value(s)" footer=${storedLine.length === 0}; `
-    + `cancel summary: ${JSON.stringify(summary)}`)
+    + `both credentials reported stored=${wroteBothSecrets}; cancel summary: ${JSON.stringify(summary)}; `
+    + `screen rows=${rows.length} (model is for placement, not for this)`)
 }
 
 // ─── Row 3: cards at a TTY, prompt and value on one line ─────────────
