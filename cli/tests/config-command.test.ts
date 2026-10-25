@@ -120,8 +120,15 @@ describe('saip config get', () => {
     const r = await runConfig(await mkStore(), { reveal: true }, ['get', 'SAIP_R2_BUCKET'], {
       env: { SAIP_R2_BUCKET: 'from-shell' },
     })
-    expect(r.lines.join(' ')).toMatch(/shadow/i)
-    expect(r.lines.join(' ')).toMatch(/from-shell/)
+    // #157 reworded the label to name BOTH places and which one wins ("from shell environment — it
+    // wins over the encrypted store"), so the literal word this case used to look for is gone. The
+    // intent it was standing in for is what is asserted now: the shell is named as the source, the
+    // store is named as the thing being beaten, and the shell's value is what is displayed.
+    const line = r.lines.join(' ')
+    expect(line).toMatch(/from shell environment/)
+    expect(line).toMatch(/store/i)
+    expect(line).toMatch(/wins over/)
+    expect(line).toMatch(/from-shell/)
   })
 })
 

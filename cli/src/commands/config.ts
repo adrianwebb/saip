@@ -19,7 +19,7 @@ import { statSync, openSync } from 'node:fs'
 import { ReadStream } from 'node:tty'
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
+import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadEnvFile, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
 import { planInitItems, runInit, runHelp, forgetValue, cardSpecFor, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
 import { human } from '../lib/json-mode.js'
@@ -51,7 +51,14 @@ export interface RunDeps {
   /** Card renderer for a human terminal; omitted means plain labelled lines (pipes, CI, tests). */
   formatItem?: (item: InitItem) => string[]
   /** Injectable access gateway; the default wraps the same store so the KEK cache is shared. */
-  access?: SecretAccess
+  access?: SecretAccess,
+  /**
+   * Which `.env` this run reads and writes. Injectable because the answer must not come from the
+   * ambient process environment in tests (#138's rule, one surface later): the default is
+   * `envFilePath(env)`, which honours `SAIP_ENV_FILE` — and `--env` (#149) binds that variable, so the
+   * flag, the wizard and these commands all see one file.
+   */
+  envPath?: string
 }
 
 /**
@@ -168,6 +175,7 @@ export async function runConfig(
 ): Promise<RunResult> {
   const [action, name] = positional
   const env = deps.env ?? process.env
+  const envPath = deps.envPath ?? envFilePath(env)
   // Commands that touch the store go through the gateway, which is what makes the access record
   // exist at all — a service registered in the composition root but bypassed by every command is
   // the #76 pattern in a new place, and it is exactly what the first version of this did.
@@ -182,17 +190,37 @@ export async function runConfig(
       try { names = await store.names() } catch (e) { return fail((e as Error).message) }
       if (!names.length) return res(0, lineBlock('store is empty — no secrets set'))
       const shadowed = new Set(names.filter((n) => (env[n] ?? '') !== ''))
-      return res(0, blankBlock(), listBlock(names.map((n) => `${n}${shadowed.has(n) ? '  (shadowed by shell env)' : ''}`)), blankBlock())
+      // Checked, not assumed (#157): the shell label was the only one this command could give, and it
+      // gave it from a `process.env` lookup alone. A name present in `.env` as well is worth saying —
+      // it is the second place to fix when a value is wrong.
+      const fileVars = loadEnvFile(envPath)
+      const inFile = new Set(names.filter((n) => (fileVars[n] ?? '') !== ''))
+      return res(0, blankBlock(), listBlock(names.map((n) => `${n}${
+        shadowed.has(n) ? '  (shadowed by shell env)' : inFile.has(n) ? `  (also set in .env: ${envPath})` : ''}`)), blankBlock())
     }
 
     case 'get': {
       if (!name) return fail('get requires a name')
-      let value: string | undefined
-      try {
-        await access.unlock()
-        access.declare('config get', [{ name, purpose: 'displayed to the user' }])
-        value = await access.read(name)
-      } catch (e) { return fail((e as Error).message) }
+      // Where does this value actually live? Asked, not guessed (#157). The old code read
+      // `process.env[name]` and called anything it found "shell environment", so a value that came
+      // from the project's own `.env` — where the wizard writes interpolated configuration — sent the
+      // user to their shell profile to edit a file. #148's implicit autoload was read as shell state
+      // for a whole release through exactly this label.
+      const fileVars = loadEnvFile(envPath)
+      const fromShell = (env[name] ?? '') === '' ? undefined : env[name]
+      const fromFile = (fileVars[name] ?? '') === '' ? undefined : fileVars[name]
+      let fromStore: string | undefined
+      if (store.exists()) {
+        try {
+          await access.unlock()
+          access.declare('config get', [{ name, purpose: 'displayed to the user' }])
+          // STORE, not the chain (#146): this is the "is it really in there" question, and the chain
+          // answers it with whatever the shell happens to export.
+          fromStore = await access.readStored(name)
+        } catch (e) { return fail((e as Error).message) }
+      }
+      const value = fromShell ?? fromFile ?? fromStore
+      if (value === undefined) return fail(`${name} is not set`)
       // Display follows the DECLARED flag: a bucket name is ordinary configuration and is shown
       // plainly so it can be checked, while a credential stays masked unless --reveal. Masking
       // everything contradicted the catalog the same release introduced, and hid the very values a
@@ -200,13 +228,28 @@ export async function runConfig(
       const sens = sensitivityOf(name)
       const plain = options.reveal || !sens.sensitive
       const note = sens.declared ? '' : '  (sensitivity inferred — not in the catalog)'
-      const shadow = env[name]
-      if (shadow) {
-        const shown = plain ? shadow : maskValue(shadow)
-        return res(0, lineBlock(`${name}=${shown}  (from shell environment — shadows the store value)${note}`))
+      const shown = plain ? value : maskValue(value)
+      const blocks: Block[] = []
+
+      if (fromShell !== undefined) {
+        // Both places are named when both hold a value: "shell wins" without the second location is
+        // how someone leaves a stale `.env` line in place for a month.
+        const also = [fromFile !== undefined ? `.env (${envPath})` : null, fromStore !== undefined ? 'the encrypted store' : null].filter(Boolean)
+        blocks.push(lineBlock(`${name}=${shown}  (from shell environment${also.length ? ` — it wins over ${also.join(' and ')}` : ''})${note}`))
+      } else if (fromFile !== undefined) {
+        blocks.push(lineBlock(`${name}=${shown}  (from .env: ${envPath})${note}`))
+        if (sens.sensitive) {
+          // A credential in a file that is read into interpolation is the wrong home for it: say so,
+          // and name where it belongs, rather than resolving it quietly (#157, #182).
+          blocks.push(lineBlock(`WARNING: a credential belongs in the encrypted store, not in .env.`, 'error'))
+          blocks.push(noteBlock(`Move it: printf %s "$${name}" | saip config set ${name} --stdin, then remove the line from ${envPath}`))
+        } else if (fromStore !== undefined) {
+          blocks.push(noteBlock(`the encrypted store also holds a value for this name; .env wins for interpolation`))
+        }
+      } else {
+        blocks.push(lineBlock(`${name}=${shown}  (from the encrypted store)${note}`))
       }
-      if (value === undefined) return fail(`${name} is not set`)
-      return res(0, lineBlock(`${name}=${plain ? value : maskValue(value)}${note}`))
+      return res(0, ...blocks)
     }
 
     case 'set': {
@@ -279,7 +322,7 @@ export async function runConfig(
       // interpolated value (bucket, endpoint) reported "not in the store" while the value stayed
       // in .env and kept winning at resolution. Both names now clear every surface we control and
       // say which ones they touched.
-      const r = await forgetValue({ store, name, envPath: envFilePath(process.env), env })
+      const r = await forgetValue({ store, name, envPath, env })
       // Nothing removed is a failure to report, not a success: the old `unset` said
       // "not in the store" for a value sitting in .env, which read like a clean no-op.
       return { code: r.cleared.length ? 0 : 1, blocks: [rawBlock(r.lines)], get lines() { return r.lines } }
@@ -294,7 +337,7 @@ export async function runConfig(
       const io: Io = { say: () => {}, ask: async () => '' }
       // The wizard is not block-native until #106 slice 2, so its lines travel as a `raw` block
       // rather than being re-prefixed here.
-      const help = await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io, formatItem: deps.formatItem })
+      const help = await runHelp({ store, items, envPath, env, only: cleanArg(name), io, formatItem: deps.formatItem })
       return res(help.code, rawBlock(help.lines))
     }
 
