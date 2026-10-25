@@ -281,9 +281,23 @@ saip config --json; echo $?       # 1 — usage error, still one record on stdou
 
 | Flag | Description |
 |------|-------------|
+| `--config <path>` | This run only: read that `saip.yaml` instead of discovering one. Accepted before or after the command (`saip --config ./prod.yaml status`, `saip status --config ./prod.yaml`). It **binds `SAIP_CONFIG` for the process**, so the gateways and any compose stack started by the command resolve the same file the CLI did — there is no second, CLI-only notion of which config is in play. A path that does not exist is an error, never a silent fallback to discovery. |
+| `--env <path>` | This run only: read that `.env` instead of `SAIP_ENV_FILE` or the discovered one. Same binding rule (it sets `SAIP_ENV_FILE`), same refusal on a missing path. Values are read, never written, by a read-only command; `saip config set` still writes where the wizard wrote. |
 | `--json` | Machine-readable JSONL on stdout, for every command (see "Machine output" above) |
 | `--host <name>` | Target host from `hosts.yaml` on the commands that act on one host (`awake`, `sleep`, `down`, `status`, `ssh`). `deploy` takes **two** hosts and uses `--source`/`--target` instead — see `saip deploy` |
 | `--help` | Show help for any command |
+
+`--config` and `--env` were re-added in #149 with tests written first, because the rule they implement is the
+one the previous paragraph states: the *resolver* is shared, so a flag must bind the same variable the
+gateways read rather than opening a second path-lookup path that only the CLI honours. Precedence is
+therefore **flag > `SAIP_*` > discovery**, asserted at the level a user observes it in
+`cli/tests/global-flags.test.ts`.
+
+`--quiet` and `--verbose` remain **out of scope, deliberately** (#149's criterion 5 resolved): severity is
+already a property of the `ui` seam's blocks, and this project's whole history of silent failures (#150,
+#114, #147, #172) is of diagnostics being missing when they were needed. A flag whose only effect is to
+hide them is not a feature this platform wants until a real need is named; if it is ever built it must be
+able to spare one level of information, not remove a class of it.
 
 Configuration location is chosen by **environment**, not by a global flag: `SAIP_CONFIG` for
 `saip.yaml`, `SAIP_ENV_FILE` for the `.env` file, `SAIP_SECRETS_FILE` for the encrypted store,
