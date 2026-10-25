@@ -224,7 +224,9 @@ Every command is a plugin that registers itself with the CLI's Cordis context �
 
 ### Shared Package
 
-`@saip/shared` provides cross-cutting **Cordis services** rather than just type definitions: an R2 client service, a HuggingFace client service, an adapter-manifest resolver, and config-schema validation. All three applications above inject these same implementations, so CLI status output, inference resolution, and training sync can never disagree about what an adapter alias means — they consult the same service instance semantics.
+`@saip/shared` provides cross-cutting **Cordis services** rather than just type definitions: `AdapterRegistryService`, `HostRegistryService`, `ProfileService`, `SecretsService` and `SecretAccessService`. All three applications above inject these same implementations, so CLI status output, inference resolution, and training sync can never disagree about what an adapter alias means, which host is `default`, or which profile fits the card — they consult the same service instance semantics.
+
+This paragraph used to claim an R2 client service, a HuggingFace client service, an adapter-manifest resolver and config-schema validation. None of the four existed: `@saip/shared`'s manifest declared subpath exports pointing at files that were never written, and this page presented them as the mechanism keeping the applications consistent. The claim is now scoped to what is actually injected; storage remains [#63](https://github.com/adrianwebb/saip/issues/63)'s A3 work, and the manifest itself is asserted by `shared/tests/package-exports.test.ts` ([#187](https://github.com/adrianwebb/saip/issues/187)) so the sentence cannot drift back.
 
 The shared pattern across all four: focused plugins/services that communicate through events and dependency injection, validate config at load time, and manage resources through disposables. The difference is temporal — inference plugins are long-lived and hot-reloadable; training plugins are batch-oriented; CLI plugins are short-lived request/response; shared services are stateless providers consumed by the others.
 
