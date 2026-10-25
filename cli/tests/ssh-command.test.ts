@@ -18,6 +18,7 @@ const dir = () => mkdtempSync(join(tmpdir(), 'saip-sshcmd-'))
 const HOSTS = [
   { name: 'lab', kind: 'hyperstack', role: 'inference', ssh: { host: '203.0.113.10', user: 'ubuntu' } },
   { name: 'legacy', kind: 'hyperstack', role: 'training', ssh: { host: 'h2', user: 'ubuntu', key_secret: 'MY_KEY' } },
+  { name: 'odd', kind: 'hyperstack', role: 'inference', ssh: { host: '198.51.100.7', user: 'admin', port: 2222 } },
 ] as any[]
 
 const mk = () => new SecretStore({ path: join(dir(), 'keys', 's.enc.json'), keySources: [new MemoryKeySource('passphrase', Buffer.alloc(32, 5))] })
@@ -109,6 +110,32 @@ describe('the passphrase explains itself before it asks (#89 ordering)', () => {
 })
 
 describe('saip ssh verify', () => {
+  it('carries the declared port into the ssh argv (#98)', async () => {
+    // The port bug was invisible in this file's other case: with no `-p`, ssh connects to 22 and the
+    // FAKE runner records that happily. So the assertion is on the argv, which is the only place the
+    // host's `ssh.port` can be honoured or lost.
+    const store = mk()
+    await runSsh('generate', { host: 'odd' }, { store, hosts: () => HOSTS })
+    const r = runner()
+    const out = await runSsh('verify', { host: 'odd' }, { store, hosts: () => HOSTS, runner: r })
+    expect(out.code, out.text).toBe(0)
+    const [, args] = r.calls[0]
+    const at = args.indexOf('-p')
+    expect(at, `no -p in: ${args.join(' ')}`).toBeGreaterThan(0)
+    expect(args[at + 1]).toBe('2222')
+    // The port belongs to the connection, not to the destination string.
+    expect(args).toContain('admin@198.51.100.7')
+    expect(liveMaterialisedKeys()).toEqual([])
+  })
+
+  it('omits -p entirely when the host declares no port', async () => {
+    const store = mk()
+    await runSsh('generate', { host: 'lab' }, { store, hosts: () => HOSTS })
+    const r = runner()
+    await runSsh('verify', { host: 'lab' }, { store, hosts: () => HOSTS, runner: r })
+    expect(r.calls[0][1]).not.toContain('-p')
+  })
+
   it('passes -i a real path and leaves nothing behind', async () => {
     const store = mk()
     await runSsh('generate', { host: 'lab' }, { store, hosts: () => HOSTS })
