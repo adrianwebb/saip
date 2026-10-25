@@ -7,6 +7,8 @@
  * commander surface. Adding a command = adding a plugin, never editing here.
  */
 
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Command, Option } from 'commander'
 import { Context } from 'cordis'
 import { AdapterRegistryService, HostRegistryService, SecretsService } from '@saip/shared/services'
@@ -48,6 +50,34 @@ function parseGuard<T extends Command>(cmd: T): T {
     })
 }
 
+/**
+ * Bind `--config` / `--env` into the variables the shared resolvers already read (#149).
+ *
+ * Deliberately not a parallel notion of "which file is in play": `resolveConfigFile()` takes
+ * `envVar: 'SAIP_CONFIG'` and the loader's `defaultEnvFile()` is `SAIP_ENV_FILE ?? '.env'`, so writing
+ * the variable is the ONE way to make the CLI, the interpolated config, and any stack the command
+ * starts agree. A flag that only the CLI honoured would be the same defect as a `${VAR}` that nothing
+ * interpolated — documented, and true in one place only.
+ *
+ * A path that does not exist is refused here rather than discovered past: silently falling back to
+ * "whatever this directory holds" is how a credential gets read from the wrong project, and the
+ * message names the path the user gave so there is nothing to guess.
+ *
+ * Returns the error text, or null when the environment is now consistent with the flags.
+ */
+function bindPathFlags(opts: Record<string, unknown>): string | null {
+  const problems: string[] = []
+  const bind = (raw: unknown, variable: string, label: string): void => {
+    if (typeof raw !== 'string' || raw === '') return
+    const p = resolve(raw)
+    if (!existsSync(p)) { problems.push(`${label} points at ${p}, which does not exist`); return }
+    process.env[variable] = p
+  }
+  bind(opts.config, 'SAIP_CONFIG', '--config')
+  bind(opts.env, 'SAIP_ENV_FILE', '--env')
+  return problems.length ? problems.join('; ') : null
+}
+
 export async function buildProgram(): Promise<Command> {
   const ctx = new Context()
   await ctx.plugin(AdapterRegistryService)
@@ -70,6 +100,11 @@ export async function buildProgram(): Promise<Command> {
     .name('saip')
     .description('Simple AI Platform — manage inference and training services')
     .version(SAIP_VERSION)
+    // #149: real globals, accepted before the command. They are ALSO declared per command below,
+    // because `saip status --config x` is as valid a thing to type as `saip --config x status`, and
+    // commander does not push program options into a subcommand's own opts object.
+    .option('--config <path>', 'Read this saip.yaml for this run (binds SAIP_CONFIG)')
+    .option('--env <path>', 'Read this .env for this run (binds SAIP_ENV_FILE)')
     // #147: see parseGuard — applied to the program and to every subcommand.
     
 
@@ -84,6 +119,18 @@ export async function buildProgram(): Promise<Command> {
     // so `awake --json` returned exit 1 with empty stdout. Guarded rather than assumed.
     if (!(spec.options ?? []).some((o) => o.flag.split(/[\s[]/)[0] === '--json')) {
       cmd.addOption(new Option('--json', 'Output JSONL records on stdout (for scripts and agents)'))
+    }
+    // The same rule as --json: declared here so the flag works after the command name and shows in
+    // that command's own --help (which is what the reference's Global Options table claims, and what
+    // #162's guard checks per command). Skipped if a command ever declares one itself, because
+    // commander aborts buildProgram on a duplicate option — which once took down every command.
+    for (const [flag, desc] of [
+      ['--config <path>', 'Read this saip.yaml for this run (binds SAIP_CONFIG)'],
+      ['--env <path>', 'Read this .env for this run (binds SAIP_ENV_FILE)'],
+    ] as const) {
+      if (!(spec.options ?? []).some((o) => o.flag.split(/[\s[]/)[0] === flag.split(' ')[0])) {
+        cmd.addOption(new Option(flag, desc))
+      }
     }
     // `.argument()` describes ONE parameter; a multi-word spec must go through `.arguments()`.
     // Passing '<action> [name]' to .argument() registers a single argument and then rejects every
@@ -103,6 +150,19 @@ export async function buildProgram(): Promise<Command> {
       const head = hasCommand ? argv.slice(0, -1) : argv
       const options = (head[head.length - 1] ?? {}) as Record<string, unknown>
       const positional = (spec.positional ? head.slice(0, -1) : []).map(String)
+      // Global path flags first, before any command resolves anything (#149). `optsWithGlobals` is
+      // what lets the value arrive whether it was typed before or after the command name.
+      const merged = (hasCommand ? (last as Command).optsWithGlobals?.() : undefined) ?? options
+      const pathProblem = bindPathFlags(merged as Record<string, unknown>)
+      if (pathProblem) {
+        if ((merged as Record<string, unknown>)?.json) {
+          emit(parseRecord('usage_error', `[saip] error: ${pathProblem}`, { command: spec.name }))
+        } else {
+          console.error(`[saip] error: ${pathProblem}`)
+        }
+        process.exitCode = 1
+        return
+      }
       // The `--json` invariant (#113): stdout is valid JSONL or the command says why it cannot be.
       if ((options as Record<string, unknown>)?.json) {
         setJsonMode(true)
@@ -233,7 +293,12 @@ function reportParseOutcome(err: { code?: string; message?: string; exitCode?: n
   const flag = /unknown option '(.*?)'/i.exec(message)?.[1]
   const name = /unknown command '(.*?)'/i.exec(message)?.[1]
   const argument = /required argument '(.*?)'/i.exec(message)?.[1]
-  const cmd = process.argv.slice(2).find((a) => !a.startsWith('-'))
+  // The first non-flag token, BUT only if it names a registered command: `saip --bogus ./file.yaml
+  // status` used to record `command: "./file.yaml"`, because an option's value is also a non-dash
+  // token. An agent dispatching on that field was being told a filename was a command (#162's first
+  // run is what showed it).
+  const argvRest = process.argv.slice(2)
+  const cmd = argvRest.find((a) => !a.startsWith('-') && program.commands.some((c) => c.name() === a))
   if (flag) detail.flag = flag
   if (name) detail.name = name
   if (argument) detail.argument = argument
