@@ -71,6 +71,17 @@ describe('parse-level --json failures emit a record (#147)', () => {
     expect(r.code).toBe(1)
   })
 
+  it.skipIf(!built)('a global flag BEFORE the command still names the command in the record', () => {
+    // #162's first run surfaced this: the record picked "the first token that does not start with a
+    // dash", which for `saip --bogus ./some-file.yaml status --json` is the option's VALUE — an agent
+    // reading `data.command` was handed a filename. The token must also be a registered command.
+    const r = cli(['--bogus', './not-a-command.yaml', 'status', '--json'])
+    const rec = oneRecord(r.stdout, '--bogus ./not-a-command.yaml status --json')
+    expect(rec.data?.code).toBe('unknown_option')
+    expect(rec.data?.flag).toBe('--bogus')
+    expect(rec.data?.command).toBe('status')
+  })
+
   it.skipIf(!built)('unknown command: notacommand --json', () => {
     const r = cli(['notacommand', '--json'])
     const rec = oneRecord(r.stdout, 'notacommand --json')
