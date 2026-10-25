@@ -133,4 +133,72 @@ describe('the screen model does what a terminal does', () => {
     expect(s.lineAt(0)).toBe('value')
     expect(s.unparsed).toEqual(['\x1b[200~', '\x1b[201~'])
   })
+
+/**
+ * #176 — the model had no bottom margin and no right margin. It clamped: `
+` at the last row kept
+ * writing onto that row, and a glyph past the last column overwrote its own last cell. A wizard
+ * transcript is 100+ lines into a 60-row pty, so the bottom of every reconstructed screen was a braid
+ * of unrelated lines, and #110 row 2 failed against a product whose byte stream was correct.
+ *
+ * These cases are the ones that would have caught it, and each is stated as "what a terminal does",
+ * not as "what this model happens to output".
+ */
+describe('the model scrolls and wraps the way a terminal does (#176)', () => {
+  it('scrolls at the bottom margin so the LAST lines stay readable', () => {
+    // `\r\n`, not `\n`: a terminal in raw mode does NOT return to column zero on LF — that is the
+    // distinction this file already asserts in the #99 case above, and my first draft of these cases
+    // forgot it, which produced correct-looking output at odd columns and nearly got "fixed" in the
+    // model. Transcripts come from raw mode, so that is the shape they arrive in.
+    const s = renderScreen('one\r\ntwo\r\nthree\r\nfour\r\nfive', 3, 20)
+    expect(s.rows.length, 'the viewport never grows').toBe(3)
+    expect(s.visible()).toEqual(['three', 'four', 'five'])
+    expect(s.findRow('one'), 'a line that scrolled off is gone, as it is on a real screen').toBe(-1)
+  })
+
+  it('keeps the tail of a long transcript — the exact #110 row 2 failure', () => {
+    // 70 short lines into a 30-row screen, ending with the summary the acceptance list looks for.
+    const body = Array.from({ length: 67 }, (_, i) => `card line ${i}`).join('\r\n')
+    const tail = '[saip] written now: 2 value(s)\r\n[saip] still to fill (3): SAIP_HF_TOKEN'
+    const s = renderScreen(`${body}\r\n${tail}`, 30, 100)
+    expect(s.visible().some((l) => l.startsWith('[saip] written now: 2 value(s)')), 'the summary must be on screen').toBe(true)
+    expect(s.visible().some((l) => l.startsWith('[saip] still to fill')), 'and so must the line after it').toBe(true)
+    expect(s.visible().some((l) => l === 'card line 0'), 'the head scrolled away').toBe(false)
+    expect(s.rows.length).toBe(30)
+  })
+
+  it('wraps at the right margin instead of overwriting the last cell', () => {
+    const s = renderScreen('abcdefghijkl\n', 4, 10)
+    expect(s.lineAt(0)).toBe('abcdefghij')
+    expect(s.lineAt(1), 'a terminal continues on the next row; the old model stamped on cell 9').toBe('kl')
+  })
+
+  it('wrapping that reaches the bottom scrolls rather than braiding one row', () => {
+    const s = renderScreen('aaaaaaaaaaaaaaaaaaaa', 2, 10)   // 20 columns of input into a 10×2 screen
+    expect(s.lineAt(0)).toBe('aaaaaaaaaa')
+    expect(s.lineAt(1), 'the overflow occupies the second row').toBe('aaaaaaaaaa')
+  })
+
+  it('cursor-up after a scroll addresses the row that is NOW on screen', () => {
+    // Two rows, three lines: the screen scrolled once. `ESC[1A` from the bottom row must land on the
+    // row that is VISIBLE above it, and writing there must change that row — not a row that has gone
+    // by. This is the property Ink's `eraseLines` depends on, so a model that got it wrong would hide
+    // the #99 cursor class rather than reveal it.
+    const s = renderScreen('AAA\r\nBBB\r\nCCC\x1b[1A\x1b[GX', 2, 10)
+    expect(s.lineAt(1), 'the bottom row still shows the last line written').toBe('CCC')
+    expect(s.lineAt(0), 'and the cursor moved up onto the row now at the top').toBe('XBB')
+    expect(s.visible().length).toBe(2)
+  })
+
+  it('ESC[M (index) scrolls at the bottom margin too', () => {
+    const s = renderScreen('aaa\r\nbbb\x1b[M\rz', 2, 10)
+    expect(s.visible()).toEqual(['bbb', 'z'])
+  })
+
+  it('a full-screen redraw (ESC[2J ESC[H) still starts at the top after scrolling', () => {
+    const s = renderScreen('old1\nold2\nold3\x1b[2J\x1b[Hfresh', 2, 20)
+    expect(s.lineAt(0)).toBe('fresh')
+    expect(s.findRow('old1')).toBe(-1)
+  })
+})
 })
