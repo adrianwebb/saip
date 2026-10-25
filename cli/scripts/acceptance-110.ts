@@ -141,28 +141,14 @@ const BOX = /[\u2500-\u257f]/
   // not. Waiting unconditionally for a prompt that this path may not show is how a driver hangs.
   const wantsConfirm = await run.waitFor('confirm passphrase', 3_000)
   if (wantsConfirm) run.write('acceptance-pass\r')
-  // Answer any FURTHER passphrase prompt too, so the rest of this row (paste, Ctrl+C, the cancel
-  // summary) can still be measured. The count is the finding: #86 guarantees ONE unlock per command, so
-  // a second prompt is a defect — and a driver that stops there would report nothing at all about the
-  // rest of the row. Fail on the count, verify everything else.
-  let askedTotal = 1
-  // `waitFor` searches ALL accumulated output, so re-waiting on the same string finds the ORIGINAL
-  // prompt again and again — which is how a first version of this counted 4 asks and then typed
-  // passphrases into later questions, turning the wizard run into a success (exit 0) and reporting
-  // nothing. Count NEW occurrences; never write unless one actually appeared.
-  for (let i = 0; i < 2; i++) {
-    const before = askedTotal
-    const deadline = Date.now() + 1_500
-    while (Date.now() < deadline && (run.output.match(/SAIP secret store passphrase:/g) ?? []).length === before) {
-      await new Promise((r) => setTimeout(r, 25))
-    }
-    const now = (run.output.match(/SAIP secret store passphrase:/g) ?? []).length
-    if (now === before) break
-    askedTotal = now
-    run.write('acceptance-pass\r')
-  }
-  const passphraseAsks = askedTotal
+  // TOLERANCE DELETED (#169). This block used to answer any FURTHER passphrase prompt so the rest of
+  // the row could still be measured, and that is precisely how the row ended up reporting on a wizard
+  // that asked twice instead of failing for it. #86 guarantees ONE unlock per command and #169 makes
+  // that guarantee cover WRITES, so a second prompt must now break the run: the paste below goes to
+  // whatever prompt is actually live, the item stays unfilled, and both the count and the missing
+  // write say so. A driver that absorbs a defect is a driver that ships it.
   await run.waitFor('SAIP_R2_SECRET_ACCESS_KEY:', 25_000)
+  const passphraseAsks = (run.output.match(/SAIP secret store passphrase:/g) ?? []).length
   run.write(`${CSI.pasteStart}pasted-secret-value\n${CSI.pasteEnd}`)   // newline INSIDE the paste
   await new Promise((r) => setTimeout(r, 500))
   const pasteDidNotSubmit = !run.exited                                // must still be open

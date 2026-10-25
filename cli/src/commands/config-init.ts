@@ -70,7 +70,7 @@ export function newLineAccumulator(): {
   }
 }
 import { plainRenderer } from '../ui/plain.js'
-import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, type SecretEntry, type SecretStore } from '@saip/shared'
+import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, SecretAccess, type SecretEntry, type SecretStore } from '@saip/shared'
 import { renderCard, type CardSpec, type DisplayOptions } from '../ui/card.js'
 
 export interface InitItem {
@@ -214,6 +214,13 @@ export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
 
 export interface RunInitOptions {
   store: SecretStore
+  /**
+   * The gateway that owns this command's unlock and its audit record (#169). Passing it is what makes
+   * "one unlock per command" true for the wizard's WRITES: without it the only way to store a value
+   * was `store.set()`, which reached past the layer that caches the key. Defaults to a gateway over
+   * the same store, so an embedder that supplies nothing still cannot ask twice.
+   */
+  access?: SecretAccess
   items: InitItem[]
   io: Io
   envPath?: string
@@ -318,6 +325,10 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   const { store, items, io, answers = {}, interactive = true, force = false, reset } = opts
   const envPath = opts.envPath ?? envFilePath()
   const ctx = { env: opts.env, envPath, store }
+  // One gateway for the whole command (#169). The wizard used to unlock the store directly and write
+  // to the store directly, so nothing owned the key between the two — and each write path that
+  // reaches past the gateway is a fresh chance to ask for the passphrase again.
+  const access = opts.access ?? new SecretAccess(store, opts.env ?? process.env)
   const lines: string[] = []
   const stored: string[] = []
   const present: string[] = []
@@ -351,10 +362,11 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
     emit(`[saip] unlocking the store at ${store.filePath} — one passphrase for the whole command.`)
     try {
-      const wrap = await store.ensureUnlocked()
-      names = await store.names()
+      const r = await access.unlock()
+      if (!r.ok) throw new Error(r.error ?? `cannot unlock ${store.filePath}`)
+      names = await access.storedNames()
       if (names.length) emit(`[saip] the store already holds ${names.length}: ${names.join(', ')}`)
-      emit(`[saip] store unlocked (via ${wrap}) — you will not be asked again in this command.`)
+      emit(`[saip] store unlocked (via ${r.wrap}) — you will not be asked again in this command.`)
     } catch (e) {
       emit(`[saip] ${(e as Error).message}`)
       emit('[saip] nothing was changed. Re-run with a different passphrase, or `saip config doctor`.')
@@ -504,7 +516,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   return { code: 0, lines, stored, present, skipped }
 
   async function writeOne(item: InitItem, value: string): Promise<void> {
-    if (item.kind === 'secret') await store.set(item.name, value)
+    if (item.kind === 'secret') await access.write(item.name, value)
     // Written as it is answered, not batched to the end: an interrupt after five answers must not
     // discard the first four.
     else setEnvFileValues(envPath, { [item.name]: value })
