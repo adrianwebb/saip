@@ -126,7 +126,7 @@ The registry is what makes this chain explicit: `user → users[].adapters.train
 ```json
 {
   "job_id": "train-20250115-001",
-  "adapter": "treeseed-project",
+  "adapter": "northstar-project",
   "strategy": "corrective_sft",
   "inherited": { "data_scopes": ["sessions", "feedback"] },
   "status": "queued",
@@ -147,7 +147,7 @@ The registry is what makes this chain explicit: `user → users[].adapters.train
 # Minimal: inherit strategy + data scopes from the adapter's registry entry
 curl -X POST http://localhost:8001/v1/learning/jobs \
   -H "Content-Type: application/json" \
-  -d '{ "adapter": "treeseed-project" }'
+  -d '{ "adapter": "northstar-project" }'
 
 # Explicit: override strategy params for one experiment
 curl -X POST http://localhost:8001/v1/learning/jobs \

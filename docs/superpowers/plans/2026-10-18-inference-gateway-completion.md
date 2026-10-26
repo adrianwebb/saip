@@ -1,6 +1,6 @@
 # Inference Gateway Completion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Implement this plan task-by-task. If a subagent-driven execution skill is installed, use it; otherwise work the checkboxes directly in this session. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete the SAIP inference gateway so it serves the full documented surface — OpenAI-compatible chat completions, SystemOne structured output, adapter resolution/selection, session collection, and the Data API (`/v1/data/*`) with pluggable document processors — wired as Cordis plugins behind injectable vLLM/storage backends.
 

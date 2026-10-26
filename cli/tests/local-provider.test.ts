@@ -73,7 +73,9 @@ describe('LocalDeploymentProvider.status — an unreadable host is not a down ho
   })
 
   it('parses the health suffix out of a real docker Status line', async () => {
-    // Verified shape: `dsh-treedx-local-treedx-api-1 running Up 9 hours (healthy)` on docker 29.9.1.
+    // Verified shape: a compose container named `<project>-local-<service>-api-1`, status
+    // `running Up 9 hours (healthy)`, on docker 29.9.1. The service name is not what is being
+    // parsed — the `Up <duration> (health)` tail is — so the example is written saip-shaped.
     const real: Runner = { run: () => '', capture: () => 'x-api-1 running Up 9 hours (healthy)\n' }
     const st = await new LocalDeploymentProvider(real).status(inferenceHost)
     expect(st.uptime).toBe('9 hours')            // health is a separate question, not part of duration
