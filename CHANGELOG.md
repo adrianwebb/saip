@@ -10,7 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- cli: **a loaded skill is checked against this repository** (#188). `cli/tests/skill-provenance.test.ts` treats each tracked `.dsh/skills/*/SKILL.md` as a claim about the filesystem and the toolchain: paths named in `bash` fences must resolve against the repo root *or* the skill's own directory, `pnpm`/`npm` script names must appear in a workspace manifest, and no loaded skill may name another project's toolchain. Its first test feeds the actual pre-fix skill text back in and requires violations, so the guard cannot silently become blind; two false positives found on the first run are pinned as regressions (`render-graphs.js` resolves in its skill dir; `npm view` is a built-in, not a script). Runs in the existing `pnpm --filter @saip/cli test` job — no new workflow
+
 ### Fixed
+
+- docs: **the `local-llm` skill documented dsh-chapters, not saip** (#188). Committed in `b8fcac2` for another repository, its central instruction was `cd dev/install && docker compose up -d`; `dev/install`, `dsh-test`, `dsh-web`, `VLLM_MODEL_ID`, `VLLM_GPU_MEM`, `qwen3-4b-instruct` and `npm run test:e2e:replay` exist nowhere in this repo, and an agent reading the skill went looking for them. Rewritten against verified facts: the `inference` and `training` compose stacks and their real ports (`${SAIP_VLLM_PORT:-8081}`, `${SAIP_INFERENCE_PORT:-8000}`, `${SAIP_TRAINING_PORT:-8001}`), `saip-vllm:v0.31.0` serving `QuantTrio/Qwen3.5-4B-AWQ` pinned by revision (an AWQ checkpoint is required — vLLM cannot quantize BF16 at load), `generate-engine-args.ts` as the mandatory first step because utilization is derived from the card's total and gated on measured free memory, profile tiers that fail closed at exit 2, and the `adapter-cache` constraints the engine refuses (no DoRA, no `embed_tokens`/`lm_head`). The `dsh-chapters` note in `inference/docker-compose.yml:51` is retained deliberately: it is rationale for saip's own host-port choice, not another project's workflow
 
 ### Changed
 
