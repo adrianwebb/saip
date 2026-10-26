@@ -1,6 +1,6 @@
 # Hosting, Security & Monitoring Foundations — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Implement this plan task-by-task. If a subagent-driven execution skill is installed, use it; otherwise work the checkboxes directly in this session.
 
 **Goal:** Establish the foundational, pluggable hosting layer (local + Hyperstack/OpenTofu providers), a pluggable security layer (bearer tokens on APIs/MCP, password on UIs), and a pluggable monitoring layer — with local fully working and cloud scaffolded-but-not-applied. Every web/API/MCP surface must pass through the auth seam before it can be served.
 
