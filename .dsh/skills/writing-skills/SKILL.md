@@ -15,7 +15,7 @@ You write test cases (pressure scenarios with subagents), watch them fail (basel
 
 **Core principle:** If you didn't watch an agent fail without the skill, you don't know if the skill teaches the right thing.
 
-**REQUIRED BACKGROUND:** RED-GREEN-REFACTOR discipline is assumed. If a `test-driven-development` skill is installed, read it first; otherwise `verification-before-completion` carries the equivalent gate. This skill adapts TDD to documentation.
+**REQUIRED BACKGROUND:** RED-GREEN-REFACTOR discipline is assumed; `verification-before-completion` is the installed skill that carries that gate. This skill adapts it to documentation.
 
 **Official guidance:** For Anthropic's official skill authoring best practices, see anthropic-best-practices.md. This document provides additional patterns and guidelines that complement the TDD-focused approach in this skill.
 
@@ -282,8 +282,8 @@ wc -w skills/path/SKILL.md
 Use skill name only, with explicit requirement markers:
 - ✅ Good: `**REQUIRED SUB-SKILL:** Use verification-before-completion`
 - ✅ Good: `**REQUIRED BACKGROUND:** You MUST understand systematic debugging before claiming a fix`
-- ❌ Bad: `See skills/testing/test-driven-development` (unclear if required)
-- ❌ Bad: `@skills/testing/test-driven-development/SKILL.md` (force-loads, burns context)
+- ❌ Bad: `See skills/documentation/verification-notes` (unclear if required)
+- ❌ Bad: `@skills/documentation/verification-notes/SKILL.md` (force-loads, burns context)
 
 **Why no @ links:** `@` syntax force-loads files immediately, consuming 200k+ context before you need them.
 

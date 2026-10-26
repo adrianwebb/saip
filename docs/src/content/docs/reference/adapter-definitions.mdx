@@ -32,7 +32,7 @@ An entry must define exactly one of `training` or `composite`.
 | `project` | Scoped to one project (`project:` required) | Only that project's composites/users |
 | `user` | Owned by one user identity | Referenced by that user's mapping and their composites |
 
-Scopes exist so adapters can be "more general purpose, or scoped differently than users" — a shared `coding` adapter trains once from everyone's sessions; a `treeseed-project` adapter learns only that project's conventions.
+Scopes exist so adapters can be "more general purpose, or scoped differently than users" — a shared `coding` adapter trains once from everyone's sessions; a `northstar-project` adapter learns only that project's conventions.
 
 ## Training Linkage (`training:`)
 
@@ -77,7 +77,7 @@ They are different parameters with different failure modes; see [Adapter Composi
 
 ## Independent Cadences
 
-Components version separately in R2. A fast-moving `coding` adapter may promote daily while `treeseed-project` changes weekly; the composite re-references whichever versions are current at compile time (or pinned ones). This is the point of composites: **a user adapter can depend on adapters that train at different speeds** without any of them knowing about the others.
+Components version separately in R2. A fast-moving `coding` adapter may promote daily while `northstar-project` changes weekly; the composite re-references whichever versions are current at compile time (or pinned ones). This is the point of composites: **a user adapter can depend on adapters that train at different speeds** without any of them knowing about the others.
 
 ## Compile Semantics
 
@@ -98,9 +98,9 @@ adapters:
       strategy: knowledge_embedding
       data_scopes: [documents]
 
-  - name: treeseed-project
+  - name: northstar-project
     scope: project
-    project: treeseed
+    project: northstar
     training:
       strategy: corrective_sft
       data_scopes: [sessions, feedback]
@@ -113,17 +113,17 @@ adapters:
       gain: 1.25
       components:
         - { adapter: coding, weight: 0.7 }
-        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: northstar-project, weight: 1.0 }
         - { adapter: research, weight: 0.45, version: "@000012" }
 
 users:
   - id: adrian
     adapters:
       inference: "northstar-architect@latest"
-      training: "treeseed-project"
+      training: "northstar-project"
 ```
 
-Adrian's requests resolve transparently to the compiled `northstar-architect` artifact. His project experience flows into `treeseed-project` sessions/feedback; documents feed `coding`; each moves at its own pace; every composite promotion records exactly which component versions produced it.
+Adrian's requests resolve transparently to the compiled `northstar-architect` artifact. His project experience flows into `northstar-project` sessions/feedback; documents feed `coding`; each moves at its own pace; every composite promotion records exactly which component versions produced it.
 
 ## Validation Contract
 
