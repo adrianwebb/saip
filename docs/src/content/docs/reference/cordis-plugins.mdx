@@ -107,6 +107,9 @@ Static properties on the plugin function/class/object:
 
 Attach a Standard Schema v1 validator to `Config`:
 
+> `zod` is illustrative — it is not a dependency of this workspace (#187). Declare the validator in the
+> package that imports it, or the example resolves only from a parent `node_modules` on some machines.
+
 ```typescript
 import { z } from 'zod'
 

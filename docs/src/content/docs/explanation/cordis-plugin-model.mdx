@@ -175,6 +175,11 @@ This happens without restarting the host application or affecting unrelated plug
 
 Cordis uses the [Standard Schema](https://github.com/standard-schema/standard-schema) specification for config validation. This means plugins can use Zod, Valibot, ArkType, or any compliant validator:
 
+> **`zod` is not a dependency of this workspace** — #187 removed the undeclared ones, and no source file
+> imports a validator today. The example is illustrative: declare the validator in the package that
+> imports it. Otherwise the import resolves only on a machine with a stray copy in a parent
+> `node_modules`, which is how a manifest that lies stays green through a local build.
+
 ```typescript
 import { z } from 'zod'
 
