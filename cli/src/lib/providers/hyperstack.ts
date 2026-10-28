@@ -9,6 +9,8 @@
 
 import { execFileSync } from 'node:child_process'
 import type { DeploymentProvider, HostConfig, HostStatus, UpDownOpts, DeployResult } from '@saip/shared'
+import { sshConnectionArgs, sshDestination } from '@saip/shared'
+import { uptimeOf } from './local.js'
 
 export interface Runner {
   run(cmd: string, args: string[]): string
@@ -43,14 +45,16 @@ function stackFile(host: HostConfig): string {
  * fails loudly rather than starting an ssh that will be rejected.
  */
 export function sshComposeArgs(host: HostConfig, verb: 'up' | 'down', identityPath?: string): [string, string[]][] {
-  const target = `${host.ssh?.user ?? 'ubuntu'}@${host.ssh?.host}`
+  const target = sshDestination(host)
   const file = stackFile(host)
   const remote = `cd ${file.replace(/\/[^/]+$/, '')} && docker compose -f ${file} ${verb}${verb === 'up' ? ' -d' : ''}`
   // Every call here is an ssh to a remote host, so an identity is always required. Not passing
   // one is the silent-auth-failure shape #83 shipped with; it is now a named error instead.
   if (!identityPath) throw new SshIdentityMissingError(host.name)
-  const identity = ['-i', identityPath]
-  return [['ssh', [...identity, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', target, remote]]]
+  // One builder for every connection (#98): the port lives in `ssh.port`, so a call site that
+  // assembled its own argv would silently be a call site that ignores it — which is what three of them
+  // did before this existed.
+  return [['ssh', [...sshConnectionArgs(host, identityPath), target, remote]]]
 }
 
 /** Thrown when a remote command is attempted without a resolved SSH identity. */
@@ -96,9 +100,12 @@ export class HyperstackDeploymentProvider implements DeploymentProvider {
     // perfectly healthy host as `down` — a failed authentication dressed up as a state.
     try {
       return await this.withIdentity(host, async (identity) => {
-        const out = this.runner.capture('ssh', ['-i', identity, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
-          `${host.ssh?.user ?? 'ubuntu'}@${host.ssh?.host}`, `docker compose -f ${stackFile(host)} ps --format '{{.State}}'`])
-        return { reachable: true, mode: /Up|running/i.test(out) ? 'awake' : 'down', detail: out.trim() || undefined }
+        // `.State` plus `.Status`: the second is what carries the duration (#114). Same keys the local
+        // provider uses, verified against a real docker; the remote just runs the same command.
+        const out = this.runner.capture('ssh', [...sshConnectionArgs(host, identity),
+          sshDestination(host), `docker compose -f ${stackFile(host)} ps --format '{{.State}} {{.Status}}'`])
+        const awake = /Up|running/i.test(out)
+        return { reachable: true, mode: awake ? 'awake' : 'down', uptime: awake ? uptimeOf(out) : undefined, detail: out.trim() || undefined }
       })
     } catch (e: any) {
       // An unresolvable identity is not "the host is down"; saying so is the difference between a

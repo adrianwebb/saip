@@ -1,0 +1,145 @@
+
+########## P1-once-visible ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| ANSWERED=mybucket
+  2| STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P1-once-hidden ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| ANSWERED=hunter2
+  2| STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P2-order-visible ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| EXPLAIN-ONE: SAIP_R2_BUCKET holds the R2 bucket name.
+  1| EXPLAIN-TWO: create it at dash.cloudflare.com → R2 Object Storage.
+  2| SAIP_R2_BUCKET:
+  3| ANSWERED=bucket-name
+  4| AFTER-PROMPT: the next line must start at column zero.
+  5| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P2-order-hidden ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| EXPLAIN-ONE: passphrase guidance, printed before the prompt (#78).
+  1| SAIP secret store passphrase:
+  2| LEN=4
+  3| AFTER-PROMPT: column zero check follows a hidden prompt.
+  4| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  LEN=4
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P3-once-ahead ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| STATE[between-questions] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  2| SAIP_R2_ENDPOINT:
+  3| ANSWERED=one|two
+  4| STATE[after-both] readable=0 data=0 isRaw=false total=7 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Timeout","Immediate"]
+  5| STATE[exit-point] readable=0 data=0 isRaw=false total=7 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Timeout","Immediate"]
+--- STATE MARKERS ---
+  STATE[after-both] readable=0 data=0 isRaw=false total=7 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Timeout","Immediate"]
+  STATE[exit-point] readable=0 data=0 isRaw=false total=7 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Timeout","Immediate"]
+
+########## P3-wizard-ahead ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| STATE[wizard-done] readable=1 data=0 isRaw=true total=7 resources=["TTYWrap","TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]
+  1| ANSWERED=one|two
+  2| STATE[exit-point] readable=0 data=0 isRaw=false total=6 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]
+--- STATE MARKERS ---
+  ANSWERED=one|two
+  note: raw mode reported on
+
+########## P4-paste-newline ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_SECRET_ACCESS_KEY:
+  1| ANSWERED="very-long-secret-value\n"
+  2| STATE[after-paste] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  ANSWERED="very-long-secret-value\n"
+  STATE[after-paste] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P4-ctrl-d ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| ANSWERED="value-then-eof"
+  2| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  ANSWERED="value-then-eof"
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P4-ctrl-c ##########
+code=130 signal=0 hung=false clean=false killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| CANCELLED=WizardCancelled
+  2| CODE=unset
+  3| STATE[after-cancel] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  4| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+--- STATE MARKERS ---
+  CANCELLED=WizardCancelled
+  STATE[after-cancel] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P5-wizard-listeners ##########
+code=0 signal=0 hung=false clean=true killed=false elapsed=0ms
+--- SCREEN ROWS ---
+  0| STATE[done] readable=1 data=0 isRaw=true total=7 resources=["TTYWrap","TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]
+  1| ANSWERED=a|b|c
+  2| STATE[exit-point] readable=0 data=0 isRaw=false total=6 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]
+--- STATE MARKERS ---
+  ANSWERED=a|b|c
+  note: raw mode reported on
+
+########## P6-echo-typed ##########
+code=0 hung=false
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET: mybucket
+  1| ANSWERED=mybucket
+  2| STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P6-echo-paste ##########
+code=0 hung=false
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET: mybucket
+  1| ANSWERED=mybucket
+  2| STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P6-echo-chunk ##########
+code=0 hung=false
+--- SCREEN ROWS ---
+  0| SAIP_R2_BUCKET:
+  1| ANSWERED=mybucket
+  2| STATE[after-answer] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+  3| STATE[exit-point] readable=0 data=0 isRaw=false total=5 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Immediate"]
+
+########## P6-wizard-echo ##########
+code=0 hung=false
+--- SCREEN ROWS ---
+  0| STATE[wizard-done] readable=1 data=0 isRaw=true total=7 resources=["TTYWrap","TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]
+  1| ANSWERED=vis-bucket|https://ep
+  2| STATE[exit-point] readable=0 data=0 isRaw=false total=6 resources=["TTYWrap","TTYWrap","TTYWrap","Timeout","Timeout","Immediate"]

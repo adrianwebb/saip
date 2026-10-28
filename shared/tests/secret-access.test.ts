@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import {
   SecretAccess, SecretStore, MemoryKeySource, MissingSecretError, findSecret, readAudit,
   type KeySource,
@@ -210,5 +211,83 @@ describe('persisted access history (#93)', () => {
     expect(readAudit(join(d, 'bad.json'))).toEqual([])
     writeFileSync(join(d, 'obj.json'), '{"a":1}')
     expect(readAudit(join(d, 'obj.json'))).toEqual([])
+  })
+})
+
+/**
+ * #169: the rule "one unlock per command" had only ever been tested for READS, so the wizard's
+ * writes reached the store through a second path and asked for the passphrase again mid-command.
+ * These are the write-side cases the gateway needs to be the only path at all.
+ */
+describe('writes go through the same gateway, and share its unlock (#169)', () => {
+  const key = () => Buffer.alloc(32, 61)
+
+  it('creating a store by writing derives the key once, then reads for free', async () => {
+    const d = dir()
+    const path = join(d, 'fresh.enc.json')
+    let derivations = 0
+    let provisions = 0
+    const k = key()
+    class Creating implements KeySource {
+      readonly id = 'passphrase' as const
+      async wrapKey(): Promise<Buffer | null> { derivations++; return k }
+      async provision(): Promise<{ key: Buffer; salt: Buffer | null }> { provisions++; return { key: k, salt: randomBytes(16) } }
+    }
+    const gw = new SecretAccess(new SecretStore({ path, keySources: [new Creating()] }), {}, join(d, 'audit.json'))
+    gw.declare('config init', [
+      { name: 'SAIP_R2_ACCESS_KEY_ID', purpose: 'storage credential' },
+      { name: 'SAIP_R2_SECRET_ACCESS_KEY', purpose: 'storage credential' },
+    ])
+
+    // There is no pre-unlock to do here: `unlock()` refuses an absent store because there is nothing
+    // to open, which is exactly why the wizard's first write is where the passphrase legitimately
+    // belongs. Creating the store must therefore be the command's ONE unlock.
+    await gw.write('SAIP_R2_ACCESS_KEY_ID', 'value-one')
+    await gw.write('SAIP_R2_SECRET_ACCESS_KEY', 'value-two')
+
+    expect(provisions).toBe(1)
+    expect(derivations).toBe(0)
+    // A write is an access: "why did that command touch my store" has to be answered by the same log
+    // a read writes to.
+    expect(gw.accessLog().map((r) => r.name)).toEqual(['SAIP_R2_ACCESS_KEY_ID', 'SAIP_R2_SECRET_ACCESS_KEY'])
+
+    // Reading back costs nothing and is recorded like any other access.
+    expect(await gw.readStored('SAIP_R2_ACCESS_KEY_ID')).toBe('value-one')
+    expect(gw.accessLog().length).toBe(3)
+    expect(derivations).toBe(0)
+    expect(gw.unlocked).toBe(true)
+
+    // Values never reach the audit file, whichever path recorded the access.
+    const audit = readFileSync(join(d, 'audit.json'), 'utf8')
+    expect(audit).not.toContain('value-one')
+    expect(audit).not.toContain('value-two')
+  })
+
+  it('writing to an existing store unlocks once through the gateway, not once per operation', async () => {
+    const d = dir()
+    const path = join(d, 's.enc.json')
+    await new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', key())] }).set('EXISTING', 'v')
+    let derivations = 0
+    const k = key()
+    class Counting implements KeySource {
+      readonly id = 'passphrase' as const
+      async wrapKey(): Promise<Buffer | null> { derivations++; return k }
+    }
+    const gw = new SecretAccess(new SecretStore({ path, keySources: [new Counting()] }), {}, join(d, 'audit.json'))
+    gw.declare('config init', [{ name: 'NEW_ONE', purpose: 'p' }])
+    await gw.write('NEW_ONE', 'x')
+    await gw.write('ANOTHER', 'y')
+    expect(await gw.readStored('EXISTING')).toBe('v')
+    expect(derivations).toBe(1)
+  })
+
+  it('a store that cannot be opened is not written to — nothing half-written, loudly refused', async () => {
+    const d = dir()
+    const path = join(d, 's.enc.json')
+    await new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', key())] }).set('A', 'v')
+    const before = readFileSync(path)
+    const gw = new SecretAccess(new SecretStore({ path, keySources: [new MemoryKeySource('passphrase', null)] }), {}, join(d, 'audit.json'))
+    await expect(gw.write('A', 'overwrite')).rejects.toThrow(/unlock|passphrase/i)
+    expect(readFileSync(path)).toEqual(before)
   })
 })

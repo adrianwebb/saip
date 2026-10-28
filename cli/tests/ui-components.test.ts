@@ -7,11 +7,15 @@
 import { describe, it, expect } from 'vitest'
 import { Context } from 'cordis'
 import { UiService, type Renderer } from '../src/lib/ui.js'
-import { cardBlock, kvBlock, columnsBlock, lineBlock, ruleBlock, type Block } from '../src/ui/blocks.js'
+import { blankBlock, cardBlock, columnsBlock, kvBlock, lineBlock, listBlock, noteBlock, ruleBlock, type Block } from '../src/ui/blocks.js'
 import { plainRenderer } from '../src/ui/plain.js'
+import { jsonlRenderer } from '../src/ui/json.js'
 import { inkRenderer } from '../src/ui/ink.js'
 
 /** Strip ANSI + box drawing, COLLAPSING whitespace: for "does it contain this field" checks. */
+const jsonlOf = (level: 'info' | 'warn' | 'error'): string =>
+  jsonlRenderer.render(lineBlock('something happened', level))
+
 const STRIP = (s: string): string =>
   s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/[─-╿]/g, '').replace(/\s+/g, ' ').trim()
 
@@ -102,6 +106,18 @@ describe('the renderer seam is pluggable (the point of #113)', () => {
 })
 
 describe('UI code is isolated to the UI layer (#113)', () => {
+  it('severity is metadata, not a mutated marker: every level keeps the [saip] prefix (#113)', () => {
+    // The codebase convention is `[saip] error: …` / `[saip] WARNING: …`. Ink conveys severity with
+    // colour and jsonl with `level`; the plain marker must not change, or the seam disagrees with
+    // every existing line of CLI output.
+    for (const level of ['info', 'warn', 'error'] as const) {
+      const out = plainRenderer.render(lineBlock('something happened', level))
+      expect(out).toBe('[saip] something happened')
+      const rec = JSON.parse(jsonlOf(level))
+      expect(rec.level).toBe(level)
+    }
+  })
+
   it('no block renderer emits the [saip] prefix except the line renderer', () => {
     // The prefix is a convention about *messages*, not about every string: a card must not gain it,
     // and this pins where the rule lives.
@@ -168,4 +184,91 @@ describe('the json renderer — Ink bypassed for agents and automation (#113)', 
     expect(() => ui.useRenderer('ink')).not.toThrow()
     expect(ui.mode).toBe('plain') // selection unchanged; only activation moved
   })
+})
+
+describe('block model for command output (#113)', () => {
+  it('note: indented continuation with no [saip] marker, in both renderers', () => {
+    for (const r of [plainRenderer, inkRenderer]) {
+      const out = CLEAN(r.render(noteBlock('path: /home/u/.saip/secrets.json'))).join('\n')
+      expect(out).toContain('path: /home/u/.saip/secrets.json')
+      expect(out).not.toMatch(/\[saip/)
+    }
+  })
+
+  it('list: one entry per line, annotations preserved', () => {
+    const b = listBlock(['SAIP_R2_BUCKET', 'SAIP_HF_TOKEN  (shadowed by shell env)'])
+    for (const r of [plainRenderer, inkRenderer]) {
+      const lines = CLEAN(r.render(b))
+      expect(lines.length).toBe(2)
+      expect(lines.join(' ')).toContain('shadowed by shell env')
+      expect(lines.join(' ')).not.toMatch(/\[saip/)
+    }
+  })
+
+  it('blank: exactly one empty line, no content invented', () => {
+    expect(plainRenderer.render(blankBlock())).toBe('')
+    expect(CLEAN(inkRenderer.render(blankBlock())).length).toBeLessThan(2)
+  })
+
+  it('a command result renders as a coherent sequence of blocks', () => {
+    const blocks = [lineBlock('secret store'), kvBlock([{ label: 'path', value: '/tmp/s.json' }]), blankBlock(), listBlock(['A', 'B'])]
+    const out = plainRenderer.renderAll(blocks)
+    expect(out).toContain('[saip] secret store')
+    expect(out).toContain('path:')
+    expect(out).toContain('A')
+    expect(out.split('\n').filter((l) => l.trim()).length).toBe(4)
+    // Ink must not lose a field the plain path shows.
+    const ink = STRIP(inkRenderer.renderAll(blocks))
+    for (const f of ['secret store', '/tmp/s.json', 'A', 'B']) expect(ink).toContain(f)
+  })
+
+/**
+ * Column alignment (#156). A `columns` block exists to be read as a table, and until `saip profiles`
+ * was rendered through the seam NOTHING asserted that the columns lined up — so the first column was
+ * emitted unpadded in both renderers, which put every later cell at an offset measured from that row's
+ * own label. Two rows of different length therefore printed their numbers in different places, and both
+ * renderers did it, so the parity tests (which compare content) could not see it either.
+ */
+describe('a columns block aligns in every renderer (#156)', () => {
+  /**
+   * Cells of one row line, by their real boundaries.
+   *
+   * Cells are separated by TWO or more spaces — a single space is inside a header (`min VRAM`), so the
+   * first draft of this helper split that into two cells and "found" the table misaligned when it was
+   * not. An instrument that measures the wrong thing is worse than no instrument, and this repo has the
+   * receipts (#154, #172, #176).
+   */
+  const cells = (line: string): Array<{ start: number; end: number }> => {
+    const out: Array<{ start: number; end: number }> = []
+    let from = 0
+    for (const m of line.matchAll(/\s{2,}/g)) {
+      const cell = line.slice(from, m.index)
+      if (cell.trim()) out.push({ start: from, end: from + cell.trimEnd().length })
+      from = m.index + m[0].length
+    }
+    const tail = line.slice(from).trim()
+    if (tail) out.push({ start: from, end: from + tail.length })
+    return out
+  }
+
+  for (const [name, render] of [['plain', (b: Block) => plainRenderer.render(b)], ['ink', (b: Block) => inkRenderer.render(b)]] as const) {
+    it(`${name}: every row's columns end at the same character`, () => {
+      const lines = CLEAN(render(COLS))
+      expect(lines.length, `expected a header and two rows, got: ${JSON.stringify(lines)}`).toBe(3)
+      const rows = lines.map(cells)
+      expect(rows.map((r) => r.length), `cells per line: ${JSON.stringify(rows)}`).toEqual([3, 3, 3])
+      // Every line starts at the same indent.
+      expect(new Set(rows.map((r) => r[0].start)).size, `first-column starts: ${JSON.stringify(rows.map((r) => r[0].start))}`).toBe(1)
+      // The right-aligned columns end at the same character on every line, which is what makes a
+      // number readable as a number. Column 0 is left-aligned on purpose, so only ITS right edge may
+      // vary — asserting it did not was my own first error here, not the renderer's.
+      for (let col = 1; col < 3; col++) {
+        const at = rows[0][col].end
+        for (let r = 1; r < 3; r++) {
+          expect(rows[r][col].end, `${name}: line ${r} column ${col} ends at ${rows[r][col].end}, header at ${at}\n${lines.join('\n')}`).toBe(at)
+        }
+      }
+    })
+  }
+})
 })

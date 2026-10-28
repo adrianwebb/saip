@@ -47,8 +47,8 @@ services:
       context: ..
       dockerfile: inference/vllm.Dockerfile
     image: saip-vllm:v0.31.0
-    # Host port is configurable: 8080 is already claimed on machines that also run the
-    # dsh-chapters model server, and the gateway itself listens on 8000.
+    # Host port is configurable: 8080 is commonly claimed by other local services, and the
+    # gateway itself listens on 8000, so the engine must not fight for it.
     ports:
       - "${SAIP_VLLM_PORT:-8081}:8000"
     env_file:

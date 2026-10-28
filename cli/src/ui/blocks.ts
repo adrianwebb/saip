@@ -8,13 +8,28 @@
  * decide presentation; commands construct blocks. That is the whole abstraction — no registry, no
  * runtime lookup, everything still typechecks.
  */
-import type { CardSpec } from '../lib/display.js'
+import type { CardSpec } from './card.js'
 
+/**
+ * The block vocabulary a command can express. `note`, `blank` and `list` were added when migrating
+ * `config`/`ssh` output, because their real output needs them: a prefixed message, an indented
+ * continuation, a spacer, and a set of names with annotations. Without those, a command would keep
+ * hand-building strings and the seam would be decorative rather than load-bearing.
+ */
 export type Block =
   | { kind: 'card'; spec: CardSpec }
   | { kind: 'keyValues'; rows: KvRow[] }
   | { kind: 'columns'; header: string[]; rows: string[][] }
+  | { kind: 'list'; items: string[] }
   | { kind: 'line'; text: string; level?: 'info' | 'warn' | 'error'; data?: Record<string, unknown> }
+  | { kind: 'note'; text: string }
+  | { kind: 'blank' }
+  /**
+   * Verbatim lines, for output that is not block-native yet — the wizard's guidance and prompts until
+   * #106 slice 2 lands. Renderers add no prefix and no alignment. Named `raw` so it is obvious in a
+   * diff that a command is opting out of the model rather than using it.
+   */
+  | { kind: 'raw'; lines: string[] }
   | { kind: 'rule'; width: number }
 
 export interface KvRow { label: string; value: string; hint?: string }
@@ -29,8 +44,18 @@ export const kvBlock = (rows: KvRow[]): Block => ({ kind: 'keyValues', rows })
 export const columnsBlock = (header: string[], rows: string[][]): Block => ({ kind: 'columns', header, rows })
 export const lineBlock = (text: string, level: 'info' | 'warn' | 'error' = 'info'): Block => ({ kind: 'line', text, level })
 export const ruleBlock = (width = 60): Block => ({ kind: 'rule', width })
+export const listBlock = (items: string[]): Block => ({ kind: 'list', items })
+export const noteBlock = (text: string): Block => ({ kind: 'note', text })
+export const blankBlock = (): Block => ({ kind: 'blank' })
+export const rawBlock = (lines: string[]): Block => ({ kind: 'raw', lines })
 
-/** `[saip] ` is a convention about *messages*, so it belongs to the line renderer alone. */
+/**
+ * The marker is `[saip]` for every severity. The codebase already says `[saip] error: …` and
+ * `[saip] WARNING: …` — severity is carried by the `level` field (which the Ink renderer turns into
+ * colour and the JSONL renderer into data), NOT by mutating the prefix. An earlier revision of this
+ * file invented `[saip !]` / `[saip x]`, which would have made the seam disagree with every existing
+ * line of output for no benefit.
+ */
 export const PREFIX: Record<NonNullable<Extract<Block, { kind: 'line' }>['level']>, string> = {
-  info: '[saip]', warn: '[saip !]', error: '[saip x]',
+  info: '[saip]', warn: '[saip]', error: '[saip]',
 }

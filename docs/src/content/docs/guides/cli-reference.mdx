@@ -104,7 +104,9 @@ saip ssh <generate|show|verify|rotate|remove|migrate> --host <name>
 | `saip ssh migrate` | Moves a legacy `SAIP_SSH_PRIVATE_KEY` value into a managed per-host key and clears the old name. |
 
 The private key is materialised as a temporary `0600` file only for the duration of an SSH call and
-removed on every exit path, including interruption and signals. `Ctrl+C` is handled explicitly: raw
+removed on every exit path, including interruption and signals. The file is created **beside the store**
+(`<dir of SAIP_SECRETS_FILE>/keys/.tmp-…/id_ed25519`), not under `~/.saip`, so a relocated or test store
+cannot leave key material in a real home directory (#159). `Ctrl+C` is handled explicitly: raw
 mode disables `ISIG`, so a keypress arrives as a byte and nothing would otherwise clean up.
 
 ## How output is presented
@@ -219,9 +221,11 @@ Every SAIP command accepts `--json`. The rule (#113):
 
 That means, for a script or agent:
 
-- **Commands that emit records** (`status`, `profiles`) put blocks on stdout: `{"kind":"keyValues",…}`,
-  one compact line each. Nothing else ever reaches stdout — provenance lines like
-  `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+- **Commands that emit records** (`status`, `profiles`, `config`, `ssh`) put blocks on stdout:
+  `{"kind":"keyValues",…}`, one compact line each. Nothing else ever reaches stdout — provenance lines
+  like `[saip] config: /path/saip.yaml` go to **stderr**, because they are diagnostics, not payload.
+  `profiles` joined this list from #156: it used to be described as emitting records while actually
+  writing one hand-rolled object with **no `kind` at all**, which a consumer could not dispatch on.
 - **Commands that have not migrated yet** answer with a single record and exit **2**:
 
   ```json
@@ -233,7 +237,33 @@ That means, for a script or agent:
   action. Ask for machine output from a side-effecting command and you get a refusal, not a deployment.
 
 An empty stdout is deliberately treated as a failure of this guarantee, since a consumer cannot tell
-"nothing to report" from "broken stream".
+"nothing to report" from "broken stream" — including when a command throws part way through, which
+still writes one `command_failed` record before exiting non-zero.
+
+**The guarantee covers parse-level failures too (#147).** It used to stop at the command boundary, which
+let the worst possible output through: `saip config --json` with a missing argument printed **nothing on
+stdout** and exited 1. A consumer piping into `jq` received no input at all and could not distinguish
+"refused" from "the tool crashed" — the exact emptiness this section calls a failure of the guarantee.
+
+Commander handles usage errors, unknown commands, unknown options, `--help` and `--version` **before any
+command action runs**, so the rule could not be enforced where those are decided. It now is: `--json` is
+detected from argv before parsing, and every one of those paths writes exactly one record.
+
+| Invocation | Record `data.code` | stdout | exit |
+|---|---|---|---|
+| `saip config --json` (missing argument) | `usage_error` | one record | **1** |
+| `saip status --json --bogus` | `unknown_option` | one record | **1** |
+| `saip notacommand --json` | `unknown_command` | one record, with the known command names | **1** |
+| `saip --version --json` | `version` | one record carrying version, commit, target, builtAt | **0** |
+| `saip --help --json` / `saip config --help --json` | `help` | one record with the command's usage | **0** |
+
+Exit codes keep their meanings — **1** usage or failure, **2** refused/unstructured, **0** success — and
+`data.command` / `data.flag` / `data.name` say what was being parsed. Because records are built from
+blocks (#113), these carry `kind: "line"` with the condition in `data.code`, the same convention as
+`not_structured` and `command_failed`, rather than inventing a record kind per condition.
+
+The point is that **stdout is never empty under `--json`**. A consumer that reads zero lines is now
+reporting a real bug in this CLI, not observing a documented gap.
 
 **Why it is enforced in the dispatcher rather than in each command:** release `0.5.0` shipped
 `saip profiles --json` printing its provenance line immediately *before* the JSON body. The JSON was
@@ -242,19 +272,43 @@ commands each remembering one rule is how that happened.
 
 ```bash
 saip status --json     | jq -r '.rows[] | "\(.label)=\(.value)"'
-saip profiles --json   | jq .resolution.profile
+saip profiles --json   | jq -r 'select(.kind=="keyValues") | .rows[] | select(.label=="Profile") | .value'
 saip awake --json; echo $?        # 2 — refused as a record, nothing deployed
+saip config --json; echo $?       # 1 — usage error, still one record on stdout (#147)
 ```
 
 ## Global Options
 
 | Flag | Description |
 |------|-------------|
-| `--config <path>` | Path to `saip.yaml` (default: `./saip.yaml`) |
-| `--env <path>` | Path to `.env` file (default: `./.env`) |
-| `--quiet` | Suppress informational output |
-| `--verbose` | Enable debug logging |
+| `--config <path>` | This run only: read that `saip.yaml` instead of discovering one. Accepted before or after the command (`saip --config ./prod.yaml status`, `saip status --config ./prod.yaml`). It **binds `SAIP_CONFIG` for the process**, so the gateways and any compose stack started by the command resolve the same file the CLI did — there is no second, CLI-only notion of which config is in play. A path that does not exist is an error, never a silent fallback to discovery. |
+| `--env <path>` | This run only: read that `.env` instead of `SAIP_ENV_FILE` or the discovered one. Same binding rule (it sets `SAIP_ENV_FILE`), same refusal on a missing path. Values are read, never written, by a read-only command; `saip config set` still writes where the wizard wrote. |
+| `--json` | Machine-readable JSONL on stdout, for every command (see "Machine output" above) |
+| `--host <name>` | Target host from `hosts.yaml` on the commands that act on one host (`awake`, `sleep`, `down`, `status`, `ssh`). `deploy` takes **two** hosts and uses `--source`/`--target` instead — see `saip deploy` |
 | `--help` | Show help for any command |
+
+`--config` and `--env` were re-added in #149 with tests written first, because the rule they implement is the
+one the previous paragraph states: the *resolver* is shared, so a flag must bind the same variable the
+gateways read rather than opening a second path-lookup path that only the CLI honours. Precedence is
+therefore **flag > `SAIP_*` > discovery**, asserted at the level a user observes it in
+`cli/tests/global-flags.test.ts`.
+
+`--quiet` and `--verbose` remain **out of scope, deliberately** (#149's criterion 5 resolved): severity is
+already a property of the `ui` seam's blocks, and this project's whole history of silent failures (#150,
+#114, #147, #172) is of diagnostics being missing when they were needed. A flag whose only effect is to
+hide them is not a feature this platform wants until a real need is named; if it is ever built it must be
+able to spare one level of information, not remove a class of it.
+
+Configuration location is chosen by **environment**, not by a global flag: `SAIP_CONFIG` for
+`saip.yaml`, `SAIP_ENV_FILE` for the `.env` file, `SAIP_SECRETS_FILE` for the encrypted store,
+`SAIP_HOSTS_FILE` for `hosts.yaml`. Each is resolved by the shared loader, so a gateway and the CLI
+agree on which file is in play.
+
+> **Removed from this table (they were never implemented):** `--config`, `--env`, `--quiet`,
+> `--verbose`. Listing them was the same defect as documenting `${VAR}` interpolation that no code
+> performed — the flag is accepted by nothing, and `saip --config x` exits with
+> `error: unknown option`. Implementing them, with tests written first, is
+> [#149](https://github.com/adrianwebb/saip/issues/149).
 
 ---
 
@@ -265,62 +319,60 @@ Start SAIP services and load the model into GPU memory.
 ### Synopsis
 
 ```bash
-saip awake [--bucket <name>] [--profile <name>] [--model <identifier>] [--gpu <device>]
+saip awake [--host <name>] [--profile <name>] [--bucket <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bucket <name>` | `$R2_BUCKET_NAME` | R2 bucket to sync models and adapters from |
+| `--host <name>` | `default` | The host in `hosts.yaml` to bring up. |
 | `--profile <name>` | auto-resolved | Service profile to run (`inference-8gb` or `full-loop-12gb`). Overrides `saip.yaml`; without it, the GPU is probed and the highest tier the card satisfies is chosen. Fails with exit 2 if no profile fits. |
-| `--model <identifier>` | `$SAIP_MODEL` | Model to load (overrides `.env`) |
-| `--gpu <device>` | `$SAIP_GPU_DEVICE` | GPU device index (overrides `.env`) |
-| `--no-sync` | false | Skip R2 model sync; use local cache only |
-| `--port <port>` | 8000 | API listen port |
+| `--bucket <name>` | — | **Accepted and currently ignored** by the local provider: it is threaded into the deployment call and no provider reads it. See [#179](https://github.com/adrianwebb/saip/issues/179); the bucket the stack uses comes from `saip.yaml` / `SAIP_R2_BUCKET`. |
+
+:::caution[Flags that used to be listed here]
+`--model`, `--gpu`, `--no-sync` and `--port` were documented and implemented nowhere — every one exited
+`error: unknown option`. They are listed as candidate features in
+[#179](https://github.com/adrianwebb/saip/issues/179) rather than silently deleted, because they
+describe real behaviour the platform will want: the model and port are set in `saip.yaml` and the
+compose files today, and there is no per-run override. The rows went because
+`tests/docs-flag-parity.test.ts` (#162) now fails on any documented flag the built program rejects —
+which is how all eight were found.
+:::
 
 ### What It Does
 
-1. **Validates configuration** — checks `.env` for required variables and verifies GPU availability.
-2. **Resolves the service profile** — probes the GPU for name, total/free VRAM, and compute capability; selects the tier; rejects any `kv_cache_dtype` the card cannot use; derives `gpu_memory_utilization` from measured free memory.
-3. **Pulls Docker images** — pulls the inference container image if not cached locally.
-4. **Syncs model from R2** — downloads model weights and adapter files from the specified bucket (skipped with `--no-sync`).
-5. **Starts inference container** — launches the vLLM server with GPU passthrough.
-5. **Runs health check** — polls `/health` until the server responds or times out (60s default).
-6. **Reports readiness** — prints the API endpoint and loaded model info.
+What the command actually does, in order (see [#179](https://github.com/adrianwebb/saip/issues/179) —
+this list previously described a pull/sync/health-check pipeline the CLI never performed, with sample
+output it never printed):
 
-### Example Output
+1. **Resolves the host** from `--host` / `SAIP_HOST` / the `default` entry, failing closed with the
+   known names before anything is announced.
+2. **Resolves the service profile** (local hosts only) — probes the GPU for name, total and free VRAM
+   and compute capability; selects the tier; rejects a `kv_cache_dtype` the card cannot use; derives
+   `gpu_memory_utilization` from measured free memory. **An unsatisfiable tier exits 2 and nothing
+   starts** — that gate exists because a tier the card cannot hold surfaces as a vLLM crash loop that
+   keeps reserving VRAM.
+3. **Runs `docker compose -f <stack>/docker-compose.yml up -d`** for the host's inference stack. Pulls,
+   sync, container start and health are compose's and the image's, not this command's;
+   `SAIP_PROFILE` is exported so the engine renders its own arguments.
 
-```
-$ saip awake --bucket saip-production
-[awake] Validating configuration... OK
-[awake] GPU 0: NVIDIA RTX A4000 (16 GB VRAM, 4.2 GB free, compute capability 8.6)
-[awake] Resolving profile... full-loop-12gb (ceiling 11.0 GiB; free 4.2 GiB is below it)
-[awake] Deriving gpu_memory_utilization... 0.26 (free VRAM minus headroom, over total)
-[awake] Pulling saip-inference:v0.3.1... done (cached)
-[awake] Syncing model from R2 (saip-production)...
-  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB ✓
-  ├─ adapters/general@000042 ... 128 MB ✓
-  └─ adapters/coding@000018 ... 96 MB ✓
-[awake] Starting inference container... running (pid 48291)
-[awake] Waiting for health check... ✓ (8.3s)
-[awake] Ready — http://localhost:8000/v1
-  Model: QuantTrio/Qwen3.5-4B-AWQ
-  Profile: full-loop-12gb
-  Adapters: general@000042, coding@000018 (4 slots, rank 16)
-  Max context: 65536 tokens
-  KV cache: auto (16-bit — fp8/int8 forbidden below compute capability 8.9)
-```
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
+
 
 ### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Services started successfully |
-| 1 | Configuration error (missing env var, invalid YAML, invalid profile) |
-| 2 | GPU unavailable or insufficient VRAM (names the measured deficit and the tier's ceiling) |
-| 3 | R2 sync failed (network, auth, or missing bucket) |
-| 4 | Health check timeout (container started but API unresponsive) |
+| 0 | compose reported the stack up |
+| 1 | Host could not be resolved (names the registry and the known hosts), or a configuration error |
+| 2 | No profile fits this card, or the GPU could not be read — names the measured deficit |
+
+Codes 3 (R2 sync failed) and 4 (health check timeout) were listed here and removed: there is no CLI-side
+sync or health poll to fail, so nothing returns them (#179).
 
 ---
 
@@ -331,36 +383,32 @@ Gracefully stop SAIP services while preserving cached models and data.
 ### Synopsis
 
 ```bash
-saip sleep [--bucket <name>]
+saip sleep [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bucket <name>` | `$R2_BUCKET_NAME` | R2 bucket (used for final adapter sync-back) |
-| `--force` | false | Skip graceful shutdown; kill containers immediately |
-| `--no-sync-back` | false | Skip uploading local adapter changes to R2 |
+| `--host <name>` | `default` | Which host in `hosts.yaml` to stop. |
+
+`--force` and `--no-sync-back` were documented and implemented nowhere (`error: unknown option`), and are
+now covered by the flag-parity guard (#162) with the feature decision tracked in
+[#179](https://github.com/adrianwebb/saip/issues/179).
 
 ### What It Does
 
-1. **Drains active requests** — waits for in-flight inference requests to complete (30s timeout).
-2. **Syncs adapter changes** — uploads any locally modified adapters back to R2 (skipped with `--no-sync-back`).
-3. **Stops containers** — sends SIGTERM to the inference container; waits up to 15s before SIGKILL.
-4. **Preserves cache** — model weights and adapter files remain on disk for fast restart.
-5. **Reports status** — confirms clean shutdown.
+`sleep` is the same code path as `awake` and `down` with the **training** stack instead of inference:
+it resolves the host, then runs `docker compose -f training/docker-compose.yml up -d`. Graceful
+draining and adapter sync-back are compose's and the gateway's concern, not this command's — the earlier
+five-step description of a 30-second drain, a sync-back, a SIGTERM/SIGKILL sequence and a shutdown report
+described code that does not exist (#179).
 
-### Example Output
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
 
-```
-$ saip sleep
-[sleep] Draining active requests... 2 in-flight, waiting...
-[sleep] Requests drained (3.1s)
-[sleep] Syncing adapter changes to R2... no changes
-[sleep] Stopping inference container (pid 48291)... stopped
-[sleep] Services stopped. Cache preserved at ~/.cache/saip/
-  Next 'saip awake' will skip model download.
-```
 
 ### Exit Codes
 
@@ -384,38 +432,31 @@ Fully tear down SAIP services and remove all local caches.
 ### Synopsis
 
 ```bash
-saip down [--purge-cache]
+saip down [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--purge-cache` | true | Remove cached model weights and adapters |
-| `--keep-images` | false | Preserve Docker images (speeds up next `awake`) |
+| `--host <name>` | `default` | Which host in `hosts.yaml` to tear down. |
+
+`--purge-cache` and `--keep-images` were documented and implemented nowhere; `down` runs
+`docker compose down` and removes nothing from the model cache or the image store. The decision about
+whether it *should* is [#179](https://github.com/adrianwebb/saip/issues/179).
 
 ### What It Does
 
-1. **Stops containers** — force-stops any running SAIP containers.
-2. **Removes containers** — deletes container instances and anonymous volumes.
-3. **Clears model cache** — removes downloaded weights and adapters from `~/.cache/saip/` (unless `--purge-cache=false`).
-4. **Optionally removes images** — deletes SAIP Docker images (unless `--keep-images`).
-5. **Reports cleanup** — lists removed resources and freed disk space.
+Resolves the host, then runs `docker compose -f <stack>/docker-compose.yml down` for each stack file the
+host uses. Containers and their anonymous volumes go with compose's own defaults; **cached model weights
+and images are untouched**, contrary to the "removes all local caches" description above and the
+four-step list that used to sit here (#179).
 
-### Example Output
+> **No sample transcript here on purpose** (#179). These sections previously showed a narrated
+> `[awake]` / `[sleep]` / `[down]` progress pipeline that no code path emits: the real output is SAIP's
+> own `[saip]` diagnostics followed by `docker compose`'s. A captured transcript will replace this note
+> once one has actually been recorded against a running stack.
 
-```
-$ saip down
-[down] Stopping containers...
-  ├─ saip-inference ... stopped and removed
-  └─ saip-worker ... stopped and removed
-[down] Removing model cache (~/.cache/saip/)...
-  ├─ QuantTrio/Qwen3.5-4B-AWQ ... 5.7 GB removed
-  ├─ adapters/general@000042 ... 128 MB removed
-  └─ adapters/coding@000018 ... 96 MB removed
-[down] Total freed: 4.4 GB
-[down] Docker images preserved (use --keep-images=false to remove)
-```
 
 ### Exit Codes
 
@@ -437,15 +478,15 @@ Display the current state of SAIP services, GPU, and configuration.
 ### Synopsis
 
 ```bash
-saip status [--json] [--adapter-resolution <user>]
+saip status [--json] [--host <name>]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--json` | false | Output as JSON (for scripting) |
-| `--adapter-resolution <user>` | — | Show which adapter a specific user would receive |
+| `--json` | false | JSONL records on stdout (see *Machine output* above) |
+| `--host <name>` | `SAIP_HOST` or `default` | Which host from `hosts.yaml` to interrogate |
 
 ### Output Format
 
@@ -453,28 +494,44 @@ saip status [--json] [--adapter-resolution <user>]
 $ saip status
 [saip] Platform Status
 ─────────────────────
-[sip] default (local): reachable=true mode=?
-Mode:       TODO (awake / asleep / down)
+Host:       default (local): reachable
+Mode:       awake
 Adapters:   3 defined (1 composite), registry valid
 GPU:        NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.07 GiB free, cc 8.6
 Profile:    full-loop-12gb (auto-resolved), ceiling 11 GiB
-            gpu_memory_utilization=0.6875 (derived), context 65536 tokens
+            gpu_memory_utilization=06875 (derived), context 65536 tokens
 Bucket:     saip-local
-Uptime:     TODO
+Uptime:     3 hours (inference stack)
 ```
 
-The `GPU` and `Profile` lines come from the same `ProfileService` resolution
-`saip profiles` performs, so status and the tier report cannot disagree. When the card
-cannot hold the resolved ceiling, the profile line is followed by
-`NOT STARTABLE: insufficient_free_vram: …` naming the deficit.
+**Where every field comes from.** No line is a constant, and no line is a placeholder dressed up as a
+measurement (#114):
 
-:::caution[Not yet implemented]
-These fields are still `TODO` in the shipped CLI and are shown as such rather than invented:
-service mode (awake/asleep/down), uptime, GPU temperature and per-process utilization,
-loaded-adapter names with their `@latest` resolution, and the last R2 sync timestamp. The
-richer layout previously documented here was a design sketch, not output — it is why
-`saip status` is the command to compare against `saip profiles` when the two look wrong.
+| Line | Source | When it cannot be known |
+|---|---|---|
+| `Host` | the host's `DeploymentProvider.status()` reachability | names the failure: unknown host, no registry, unreachable |
+| `Mode` | `HostStatus.mode` — awake / asleep / down / unknown, derived from container state | `unknown — <why>`, e.g. `no state reported by the local provider` |
+| `Adapters` | the **shared** registry service, same validator the gateways use | `0 defined — none in saip.yaml`, or `INVALID (N errors)` |
+| `GPU`, `Profile` | the same `ProfileService` resolution `saip profiles` performs, so the two commands cannot disagree | the provider's own reason (`no nvidia-smi`, `insufficient_free_vram: …`) |
+| `Bucket` | `saip.yaml storage.r2.bucket`, interpolated like the gateways do | `not set — storage.r2.bucket in saip.yaml (or run saip config init)` |
+| `Uptime` | `HostStatus.uptime`, read from the container's reported running time | `not reported — the stack is not awake`, or `not reported by the <kind> host` |
+
+A field that cannot be known **says so and says why**, in the same sentence as the source that was
+asked. That is deliberately not a blank and not a `TODO`: `status` is the command an operator runs to
+decide whether their platform is healthy, and a placeholder shaped like a value trains them to distrust
+the whole report.
+
+:::caution[Still not reported]
+GPU temperature, per-process utilisation, loaded-adapter names with their `@latest` resolution, and the
+last R2 sync timestamp are **absent from this command**, not guessed at. They need the gateway's own
+telemetry (#63) and are tracked there rather than approximated here.
 :::
+
+:::note[Removed from these docs]
+`--adapter-resolution <user>` appeared in this page's synopsis while the flag had never existed — the
+binary answered `error: unknown option '--adapter-resolution'` and exited 1. It is the same class as the
+four phantom globals in #149 and is dropped rather than re-promised (#30 covers adapter resolution as
+its own command surface).
 
 :::caution[Fields still TODO]
 `saip status` prints host reachability, adapter registry validity, GPU + profile
@@ -509,6 +566,51 @@ Adapter resolution for 'alice':
 
 ---
 
+## `saip deploy`
+
+Copy a parameterized stack from one host to another. **Plan-only by default is not the behaviour — see
+`--dry-run` below — so read the two host flags carefully before running it.**
+
+### Synopsis
+
+```bash
+saip deploy --target <host> [--source <host>] [-p key=value ...] [--dry-run] [--reveal-params]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target <name>` | — required | Destination host from `hosts.yaml` |
+| `--source <name>` | `SAIP_HOST`, else `default` | Source host. **This is the one that surprises people**: `deploy` takes two hosts, so omitting `--source` still resolves a host named `default` |
+| `-p, --param <kv...>` | — | `key=value`, or `key=secret:NAME` to reference a stored secret by name. Repeatable |
+| `--dry-run` | false | Print the plan and apply nothing |
+| `--reveal-params` | false | Print parameter **values** in the plan. Off by default: a `secret:` reference is rendered as its name, never its value |
+
+### How the two hosts are resolved
+
+Both are resolved against the host registry and both **fail closed** — a typo never silently targets
+another machine. Because they are different roles, the error names the role and the flag that fixes it:
+
+```
+$ saip deploy --target box2                  # hosts.yaml has box2, no `default` host
+[saip] error: unknown deploy source host "default" — set --source <name>. Known hosts: box2
+
+$ saip deploy --source local --target box9
+[saip] error: unknown deploy target host "box9" — set --target <name>. Known hosts: local
+```
+
+`awake`, `sleep`, `down`, `status` and `ssh` take a single host, so their wording names the one flag and the
+environment variable that can supply it:
+
+```
+[saip] error: unknown host "default" — set --host <name> or SAIP_HOST. Known hosts: local
+```
+
+The known-host list is truncated when an inventory is large: the first eight names, then `+N more`, so a
+40-host registry cannot bury the suggestion that matters. `(none)` is shown when `hosts.yaml` has no hosts
+at all, which is the sign that the file was never found rather than that a name is wrong.
+
 ## `saip profiles`
 
 Show the hardware service profiles, which one this machine resolves to, and the engine
@@ -525,7 +627,7 @@ saip profiles [--profile <name>] [--json]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profile <name>` | auto-resolved | Resolve as if this tier were selected, to check whether the card can hold it and what it would run. |
-| `--json` | false | Machine-readable output for scripting and CI. |
+| `--json` | false | One JSONL record per block on stdout, each carrying `kind` (see "How this output is produced"). Refusals and an unreadable GPU are records too, never an empty stream. |
 
 ### What It Does
 
@@ -542,25 +644,45 @@ saip profiles [--profile <name>] [--json]
 
 ### Example Output
 
+Piped output, which is what a log or an agent sees — rendered by the plain renderer from the same blocks
+a terminal gets framed (#156):
+
 ```
 $ saip profiles
-[saip] GPU: NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6
+  profile         min VRAM  min cc  ceiling  fits
+  inference-8gb      8 GiB     7.5    7 GiB   yes
+  full-loop-12gb    12 GiB       8   11 GiB   yes
 
-  profile           min VRAM   min cc    ceiling  fits
-  inference-8gb        8 GiB      7.5     7.0 GiB  yes
-  full-loop-12gb      12 GiB      8.0    11.0 GiB  yes
-
-[saip] Resolved: full-loop-12gb (auto)
-[saip] Derived --gpu-memory-utilization=0.6875 (11 GiB ceiling / 16 GiB total)
-[saip] Engine: --model QuantTrio/Qwen3.5-4B-AWQ --max-model-len 65536 --language-model-only
-        --max-num-seqs 128 --enable-lora --max-loras 4 --max-lora-rank 16
+  GPU:         NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6
+  Profile:     full-loop-12gb (auto)   (ceiling 11 GiB)
+  Utilization: 0.6875   (--gpu-memory-utilization, from 11 GiB ceiling / 16 GiB total)
+  Engine:      --model QuantTrio/Qwen3.5-4B-AWQ --served-model-name saip-instruct saip-systemone --max-model-len 65536 --gpu-memory-utilization 0.6875 --max-num-seqs 128 --host 0.0.0.0 --port 8000
 ```
 
-When the card cannot hold the requested tier:
+`saip profiles --json` renders those same blocks as records, so the table arrives structured rather than
+as text to re-parse:
+
+```json
+{"kind":"columns","header":["profile","min VRAM","min cc","ceiling","fits"],"rows":[["inference-8gb","8 GiB","7.5","7 GiB","yes"],["full-loop-12gb","12 GiB","8","11 GiB","yes"]]}
+{"kind":"blank"}
+{"kind":"keyValues","rows":[{"label":"GPU","value":"NVIDIA GeForce RTX 3080 Laptop GPU — 16 GiB total, 13.46 GiB free, cc 8.6"},{"label":"Profile","value":"full-loop-12gb (auto)","hint":"ceiling 11 GiB"},{"label":"Utilization","value":"0.6875","hint":"--gpu-memory-utilization, from 11 GiB ceiling / 16 GiB total"},{"label":"Engine","value":"--model QuantTrio/Qwen3.5-4B-AWQ … (the full argv, truncated here for reading)"}]}
+```
+
+(The `Engine` value above is the only part abbreviated: it is the whole argv list joined by one space,
+exactly as the `Engine:` row shows it. Nothing else in these samples is edited — they are the bytes the
+plain renderer produced on a 16 GiB card, captured rather than typed.)
+
+When the card cannot hold the requested tier, the reasons stay legible: the table says `no`, and each
+deficit gets its own line, because a `no — needs 12 GiB VRAM…` cell is 70 characters wide and shoves
+every header away from its value.
 
 ```
-$ saip profiles --profile full-loop-12gb
-[saip] GPU: NVIDIA GeForce RTX 2060 — 6 GiB total, 5.1 GiB free, cc 7.5
+$ saip profiles --profile full-loop-12gb      # exit 2
+  profile         min VRAM  min cc  ceiling  fits
+  inference-8gb      8 GiB     7.5    7 GiB    no
+  full-loop-12gb    12 GiB       8   11 GiB    no
+   inference-8gb: needs 8 GiB VRAM, card has 6 GiB
+   full-loop-12gb: needs 12 GiB VRAM, card has 6 GiB; needs compute capability 8, card has 7.5
 [saip] insufficient_vram: profile "full-loop-12gb" needs 12 GiB VRAM; this card has 6 GiB total
 ```
 
@@ -571,6 +693,41 @@ $ saip profiles --profile full-loop-12gb
 | 0 | A profile resolved for this GPU |
 | 1 | Configuration error (no `profiles:` block, invalid tier declaration) |
 | 2 | No profile fits this GPU, or the GPU could not be read |
+
+### How this output is produced (#156)
+
+`profiles` used to be the one command whose prose was assembled before it reached the screen: the
+resolver returned a finished string and the command printed it. It now behaves like every other command.
+The resolver returns **data** — card facts, every declared tier with whether this card fits and why not,
+the resolved profile, the derived utilization, and the engine arguments as an argv list — the command
+turns that data into [blocks](#how-output-is-presented), and the `ui` seam renders the blocks.
+
+That split is what makes three things true at once, none of them by luck:
+
+- **A terminal gets framing; a pipe never does.** Piped `saip profiles` containing no box-drawing and no
+  ANSI is a property of **renderer selection**, not of the text happening to be plain — so it cannot
+  regress into a decorative character landing in `… | jq`.
+- **`--json` is one record per block, and every record carries `kind`.** A consumer dispatches on `kind`
+  instead of guessing which shape this command emitted, and the numbers ride in `data`, so nothing has to
+  be parsed back out of prose:
+
+  ```bash
+  saip profiles --json | jq -r 'select(.kind=="keyValues") | .rows[] | "\(.label)=\(.value)"'
+  saip profiles --json | jq -c 'select(.kind=="columns") | .rows[]'          # the tier table
+  saip profiles --json | jq -r 'select(.kind=="keyValues") | .rows[]
+                                 | select(.label=="Profile") | .value'
+  ```
+
+  Nothing has to be scraped back out of prose: the tier table is a `columns` record, and every fact is a
+  labelled row. Values stay strings because that is what a human was shown — an agent that needs the
+  utilization as a number reads the tier table plus `ceiling`, the same way `saip status --json` works.
+
+- **A refusal is still a record.** With no readable GPU, `saip profiles --json` exits 2 and writes one
+  `line` record at `level: "error"` naming the reason — never an empty stream, which a consumer cannot
+  tell apart from a crash.
+
+The engine-argument line is content the command reports, not a snippet generator: copy it, or read
+`engineArgs` off the record stream.
 
 :::tip[Use it before buying hardware or booting]
 `saip profiles` is the cheapest answer to "will this run here" — it reads the card and does

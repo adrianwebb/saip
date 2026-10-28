@@ -135,7 +135,7 @@ words. They can override it.
 |------|----------------------|------|
 | A quick, clear task | the request itself | do it |
 | A small change | in chat | build it through the normal workflow |
-| A project with a written design | a written design document | a full plan (for software: superpowers:writing-plans) |
+| A project with a written design | a written design document | a full plan (for software: `writing-plans`) |
 
 If it grows mid-task, stop, say so, and step up a size.
 
@@ -189,7 +189,7 @@ stays labeled throwaway, and keeping what it produced is a new request
 that comes back through this gate.
 
 After a project's document is approved, the next step is the plan. For
-software, invoke superpowers:writing-plans and no other skill.
+software, invoke `writing-plans` and no other skill.
 </HARD-GATE>
 
 ## Red Flags

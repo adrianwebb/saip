@@ -1,7 +1,7 @@
 {
   "name": "@saip/cli",
-  "version": "0.6.3",
-  "description": "SAIP CLI \u2014 manage inference and training services",
+  "version": "0.7.0",
+  "description": "SAIP CLI — manage inference and training services",
   "type": "module",
   "bin": {
     "saip": "dist/bin.js"
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
+    "node-pty": "1.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

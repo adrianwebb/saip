@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import {
   SecretStore, MemoryKeySource, PassphraseKey, KeyFileKey, KeySource,
   SecretToolKey, ChainSecrets, EncryptedSecretsProvider, defaultKeySources,
@@ -315,6 +316,33 @@ describe('unlock happens once per store (#86)', () => {
     await s.ensureUnlocked()
     await s.get('A'); await s.set('B', 'w'); await s.names(); await s.activeWrap()
     expect(prompts).toBe(1)
+  })
+
+  it('creating a store IS the unlock — the instance that provisioned it never prompts again (#169)', async () => {
+    // The shape the test above cannot see: it seeds an EXISTING store with a *different* instance,
+    // then unlocks. Nothing exercised the instance that CREATES the store — `persist()`'s create path
+    // derived a KEK, sealed the file with it, and kept nothing. So the first read after the first
+    // write re-derived the key, and in `saip config init` that surfaced as a second passphrase
+    // prompt which then swallowed the answer to the next question.
+    const path = pathIn()
+    const key = Buffer.alloc(32, 47)
+    let derivations = 0
+    let provisions = 0
+    class CreatingKey implements KeySource {
+      readonly id = 'passphrase' as const
+      async wrapKey(): Promise<Buffer | null> { derivations++; return key }
+      async provision(): Promise<{ key: Buffer; salt: Buffer | null }> { provisions++; return { key, salt: randomBytes(16) } }
+    }
+    const s = new SecretStore({ path, keySources: [new CreatingKey()] })
+    await s.set('SAIP_R2_ACCESS_KEY_ID', 'AK')      // this creates the store
+    await s.set('SAIP_R2_SECRET_ACCESS_KEY', 'SK')  // this used to prompt again
+    expect(await s.get('SAIP_R2_ACCESS_KEY_ID')).toBe('AK')
+
+    expect(provisions).toBe(1)
+    expect(derivations).toBe(0)
+    // And the creating instance must be able to name the wrap that unlocked it: `doctor` reports the
+    // real method, and a cold cache after creation left it with nothing to name.
+    expect(await s.activeWrap()).toBe('passphrase')
   })
 })
 

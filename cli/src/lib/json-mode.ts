@@ -17,8 +17,12 @@
  */
 import type { Block } from '../ui/blocks.js'
 
-/** Commands that emit JSONL records on stdout. Add to this list as each migrates (#113). */
-export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles'])
+/**
+ * Commands that emit JSONL records on stdout. Add to this list as each migrates (#113) — the entry
+ * means "this command renders blocks through `ctx.ui`", not "this command has a `--json` branch".
+ * `ssh` joined when its results became blocks; `config` is next.
+ */
+export const STRUCTURED_COMMANDS = new Set<string>(['status', 'profiles', 'ssh', 'config'])
 
 let enabled = false
 
@@ -27,6 +31,73 @@ export function jsonModeOn(): boolean { return enabled }
 
 export function isStructuredCommand(name: string): boolean {
   return enabled && STRUCTURED_COMMANDS.has(name)
+}
+
+/**
+ * Parse-level records (#147): the same guarantee, applied where no command action ever ran.
+ *
+ * Commander decides missing arguments, unknown options, unknown commands, `--help` and `--version`
+ * BEFORE `cmd.action` is reached, so a rule enforced inside the action could not cover them — and the
+ * result was the one output a machine consumer must not get: empty stdout with exit 1, or 1 KB of human
+ * prose where a record was promised.
+ *
+ * These deliberately reuse the established record shape (`kind: "line"` + `data.code`) rather than
+ * inventing a `kind` per condition: records are rendered from blocks (#113), and `not_structured` /
+ * `command_failed` / `profile_report` already set the convention of naming the condition in `data`.
+ */
+/**
+ * Text commander wanted to print while `--json` was active.
+ *
+ * Suppressed at the write (never written and then retracted), because two outputs on one stream is how
+ * #115's provenance bug happened. Kept anyway so a `help` record can carry the real usage text rather
+ * than commander's internal exception message — under `exitOverride` that message is the literal
+ * string `(outputHelp)`, which is worthless to a caller.
+ */
+let suppressed = ''
+
+export function suppressHumanText(text: string): void { suppressed += text }
+
+export function takeSuppressedText(): string {
+  const t = suppressed
+  suppressed = ''
+  return t
+}
+
+export type ParseCondition =
+  | 'usage_error' | 'unknown_option' | 'unknown_command' | 'version' | 'help'
+
+export interface ParseDetail {
+  command?: string
+  flag?: string
+  name?: string
+  argument?: string
+  commands?: string[]
+  [k: string]: unknown
+}
+
+export function parseRecord(condition: ParseCondition, text: string, detail: ParseDetail = {}): Block {
+  const level = condition === 'version' || condition === 'help' ? 'info' : 'error'
+  return {
+    kind: 'line',
+    level,
+    text,
+    data: { code: condition, ...Object.fromEntries(Object.entries(detail).filter(([, v]) => v !== undefined)) },
+  }
+}
+
+/**
+ * Map a commander failure onto the condition it represents.
+ *
+ * The library's own codes are stable strings, so this table is checked against the installed
+ * commander rather than remembered — an unmapped code still yields a valid `usage_error` record,
+ * because "some new commander error prints nothing" is exactly the bug being fixed.
+ */
+export function classifyCommanderError(code: string | undefined): ParseCondition {
+  switch (code) {
+    case 'commander.unknownOption': return 'unknown_option'
+    case 'commander.unknownCommand': case 'commander.invalidArgument': return 'unknown_command'
+    default: return 'usage_error'      // missingArgument, missingMandatoryOptionValue, excessArguments, …
+  }
 }
 
 /**
@@ -40,6 +111,19 @@ export function unsupportedRecord(name: string): Block {
     level: 'error',
     data: { code: 'not_structured', command: name },
   }
+}
+
+/**
+ * Write text meant for a human. The single decision point: stdout when a person is reading, stderr
+ * when stdout has been promised to a machine. Anything that prints prose should use this rather than
+ * `process.stdout.write`, which is how `saip ssh --json` ended up with `[saip] unlocking the store…`
+ * as the first "JSON" line — the same defect #115 fixed for `profiles`, in a place the quarantine
+ * could not see because it only wrapped `console.log`.
+ */
+export function human(text: string, level: 'info' | 'error' = 'info'): void {
+  const line = text.startsWith('[saip') ? text : `[saip] ${text}`
+  if (enabled) process.stderr.write(`${line}\n`)
+  else (level === 'error' ? process.stderr : process.stdout).write(`${line}\n`)
 }
 
 /**

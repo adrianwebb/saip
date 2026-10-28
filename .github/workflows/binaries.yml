@@ -60,6 +60,27 @@ jobs:
           test "$CODE" = "0" -o "$CODE" = "2" || { echo "::error::profiles exited $CODE (expected 0 or 2)"; exit 1; }
           test -s cli/dist/binaries/SHA256SUMS || { echo "::error::no checksums produced"; exit 1; }
           echo "binary executes: $ACTUAL"
+          # #148: the compiled artifact must not autoload the working directory's .env. A canary in
+          # cwd proves it either way, so a Bun upgrade that re-enables autoload fails CI instead of
+          # shipping a binary that reads files it was never told to read.
+          CANARY_DIR=$(mktemp -d)
+          printf 'ZZZ_CI_CANARY=leaked\n' > "$CANARY_DIR/.env"
+          printf 'hosts: []\n' > "$CANARY_DIR/hosts.yaml"
+          OUT=$(cd "$CANARY_DIR" && SAIP_SECRETS_FILE="$CANARY_DIR/s.enc.json" SAIP_ENV_FILE="$CANARY_DIR/none.env" \
+            SAIP_SECRETS_PASSPHRASE=ci-probe : > "$CANARY_DIR/none.env" && \
+            SAIP_SECRETS_FILE="$CANARY_DIR/s.enc.json" SAIP_ENV_FILE="$CANARY_DIR/none.env" \
+            SAIP_SECRETS_PASSPHRASE=ci-probe "$PWD/../../cli/dist/binaries/saip-linux-x64" config get ZZZ_CI_CANARY 2>&1 || true)
+          case "$OUT" in
+            *leaked*) echo "::error::the compiled binary autoloaded the cwd .env (#148): $OUT"; exit 1 ;;
+          esac
+          echo "no implicit .env autoload in the compiled artifact"
+      - name: Prompt the artifact under a real pty (#172)
+        # Everything above executes the binary NON-interactively, which is exactly how #151's hang
+        # class survived into a release: a prompted command that reports and then refuses to exit is
+        # invisible to `--version`/`--help`/`--json` checks, and Node releases the tty handle with
+        # unref() while Bun does not — Bun is what compiles this artifact. So the prompted paths are
+        # driven in a real pty against THIS binary and must exit on their own.
+        run: pnpm --filter @saip/cli exec tsx scripts/check-artifact-exit.ts
       - name: Upload host artifact
         uses: actions/upload-artifact@v4
         with:
@@ -126,6 +147,13 @@ jobs:
           ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  config"
           ./cli/dist/binaries/${{ matrix.bin }} --help | grep -qE "^  profiles"
           echo "${{ matrix.name }} executes: $ACTUAL"
+      - name: Prompt the artifact on native architecture (#172, #110 row 9)
+        # Same gate as the host job, on every architecture the matrix can spawn a pty for. Windows is
+        # excluded rather than skipped: node-pty needs a different spawn path there and a red suite
+        # that means "the runner" is worse than no gate.
+        if: ${{ !contains(matrix.runs-on, 'windows') }}
+        shell: bash
+        run: pnpm --filter @saip/cli exec tsx scripts/check-artifact-exit.ts
       - name: Upload
         uses: actions/upload-artifact@v4
         with:

@@ -19,15 +19,15 @@ adapters:
       strategy: knowledge_embedding     # registered training strategy plugin
       data_scopes: [documents]          # Data API types that feed its training
 
-  - name: treeseed-project
+  - name: northstar-project
     scope: project
-    project: treeseed
+    project: northstar
     training:
       strategy: corrective_sft
       data_scopes: [sessions, feedback]
 ```
 
-Every leaf adapter names **one training strategy** and **the data scopes it consumes**. That linkage is the formal path from accumulated experience to updated weights: when you trigger a job against `treeseed-project`, the registry says which strategy plugin converts its linked sessions/feedback data into an Axolotl dataset — no guessing, no per-job re-specification (though jobs may override).
+Every leaf adapter names **one training strategy** and **the data scopes it consumes**. That linkage is the formal path from accumulated experience to updated weights: when you trigger a job against `northstar-project`, the registry says which strategy plugin converts its linked sessions/feedback data into an Axolotl dataset — no guessing, no per-job re-specification (though jobs may override).
 
 ### Scopes
 
@@ -53,7 +53,7 @@ adapters:
       merge: weighted_linear            # PEFT merge algorithm
       components:
         - { adapter: coding, weight: 0.7 }
-        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: northstar-project, weight: 1.0 }
         - { adapter: research, weight: 0.45, version: "@000012" }
 ```
 
@@ -61,9 +61,9 @@ The math: `ΔW = gain × Σ(wᵢ · ΔWᵢ)` — each component contributes its 
 
 Why composites matter:
 
-- **Independent cadences.** `coding` might promote daily from global documents; `treeseed-project` weekly from project sessions. The composite re-references current versions at compile time. Pin a component (`version: "@000012"`) when you need stability inside a fast-moving composition.
+- **Independent cadences.** `coding` might promote daily from global documents; `northstar-project` weekly from project sessions. The composite re-references current versions at compile time. Pin a component (`version: "@000012"`) when you need stability inside a fast-moving composition.
 - **vLLM compatibility.** vLLM serves exactly one adapter per request, so the composition happens offline: the inference gateway compiles the weighted merge into a single named artifact published to R2. Inference sees `northstar-architect@000037` like any other adapter, and every compiled manifest records its component provenance.
-- **Transparent user experience.** Adrian's requests resolve to his integrated adapter automatically; he never manages LoRA files. Meanwhile his sessions still flow to the right leaf (`treeseed-project`) because the training linkage lives on the leaves, not the composite.
+- **Transparent user experience.** Adrian's requests resolve to his integrated adapter automatically; he never manages LoRA files. Meanwhile his sessions still flow to the right leaf (`northstar-project`) because the training linkage lives on the leaves, not the composite.
 
 :::caution[Composites Are Not Trainable]
 Training jobs target leaf adapters only. Requesting a job against a composite returns `422`. Components are trained; composites are *derived*. Recompilation triggers automatically when a component promotes or the composition spec changes.
@@ -242,9 +242,9 @@ adapters:
       strategy: weighted_kto
       data_scopes: [feedback]
 
-  - name: treeseed-project
+  - name: northstar-project
     scope: project
-    project: treeseed
+    project: northstar
     training:
       strategy: corrective_sft
       data_scopes: [sessions, feedback]
@@ -257,7 +257,7 @@ adapters:
       gain: 1.25
       components:
         - { adapter: coding, weight: 0.7 }
-        - { adapter: treeseed-project, weight: 1.0 }
+        - { adapter: northstar-project, weight: 1.0 }
         - { adapter: research, weight: 0.45 }
 
 users:
@@ -279,11 +279,11 @@ users:
   - id: "adrian"
     adapters:
       inference: "northstar-architect@latest"
-      training: "treeseed-project"
+      training: "northstar-project"
 ```
 
 In this setup:
-- **Adrian** gets his compiled composite (coding × 0.7, project × 1.0, research × 0.45, gain 1.25) for transparent inference, while his project sessions train the `treeseed-project` leaf directly.
+- **Adrian** gets his compiled composite (coding × 0.7, project × 1.0, research × 0.45, gain 1.25) for transparent inference, while his project sessions train the `northstar-project` leaf directly.
 - **Alice** uses `coding@latest` for both paths; her feedback trains the same leaf everyone shares.
 - **Bob** is pinned to `general@000040` for inference (a known-good version).
 - **Unauthenticated requests** fall back to the `default` user's `general@latest`.

@@ -29,13 +29,33 @@ import { dirname, isAbsolute, join } from 'node:path'
 import type { HostConfig } from '@saip/shared'
 
 /** Directory holding public halves and, transiently, materialised private halves. */
+/**
+ * The directory a store's keys live in: beside the store itself, never in a home folder of its own.
+ *
+ * Two separate bugs taught this shape. The first version matched the env var's *extension* and fell
+ * back to the home directory otherwise, so a relocated `SAIP_SECRETS_FILE` still wrote public keys
+ * into `~/.saip`. The fix then left `homedir()` read unconditionally, which made this function a
+ * function of the *process* rather than of the env handed to it — so a test that passed
+ * `{ HOME: tmpdir }` still resolved to the real home, and `materialiseKey`'s default argument kept
+ * creating temporary key directories under `/home/<user>/.saip/keys` (#159). `env.HOME` therefore
+ * wins when it is given; `homedir()` is only the last resort for a real interactive process.
+ */
 export function sshKeyDir(env: NodeJS.ProcessEnv = process.env): string {
-  // Keys live beside the store they unlock. The first version tested the env var's *extension*
-  // and fell back to the home directory otherwise, so `SAIP_SECRETS_FILE=/tmp/x/s.json` still
-  // wrote public keys into ~/.saip — which is how a unit test ends up touching a real home dir.
-  const raw = env.SAIP_SECRETS_FILE || join(homedir(), '.saip', 'secrets.enc.json')
-  const base = raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw
-  return join(dirname(isAbsolute(base) ? base : join(process.cwd(), base)), 'keys')
+  const home = env.HOME || env.USERPROFILE || homedir()
+  const raw = env.SAIP_SECRETS_FILE || join(home, '.saip', 'secrets.enc.json')
+  const base = raw.startsWith('~') ? join(home, raw.slice(1)) : raw
+  return join(dirname(isAbsolute(base) ? base : join(env.PWD ?? process.cwd(), base)), 'keys')
+}
+
+/**
+ * The key directory for a store that is already in hand.
+ *
+ * Exported because every caller that has a `SecretStore` must derive the directory from THAT object
+ * instead of calling `sshKeyDir()` and hoping the environment still matches it — the divergence
+ * between an injected `storePath` and the ambient var is the #159 leak.
+ */
+export function storeKeyDir(store: { filePath: string }): string {
+  return join(dirname(store.filePath), 'keys')
 }
 
 export function managedKeyName(host: string): string {
@@ -49,7 +69,7 @@ export function sshKeyName(host: HostConfig): string {
   return host.ssh?.key_secret?.trim() || managedKeyName(host.name)
 }
 
-export function publicPath(host: string, dir = sshKeyDir()): string {
+export function publicPath(host: string, dir: string): string {
   return join(dir, `${host}.ed25519.pub`)
 }
 
@@ -80,7 +100,7 @@ export function importPrivateKey(pem: string, host: string): Keypair {
   return { privatePem: pem, publicOpenSsh: `${encodePublic(pub.subarray(pub.length - 32))} ${comment}`, comment }
 }
 
-export async function writePublicKeypair(kp: Keypair, host: string, dir = sshKeyDir()): Promise<string> {
+export async function writePublicKeypair(kp: Keypair, host: string, dir: string): Promise<string> {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const p = publicPath(host, dir)
   writeFileSync(p, `${kp.publicOpenSsh}\n`, { mode: 0o644 })
@@ -120,12 +140,24 @@ function installTeardown(): void {
  * cannot be followed or overwritten. Removal happens in `finally` AND via the registry, so a
  * callback that throws, cancels, or kills the process is covered identically.
  */
-export async function materialiseKey<T>(privatePem: string, host: string, fn: (path: string) => Promise<T>): Promise<T> {
+/**
+ * `dir` defaults to the host's key directory, but callers that know where the STORE lives must pass
+ * it: this function creates a real directory, and leaving it out meant `saip ssh verify` wrote a
+ * temporary key directory into `~/.saip/keys` even when the configured store was elsewhere (#113).
+ */
+export async function materialiseKey<T>(
+  privatePem: string,
+  host: string,
+  fn: (path: string) => Promise<T>,
+  // Required, not defaulted: a default here was the #159 leak, because a caller that forgot the
+  // argument silently wrote a private key directory into the process's real home.
+  dir: string,
+): Promise<T> {
   installTeardown()
-  const dir = join(sshKeyDir(), `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  chmodSync(dir, 0o700)   // mkdir's mode is umask-filtered; be explicit about a key directory
-  const path = join(dir, 'id_ed25519')
+  const tmp = join(dir, `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
+  mkdirSync(tmp, { recursive: true, mode: 0o700 })
+  chmodSync(tmp, 0o700)   // mkdir's mode is umask-filtered; be explicit about a key directory
+  const path = join(tmp, 'id_ed25519')
   const fd = openSync(path, 'wx', 0o600)
   try {
     writeFileSync(fd, privatePem, { mode: 0o600 })
@@ -137,7 +169,9 @@ export async function materialiseKey<T>(privatePem: string, host: string, fn: (p
   try {
     return await fn(path)
   } finally {
-    try { rmSync(dir, { recursive: true, force: true }) } catch { /* already gone */ }
+    // `tmp`, never `dir`: the parent is the caller's real key directory. Renaming this variable
+    // without renaming the cleanup would have deleted it recursively.
+    try { rmSync(tmp, { recursive: true, force: true }) } catch { /* already gone */ }
     live.delete(path)
   }
 }

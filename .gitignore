@@ -40,3 +40,7 @@ inference/.engine-args.env
 
 # throwaway copy used to inject build provenance (#125)
 cli/.build-provenance/
+
+# node-gyp / npx caches for the native node-pty build (#154)
+.gyp-cache/
+.npm-cache/

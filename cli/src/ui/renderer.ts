@@ -12,4 +12,6 @@ import type { Block } from './blocks.js'
 export interface Renderer {
   readonly kind: string
   render(block: Block): string
+  /** A command result is a SEQUENCE of blocks; joining is part of the renderer's job, not each caller's. */
+  renderAll(blocks: Block[]): string
 }

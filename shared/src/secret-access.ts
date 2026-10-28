@@ -5,8 +5,10 @@
  * three consequences the gateway removes:
  *
  *  1. **One unlock per command.** A command declares its needs, `unlock()` is called once, and every
- *     read after it is free. Before #86/#93 the store re-derived the key per operation, so a wizard
- *     with four values demanded the passphrase four times.
+ *     read *and every write* after it is free. Before #86/#93 the store re-derived the key per
+ *     operation, so a wizard with four values demanded the passphrase four times — and #169 found the
+ *     same rule broken on the write side, because there was no write method here to route them
+ *     through, so the wizard called the store directly and the cache this class owns was never asked.
  *  2. **A stated reason.** `explain()` renders the declared names and purposes — and the catalog's
  *     own purpose text when a caller gives none — so a prompt can say why it is happening. "Enter
  *     passphrase" with no context teaches a user nothing about what they are protecting.
@@ -20,7 +22,7 @@
 import { Service } from 'cordis'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { EnvSecrets, MissingSecretError, type SecretsProvider } from './hosting.js'
-import { ChainSecrets, defaultStorePath, EncryptedSecretsProvider, SecretStore, type WrapId } from './secrets-store.js'
+import { ChainSecrets, defaultStorePath, EncryptedSecretsProvider, SecretStore, SecretStoreError, type WrapId } from './secrets-store.js'
 import { catalogFor, findSecret, sensitivityOf, type SecretEntry } from './secret-catalog.js'
 
 export interface SecretNeed { name: string; purpose?: string }
@@ -119,10 +121,66 @@ export class SecretAccess implements SecretsProvider {
     return value
   }
 
+  /**
+   * Read the STORE only — never the resolution chain — and record the access.
+   *
+   * This exists for one question: **"did my write land?"** `read()` deliberately resolves
+   * environment-first (a one-off `SAIP_X=y saip …` must override, #67), and that is right for
+   * "what would the platform use?" — but using it to verify a write compares the value just stored
+   * against whatever the shell happens to export, so a successful `config set` of a name that also
+   * exists in the environment reported `did not persist as written` and exited 1 (#146). Verification
+   * needs the object that was written, not the resolution winner.
+   *
+   * Recorded the same way `read()` records, because the audit trail is about the store being touched;
+   * skipping it would make the fix cost observability.
+   */
+  async readStored(name: string): Promise<string | undefined> {
+    if (!this.store.exists()) return undefined
+    if (!this.isUnlocked) throw new MissingSecretError(`${name} (the secret store has not been unlocked for this command; call unlock() after explain())`)
+    const value = await this.store.get(name)
+    if (value !== undefined) this.record(name, value)
+    return value
+  }
+
   async require(name: string): Promise<string> {
     const v = await this.read(name)
     if (v === undefined || v === '') throw new MissingSecretError(name)
     return v
+  }
+
+  /**
+   * Write through the gateway (#169), so the command that unlocked the store is the command that
+   * writes it and the KEK cache is shared. Without a write path here, a wizard storing four values
+   * had exactly one option — `store.set()` — and reaching the store around the gateway is what made
+   * "one unlock per command" true for reads and false for writes.
+   *
+   * An absent store is NOT an error, unlike `unlock()`: creating the store is the one legitimate
+   * moment the passphrase belongs, and the store's own key sources ask for it. A store that exists
+   * but cannot be opened refuses before writing anything — the guide's rule that a store which
+   * cannot be opened reads nothing and writes nothing.
+   */
+  async write(name: string, value: string): Promise<void> {
+    if (this.store.exists() && !this.isUnlocked) {
+      const r = await this.unlock()
+      if (!r.ok) {
+        throw new SecretStoreError(`cannot unlock ${this.store.filePath} to write ${name}: ${r.error ?? 'no key source could satisfy its wraps'}`)
+      }
+    }
+    await this.store.set(name, value)
+    // True in both cases: an existing store was unlocked above, and creating one just derived the
+    // KEK the new file is sealed under. `relock()` is what invalidates it after a wrap changes.
+    this.isUnlocked = true
+    // Recorded like a read, because the audit answer to "why did that command touch my store" has to
+    // cover the command that put a credential there in the first place. Values never reach the log.
+    this.record(name, value)
+  }
+
+  /**
+   * Names already held in the store, through this instance's unlock. Empty when there is no store
+   * yet — which is the wizard's opening state, and the reason it cannot pre-unlock.
+   */
+  async storedNames(): Promise<string[]> {
+    return this.store.exists() ? this.store.names() : []
   }
 
   /** `SecretsProvider` surface, so existing callers can take the gateway with no second path. */
@@ -210,7 +268,10 @@ export class SecretAccessService extends Service {
   explain(command: string): string { return this.access.explain(command) }
   unlock(): Promise<UnlockResult> { return this.access.unlock() }
   read(name: string): Promise<string | undefined> { return this.access.read(name) }
+  readStored(name: string): Promise<string | undefined> { return this.access.readStored(name) }
   require(name: string): Promise<string> { return this.access.require(name) }
+  write(name: string, value: string): Promise<void> { return this.access.write(name, value) }
+  storedNames(): Promise<string[]> { return this.access.storedNames() }
   accessLog(): readonly AccessRecord[] { return this.access.accessLog() }
 }
 

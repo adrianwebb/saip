@@ -69,8 +69,9 @@ export function newLineAccumulator(): {
     },
   }
 }
-import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, type SecretEntry, type SecretStore } from '@saip/shared'
-import { renderCard, type CardSpec, type DisplayOptions } from '../lib/display.js'
+import { plainRenderer } from '../ui/plain.js'
+import { envFilePath, setEnvFileValues, removeEnvValues, sensitivityOf, catalogFor, retiredSecret, SecretAccess, type SecretEntry, type SecretStore } from '@saip/shared'
+import { renderCard, type CardSpec, type DisplayOptions } from '../ui/card.js'
 
 export interface InitItem {
   readonly name: string
@@ -175,21 +176,13 @@ export async function currentDisplay(
 
 /**
  * The default guidance block: prefixed label lines. Kept as the fallback for pipes, CI, agents and
- * dumb terminals, where a box is noise. The card renderer in `lib/display.ts` produces the same
+ * dumb terminals, where a box is noise. The card renderer in `ui/card.ts` produces the same
  * fields with the same wording, so which one a user sees is a presentation choice only.
  */
 export function plainGuidance(item: InitItem): string[] {
-  const out = [
-    // ASCII prefix: this is the fallback for pipes, CI, log collectors and TERM=dumb,
-    // where U+2500 is either noise or mojibake (#88).
-    `-- ${item.name} ${item.required ? '(required)' : '(optional)'}`,
-    `   what    : ${item.purpose}`,
-    `   how     : ${item.how}`,
-  ]
-  if (item.scope) out.push(`   scoping : ${item.scope}`)
-  out.push(`   create  : ${item.providerUrl ?? 'generate this one yourself'}`)
-  if (item.docsUrl) out.push(`   docs    : ${item.docsUrl}`)
-  return out
+  // Same code path a pipe takes when the seam renders a card: the format lives in one place, so the
+  // wizard's fallback and `ctx.ui` cannot drift. It used to build these strings itself.
+  return plainRenderer.render({ kind: 'card', spec: cardSpecFor(item) }).split('\n')
 }
 
 /**
@@ -197,7 +190,13 @@ export function plainGuidance(item: InitItem): string[] {
  * renderers cannot drift apart in content — only in presentation — which is the failure mode a
  * separate "pretty" path usually grows.
  */
-export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
+/**
+ * The guidance for one item as a **spec**, not as text. Rendering is the seam's decision: the same
+ * spec becomes an Ink frame on a terminal, `label: value` lines in a pipe, and one JSONL record under
+ * `--json`. It used to call `renderCard` directly, which meant the wizard had a private renderer that
+ * bypassed capability selection (#106).
+ */
+export function cardSpecFor(item: InitItem): CardSpec {
   const fields = [
     { label: 'what', value: item.purpose },
     { label: 'how', value: item.how },
@@ -205,16 +204,23 @@ export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
     { label: 'create', value: item.providerUrl ?? 'generate this one yourself' },
     ...(item.docsUrl ? [{ label: 'docs', value: item.docsUrl }] : []),
   ]
-  const spec: CardSpec = {
-    title: item.name,
-    badge: item.required ? 'required' : 'optional',
-    fields,
-  }
-  return renderCard(spec, opts).split('\n')
+  return { title: item.name, badge: item.required ? 'required' : 'optional', fields }
+}
+
+/** @deprecated kept for the #88 tests; use `cardSpecFor` and render through `ctx.ui`. */
+export function cardGuidance(item: InitItem, opts: DisplayOptions): string[] {
+  return renderCard(cardSpecFor(item), opts).split('\n')
 }
 
 export interface RunInitOptions {
   store: SecretStore
+  /**
+   * The gateway that owns this command's unlock and its audit record (#169). Passing it is what makes
+   * "one unlock per command" true for the wizard's WRITES: without it the only way to store a value
+   * was `store.set()`, which reached past the layer that caches the key. Defaults to a gateway over
+   * the same store, so an embedder that supplies nothing still cannot ask twice.
+   */
+  access?: SecretAccess
   items: InitItem[]
   io: Io
   envPath?: string
@@ -229,9 +235,10 @@ export interface RunInitOptions {
   /** Retired config keys found in saip.yaml; reported before anything else. */
   deprecations?: string[]
   /**
-   * Renders one guidance block. The CLI passes the DisplayService card renderer; the default is
-   * the plain `label: value` lines used when stdout is not a terminal and by every test. One
-   * formatter, so a human's card and a log line cannot disagree about what a field says.
+   * Renders one guidance block. The CLI passes `ctx.ui.card(cardSpecFor(item))`, so capability
+   * selection happens in the seam rather than in the command. The default is the plain
+   * `label: value` lines used when stdout is not a terminal and by every test. One formatter,
+   * so a human's card and a log line cannot disagree about what a field says.
    */
   formatItem?: (item: InitItem) => string[]
 }
@@ -290,7 +297,23 @@ export async function forgetValue(opts: {
   return { cleared, stillFromShell, lines }
 }
 
-export interface InitResult { code: number; lines: string[]; stored: string[]; skipped: string[] }
+/**
+ * What the run did, in two lists that must never be merged (#150).
+ *
+ * `stored` is what this run **wrote**. `present` is what it found already set and left alone. The
+ * old code put both into `stored`, so `--non-interactive` — which writes nothing by contract —
+ * closed with `stored 4 value(s)` and an agent reading the footer reported a mutation that never
+ * happened. A report cannot describe reality if reality is stored in one bucket.
+ */
+export interface InitResult {
+  code: number
+  lines: string[]
+  /** Values this run actually wrote. */
+  stored: string[]
+  /** Values already set before this run, untouched by it. */
+  present: string[]
+  skipped: string[]
+}
 
 const clean = (v: string): string => v.replace(/\r?\n$/g, '').replace(/[\r\n]+/g, '')
 
@@ -302,8 +325,13 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   const { store, items, io, answers = {}, interactive = true, force = false, reset } = opts
   const envPath = opts.envPath ?? envFilePath()
   const ctx = { env: opts.env, envPath, store }
+  // One gateway for the whole command (#169). The wizard used to unlock the store directly and write
+  // to the store directly, so nothing owned the key between the two — and each write path that
+  // reaches past the gateway is a fresh chance to ask for the passphrase again.
+  const access = opts.access ?? new SecretAccess(store, opts.env ?? process.env)
   const lines: string[] = []
   const stored: string[] = []
+  const present: string[] = []
   const skipped: string[] = []
   const missing: string[] = []
   const retiredFound: { name: string; reason: string }[] = []
@@ -334,14 +362,15 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     emit('[saip] they are read to fill in what is already configured; nothing is sent anywhere.')
     emit(`[saip] unlocking the store at ${store.filePath} — one passphrase for the whole command.`)
     try {
-      const wrap = await store.ensureUnlocked()
-      names = await store.names()
+      const r = await access.unlock()
+      if (!r.ok) throw new Error(r.error ?? `cannot unlock ${store.filePath}`)
+      names = await access.storedNames()
       if (names.length) emit(`[saip] the store already holds ${names.length}: ${names.join(', ')}`)
-      emit(`[saip] store unlocked (via ${wrap}) — you will not be asked again in this command.`)
+      emit(`[saip] store unlocked (via ${r.wrap}) — you will not be asked again in this command.`)
     } catch (e) {
       emit(`[saip] ${(e as Error).message}`)
       emit('[saip] nothing was changed. Re-run with a different passphrase, or `saip config doctor`.')
-      return { code: 1, lines, stored, skipped }
+      return { code: 1, lines, stored, present, skipped }
     }
 
     // Names the catalog has never seen are surfaced here rather than in planInitItems, because
@@ -387,7 +416,13 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
     // Guidance first, ALWAYS — including for values already set. Hiding it once something exists
     // conceals it from precisely the user whose existing value is wrong, which is the case where
     // the explanation is worth the most.
-    for (const l of interactive ? (opts.formatItem ?? plainGuidance)(item) : (item.required && !answers[item.name] ? [`   missing   : ${item.name} — ${item.purpose}`] : [])) emit(l)
+    // `to fill:` is the only honest gap word, and a gap is only a gap when NOTHING has been set.
+    // The old `missing` line was emitted whenever the run had no scripted answer, so a value already
+    // present in the store or the shell was introduced as absent — the second lie in #150.
+    const alreadyHere = !!src || answers[item.name] !== undefined
+    for (const l of interactive
+      ? (opts.formatItem ?? plainGuidance)(item)
+      : (item.required && !alreadyHere ? [`   to fill: ${item.name} — ${item.purpose}`] : [])) emit(l)
     if (src) for (const l of sourceNote(item.name, src, await currentDisplay(item, src, ctx, sensitive))) emit(l)
 
     if (reset === item.name) {
@@ -395,10 +430,11 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
       await forgetValue({ store, name: item.name, envPath, env: opts.env })
       emit(`   → forgetting ${item.name} so it can be set again`)
     } else if (src && !force) {
-      if (!interactive) { stored.push(item.name); continue }
+      // Found set, not written now: `present`, never `stored` (#150).
+      if (!interactive) { present.push(item.name); continue }
       emit(`   → Enter keeps it; type a new value to replace it; or: saip config forget ${item.name}`)
       const next = clean(await io.ask(`${item.name}: `, { secret: sensitive }))
-      if (!next) { stored.push(item.name); continue }
+      if (!next) { present.push(item.name); continue }        // kept as-is: present, not written
       await writeOne(item, next)
       continue
     }
@@ -427,7 +463,7 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
       const retry = clean(await io.ask(`${item.name}: `, { secret: sensitive }))
       if (!retry) {
         lines.push(`[saip] stopped: ${item.name} is required and cannot be empty. Nothing was written for it.`)
-        return { code: 1, lines: [...lines], stored, skipped }
+        return { code: 1, lines: [...lines], stored, present, skipped }
       }
       value = retry
     }
@@ -444,18 +480,23 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
         ? `  printf %s "$${n}" | saip config set ${n} --stdin`
         : `  echo '${n}=...' >> ${envPath}`)
     }
-    return { code: 1, lines, stored, skipped }
+    emit('')
+    emit(`[saip] written now: 0 value(s); present in store/env: ${present.length}${present.length ? ` (${present.join(', ')})` : ''}`)
+    return { code: 1, lines, stored, present, skipped }
   }
 
   } catch (e) {
     if (!(e instanceof WizardCancelled)) throw e
-    const remaining = items.filter((i) => !stored.includes(i.name)).map((i) => i.name)
+    // "still not set" must account for values that were already present too, or the cancellation
+    // summary invents gaps that do not exist.
+    const remaining = items.filter((i) => !stored.includes(i.name) && !present.includes(i.name)).map((i) => i.name)
     emit('')
     emit('[saip] stopped by Ctrl+C.')
-    emit(`[saip] stored so far (${stored.length}): ${stored.join(', ') || 'nothing'}`)
-    if (remaining.length) emit(`[saip] still not set (${remaining.length}): ${remaining.join(', ')}`)
+    emit(`[saip] written now: ${stored.length} value(s)${stored.length ? `: ${stored.join(', ')}` : ''}`)
+    if (present.length) emit(`[saip] present in store/env, untouched: ${present.join(', ')}`)
+    if (remaining.length) emit(`[saip] still to fill (${remaining.length}): ${remaining.join(', ')}`)
     emit('[saip] re-running `saip config init` continues where this left off.')
-    return { code: 130, lines, stored, skipped }
+    return { code: 130, lines, stored, present, skipped }
   }
 
   if (retiredFound.length) {
@@ -464,16 +505,18 @@ export async function runInit(opts: RunInitOptions): Promise<InitResult> {
   }
 
   emit('')
-  emit(`[saip] stored ${stored.length} value(s): ${stored.join(', ') || 'none'}`)
+  // `written now: 0` is the sentence a non-writing mode must be able to say out loud.
+  emit(`[saip] written now: ${stored.length} value(s)${stored.length ? `: ${stored.join(', ')}` : ''}`)
+  if (present.length) emit(`[saip] present in store/env, untouched: ${present.length} (${present.join(', ')})`)
   if (skipped.length) emit(`[saip] skipped: ${skipped.join(', ')}`)
   emit(`[saip] secrets → ${store.filePath}; interpolated config → ${envPath}`)
   emit('[saip] NOTE: credentials were NOT verified — the R2 client is separate work, and an unsigned')
   emit('[saip]       request 403s for valid and invalid keys alike, so it would prove nothing.')
   emit('[saip]       `saip config verify` will do it once the storage provider lands.')
-  return { code: 0, lines, stored, skipped }
+  return { code: 0, lines, stored, present, skipped }
 
   async function writeOne(item: InitItem, value: string): Promise<void> {
-    if (item.kind === 'secret') await store.set(item.name, value)
+    if (item.kind === 'secret') await access.write(item.name, value)
     // Written as it is answered, not batched to the end: an interrupt after five answers must not
     // discard the first four.
     else setEnvFileValues(envPath, { [item.name]: value })

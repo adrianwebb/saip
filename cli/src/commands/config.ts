@@ -19,11 +19,23 @@ import { statSync, openSync } from 'node:fs'
 import { ReadStream } from 'node:tty'
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
+import { SecretAccess, SecretStore, defaultStorePath, defaultKeySources, KeyFileKey, SecretToolKey, envFilePath, loadEnvFile, isSensitiveName, sensitivityOf, readAudit, loadYamlConfig, resolveConfigFile, type SecretToolRunner, type WrapId } from '@saip/shared'
 import type { CommandSpec } from '../lib/command-registry.js'
-import { planInitItems, runInit, runHelp, forgetValue, cardGuidance, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { planInitItems, runInit, runHelp, forgetValue, cardSpecFor, type InitItem, newLineAccumulator, WizardCancelled, type Io } from './config-init.js'
+import { human } from '../lib/json-mode.js'
+import { blankBlock, kvBlock, lineBlock, listBlock, noteBlock, rawBlock, type Block, type KvRow } from '../ui/blocks.js'
+import { plainRenderer } from '../ui/plain.js'
+import { uiOr, type LinePrinter } from '../ui/output.js'
+import { NoTerminalError, promptTTY, ttyInput } from '../ui/prompt.js'
+
+// Re-exported: `NoTerminalError` and `promptTTY` were public from this module and are imported by name
+// elsewhere (and by tests that pin #73/#99 behaviour). The implementation now lives in `ui/prompt.ts`.
+export { NoTerminalError, promptTTY }
+
 
 export interface RunDeps {
+  /** The presentation/input seam. Defaults to a plain printer + tty engine. */
+  ui?: LinePrinter
   /** Environment used to detect shadowing. Defaults to process.env. */
   env?: NodeJS.ProcessEnv
   /** Injectable stdin reader so tests need no TTY. */
@@ -39,10 +51,28 @@ export interface RunDeps {
   /** Card renderer for a human terminal; omitted means plain labelled lines (pipes, CI, tests). */
   formatItem?: (item: InitItem) => string[]
   /** Injectable access gateway; the default wraps the same store so the KEK cache is shared. */
-  access?: SecretAccess
+  access?: SecretAccess,
+  /**
+   * Which `.env` this run reads and writes. Injectable because the answer must not come from the
+   * ambient process environment in tests (#138's rule, one surface later): the default is
+   * `envFilePath(env)`, which honours `SAIP_ENV_FILE` — and `--env` (#149) binds that variable, so the
+   * flag, the wizard and these commands all see one file.
+   */
+  envPath?: string
 }
 
-export interface RunResult { code: number; lines: string[] }
+/**
+ * A result is a SEQUENCE of blocks (#113). `lines` is kept as a derived plain-rendered view so the
+ * assertions that pin this command's wording keep checking real content, and so a caller that only
+ * wants text still has it. Commands never build padded strings themselves.
+ */
+export interface RunResult { readonly code: number; readonly blocks: Block[]; readonly lines: string[] }
+
+const res = (code: number, ...blocks: Block[]): RunResult => ({
+  code,
+  blocks,
+  get lines(): string[] { return blocks.map((b) => plainRenderer.render(b)).join('\n').split('\n') },
+})
 
 /**
  * Masks a value. Deliberately contains no substring of the original — an ellipsis-plus-tail like
@@ -60,146 +90,6 @@ async function readStdinLine(): Promise<string> {
 }
 
 /** Raised when a secret must be typed but there is no controlling terminal. */
-export class NoTerminalError extends Error { readonly name = 'NoTerminalError' }
-
-/**
- * Read a secret from the controlling terminal, not from stdin.
- *
- * This matters because the documented zero-friction path is `printf x | saip config set NAME
- * --stdin`: the pipe supplies the value, so a passphrase prompt that read stdin would get
- * nothing and silently store an empty passphrase. `sudo` and `ssh-add` avoid this by using
- * /dev/tty; so do we — and with no controlling terminal we refuse outright rather than storing
- * a key that nobody knows, which would look like success and be unrecoverable.
- */
-/** One stream for the controlling terminal, opened once and reused. */
-let ttyStream: ReadStream | undefined
-function ttyInput(): ReadStream {
-  if (ttyStream) return ttyStream
-  let fd: number
-  try { fd = openSync('/dev/tty', 'r+') }
-  catch { throw new NoTerminalError('no controlling terminal to prompt on; set SAIP_SECRETS_PASSPHRASE, or run `saip config key add unattended` once a passphrase store exists') }
-  ttyStream = new ReadStream(fd)
-  return ttyStream
-}
-
-/**
- * Bytes that arrived but were not consumed by the previous prompt.
- *
- * This is the fix for a paste that appears to lock the wizard up. A clipboard value usually carries
- * its own trailing newline, so the terminal delivers `value\r` — sometimes several lines at once —
- * in a SINGLE chunk. The first newline ended the prompt and everything after it was previously
- * discarded along with the stream, so the next prompt waited for input that had already arrived and
- * the program looked hung. Retaining the remainder is also what makes scripted input work at all.
- */
-const pending = new WeakMap<NodeJS.ReadableStream, string>()
-
-/**
- * Read one line from the terminal.
- *
- * `secret: true` suppresses echo. Doing that requires raw mode, which also turns off `OPOST`, so the
- * terminal will not expand a lone `\n` into carriage-return + line-feed. The old code wrote a bare
- * `\n`, and the cursor walked down to the *same column* where the prompt ended — the "cursor on the
- * line after the variable name" artifact. In raw mode we therefore terminate with `\r\n`, and when
- * echo is on we write nothing, because the terminal already advanced.
- *
- * Bracketed paste mode is enabled while hidden input is expected so a pasted secret's embedded
- * newline is content rather than an accidental submission. Terminals that ignore the sequence still
- * behave, because callers strip trailing newlines.
- */
-export function promptTTY(
-  question: string,
-  opts: { echo?: boolean; secret?: boolean; stream?: ReadStream } = {},
-): Promise<string> {
-  const hidden = opts.secret ?? (opts.echo === undefined ? true : !opts.echo)
-  const stream = opts.stream ?? ttyInput()
-  const wasRaw = stream.isRaw
-  if (hidden) { try { stream.setRawMode(true) } catch { /* injected stream in tests */ } }
-  // Ask the terminal for bracketed paste so a clipboard value's own newlines are content rather
-  // than accidental submissions. Older terminals ignore the sequence, which is why a secret
-  // containing newlines is better piped — the prompt says so instead of failing quietly.
-  if (hidden) process.stdout.write('\u001b[?2004h')
-  process.stdout.write(question)
-
-  let value = ''
-  let inPaste = false
-  let csi = ''                 // CSI parameter bytes, to recognise the paste markers
-  // ECMA-48: `ESC [` is a two-byte introducer, and only then do parameter bytes begin. Collapsing
-  // this into "ESC then final byte" made `[` itself look final, so a bracketed-paste marker's
-  // digits and `~` were treated as typed characters and leaked into the value.
-  let escState: 'none' | 'introducer' | 'params' = 'none'
-
-  return new Promise((resolve, reject) => {
-    const carryFrom = (text: string, index: number): void => {
-      const rest = text.slice(index + 1)
-      if (rest) pending.set(stream, (pending.get(stream) ?? '') + rest)
-    }
-    const cleanup = (): void => {
-      if (hidden) { try { stream.setRawMode(!!wasRaw) } catch { /* not a real tty */ } }
-      if (hidden) process.stdout.write('\u001b[?2004l')     // leave the terminal as we found it
-      stream.removeListener('data', onData)
-      stream.removeListener('error', onError)
-    }
-    const finish = (): void => {
-      cleanup()
-      // Raw mode has no OPOST, so the line break must carry its own carriage return. A bare \n
-      // leaves the cursor under the middle of the prompt — the "cursor on the next line" artifact.
-      if (hidden) process.stdout.write('\r\n')
-      resolve(value)
-    }
-    const onData = (chunk: Buffer): void => {
-      const text = chunk.toString('utf8')
-      for (let i = 0; i < text.length; i++) {
-        const ch = text[i]
-        const code = ch.codePointAt(0) ?? 0
-        if (escState === 'introducer') {
-          escState = ch === '[' ? 'params' : 'none'   // other escapes: swallow their next byte
-          continue
-        }
-        if (escState === 'params') {
-          if (code >= 0x30 && code <= 0x3f) { csi += ch; continue }
-          escState = 'none'
-          if (ch === '~' && csi === '200') { inPaste = true; csi = ''; continue }
-          if (ch === '~' && csi === '201') { inPaste = false; csi = ''; continue }
-          csi = ''
-          continue
-        }
-        if (code === 0x1b) { escState = 'introducer'; csi = ''; continue }
-        if (ch === '\n' || ch === '\r') {
-          if (inPaste) { value += '\n'; continue }        // pasted newline is content
-          carryFrom(text, i)
-          return finish()
-        }
-        if (code === 0x04) { carryFrom(text, i); return finish() }          // Ctrl+D = EOF
-        if (code === 0x03) {                                            // Ctrl+C
-          value = ''; pending.delete(stream); inPaste = false
-          cleanup()
-          return reject(new WizardCancelled('cancelled by user'))
-        }
-        if (code === 0x7f || code === 0x08) { value = value.slice(0, -1); continue }
-        if (code < 0x20) continue                                            // never store control bytes
-        value += ch
-      }
-    }
-    const onError = (): void => { cleanup(); reject(new WizardCancelled('terminal closed')) }
-    stream.on('data', onData)
-    stream.once('error', onError)
-    const queued = pending.get(stream)
-    if (queued) {
-      pending.delete(stream)
-      // A clipboard value often carries a trailing blank line, and that newline used to submit the
-      // NEXT prompt empty — a required secret reported as "left empty" that the user never typed
-      // into. Leftover text that contains a real character is typed-ahead input and must survive;
-      // a remainder made only of line terminators is the tail of the previous paste, and is dropped.
-      if (/^[\r\n\u0004]+$/.test(queued)) {
-        /* discarded */
-      } else {
-        queueMicrotask(() => onData(Buffer.from(queued, 'utf8')))
-      }
-    }
-  })
-}
-
-
 /** True when the libsecret CLI exists. Probed, never assumed (see #68, #73). */
 export function hasSecretTool(): boolean {
   try { return spawnSync('which', ['secret-tool'], { encoding: 'utf8' }).status === 0 } catch { return false }
@@ -240,7 +130,9 @@ export function buildStore(deps: RunDeps = {}): SecretStore {
       lines.push('SAIP_SECRETS_PASSPHRASE skips this prompt; `saip config key add unattended` removes the need for one, at a weaker guarantee (run `saip config doctor` to see it).')
       lines.push('Pasting works. A value that contains newlines is safer piped: printf %s "$VALUE" | saip config set NAME --stdin')
     }
-    if (lines.length) process.stdout.write(`[saip] ${lines.join('\n[saip] ')}\n`)
+    // Routed through the human sink: under `--json` this is diagnostics, not payload, and it must not
+    // land in the record stream (see #115 for the same defect in `profiles`).
+    for (const l of lines) human(l)
     return deps.prompt ? deps.prompt(q) : promptTTY(q)
   }
   const sources = defaultKeySources(env, {
@@ -283,34 +175,52 @@ export async function runConfig(
 ): Promise<RunResult> {
   const [action, name] = positional
   const env = deps.env ?? process.env
+  const envPath = deps.envPath ?? envFilePath(env)
   // Commands that touch the store go through the gateway, which is what makes the access record
   // exist at all — a service registered in the composition root but bypassed by every command is
   // the #76 pattern in a new place, and it is exactly what the first version of this did.
   const access = deps.access ?? new SecretAccess(store, env, `${store.filePath}.access.json`)
   const lines: string[] = []
-  const fail = (msg: string): RunResult => ({ code: 1, lines: [`[saip] ${msg}`] })
+  const fail = (msg: string): RunResult => res(1, lineBlock(msg))
   if (!action) return fail('usage: saip config <init|help|list|get|set|unset|forget|key|doctor> [name]')
 
   switch (action) {
     case 'list': {
       let names: string[]
       try { names = await store.names() } catch (e) { return fail((e as Error).message) }
-      if (!names.length) return { code: 0, lines: ['[saip] store is empty — no secrets set'] }
+      if (!names.length) return res(0, lineBlock('store is empty — no secrets set'))
       const shadowed = new Set(names.filter((n) => (env[n] ?? '') !== ''))
-      return {
-        code: 0,
-        lines: ['', ...names.map((n) => `  ${n}${shadowed.has(n) ? '  (shadowed by shell env)' : ''}`), ''],
-      }
+      // Checked, not assumed (#157): the shell label was the only one this command could give, and it
+      // gave it from a `process.env` lookup alone. A name present in `.env` as well is worth saying —
+      // it is the second place to fix when a value is wrong.
+      const fileVars = loadEnvFile(envPath)
+      const inFile = new Set(names.filter((n) => (fileVars[n] ?? '') !== ''))
+      return res(0, blankBlock(), listBlock(names.map((n) => `${n}${
+        shadowed.has(n) ? '  (shadowed by shell env)' : inFile.has(n) ? `  (also set in .env: ${envPath})` : ''}`)), blankBlock())
     }
 
     case 'get': {
       if (!name) return fail('get requires a name')
-      let value: string | undefined
-      try {
-        await access.unlock()
-        access.declare('config get', [{ name, purpose: 'displayed to the user' }])
-        value = await access.read(name)
-      } catch (e) { return fail((e as Error).message) }
+      // Where does this value actually live? Asked, not guessed (#157). The old code read
+      // `process.env[name]` and called anything it found "shell environment", so a value that came
+      // from the project's own `.env` — where the wizard writes interpolated configuration — sent the
+      // user to their shell profile to edit a file. #148's implicit autoload was read as shell state
+      // for a whole release through exactly this label.
+      const fileVars = loadEnvFile(envPath)
+      const fromShell = (env[name] ?? '') === '' ? undefined : env[name]
+      const fromFile = (fileVars[name] ?? '') === '' ? undefined : fileVars[name]
+      let fromStore: string | undefined
+      if (store.exists()) {
+        try {
+          await access.unlock()
+          access.declare('config get', [{ name, purpose: 'displayed to the user' }])
+          // STORE, not the chain (#146): this is the "is it really in there" question, and the chain
+          // answers it with whatever the shell happens to export.
+          fromStore = await access.readStored(name)
+        } catch (e) { return fail((e as Error).message) }
+      }
+      const value = fromShell ?? fromFile ?? fromStore
+      if (value === undefined) return fail(`${name} is not set`)
       // Display follows the DECLARED flag: a bucket name is ordinary configuration and is shown
       // plainly so it can be checked, while a credential stays masked unless --reveal. Masking
       // everything contradicted the catalog the same release introduced, and hid the very values a
@@ -318,13 +228,28 @@ export async function runConfig(
       const sens = sensitivityOf(name)
       const plain = options.reveal || !sens.sensitive
       const note = sens.declared ? '' : '  (sensitivity inferred — not in the catalog)'
-      const shadow = env[name]
-      if (shadow) {
-        const shown = plain ? shadow : maskValue(shadow)
-        return { code: 0, lines: [`[saip] ${name}=${shown}  (from shell environment — shadows the store value)${note}`] }
+      const shown = plain ? value : maskValue(value)
+      const blocks: Block[] = []
+
+      if (fromShell !== undefined) {
+        // Both places are named when both hold a value: "shell wins" without the second location is
+        // how someone leaves a stale `.env` line in place for a month.
+        const also = [fromFile !== undefined ? `.env (${envPath})` : null, fromStore !== undefined ? 'the encrypted store' : null].filter(Boolean)
+        blocks.push(lineBlock(`${name}=${shown}  (from shell environment${also.length ? ` — it wins over ${also.join(' and ')}` : ''})${note}`))
+      } else if (fromFile !== undefined) {
+        blocks.push(lineBlock(`${name}=${shown}  (from .env: ${envPath})${note}`))
+        if (sens.sensitive) {
+          // A credential in a file that is read into interpolation is the wrong home for it: say so,
+          // and name where it belongs, rather than resolving it quietly (#157, #182).
+          blocks.push(lineBlock(`WARNING: a credential belongs in the encrypted store, not in .env.`, 'error'))
+          blocks.push(noteBlock(`Move it: printf %s "$${name}" | saip config set ${name} --stdin, then remove the line from ${envPath}`))
+        } else if (fromStore !== undefined) {
+          blocks.push(noteBlock(`the encrypted store also holds a value for this name; .env wins for interpolation`))
+        }
+      } else {
+        blocks.push(lineBlock(`${name}=${shown}  (from the encrypted store)${note}`))
       }
-      if (value === undefined) return fail(`${name} is not set`)
-      return { code: 0, lines: [`[saip] ${name}=${plain ? value : maskValue(value)}${note}`] }
+      return res(0, ...blocks)
     }
 
     case 'set': {
@@ -372,11 +297,22 @@ export async function runConfig(
           // Read it back: proves the write landed and puts the write in the access record.
           // An unverified store is the shape every silent failure in this issue set has taken.
           await writer.unlock()
-          if ((await writer.read(name)) !== value) return fail(`${name} did not persist as written`)
+          // STORE, not chain (#146): `read()` resolves environment-first, so verifying with it
+          // compared the written value against a shell shadow and reported a successful write as
+          // `did not persist as written`. The two questions need two instruments — resolution for
+          // `get`, the store itself here.
+          const back = await writer.readStored(name)
+          if (back !== value) return fail(`${name} did not persist as written`)
+          // The shell may still win at resolution — worth saying, because the user will otherwise
+          // conclude the store did not take. That is a NOTE on a success, never a failure.
         } catch (e) { return fail(`stored ${name} but could not read it back: ${(e as Error).message}`) }
       } catch (e) { return fail((e as Error).message) }
       // Never echo what was just stored, including on the success path.
-      return { code: 0, lines: [`[saip] stored ${name} (${value.length} chars)`] }
+      const lines = [`stored ${name} (${value.length} chars)`]
+      if (env[name] !== undefined && env[name] !== '') {
+        lines.push(`note: ${name} is also set in your shell and still wins — unset ${name} to use the stored value`)
+      }
+      return res(0, ...lines.map((l) => lineBlock(l)))
     }
 
     case 'unset':
@@ -386,10 +322,10 @@ export async function runConfig(
       // interpolated value (bucket, endpoint) reported "not in the store" while the value stayed
       // in .env and kept winning at resolution. Both names now clear every surface we control and
       // say which ones they touched.
-      const r = await forgetValue({ store, name, envPath: envFilePath(process.env), env })
+      const r = await forgetValue({ store, name, envPath, env })
       // Nothing removed is a failure to report, not a success: the old `unset` said
       // "not in the store" for a value sitting in .env, which read like a clean no-op.
-      return { code: r.cleared.length ? 0 : 1, lines: r.lines }
+      return { code: r.cleared.length ? 0 : 1, blocks: [rawBlock(r.lines)], get lines() { return r.lines } }
     }
 
     case 'help': {
@@ -397,56 +333,63 @@ export async function runConfig(
       // A `say` that collects into the shared buffer AND a returned copy produced a transcript
       // printed twice — found only by running the command, since every unit test called runHelp
       // directly and read only its return value.
+      const ui = deps.ui ?? uiOr({})
       const io: Io = { say: () => {}, ask: async () => '' }
-      return await runHelp({ store, items, envPath: envFilePath(process.env), env, only: cleanArg(name), io, formatItem: deps.formatItem })
+      // The wizard is not block-native until #106 slice 2, so its lines travel as a `raw` block
+      // rather than being re-prefixed here.
+      const help = await runHelp({ store, items, envPath, env, only: cleanArg(name), io, formatItem: deps.formatItem })
+      return res(help.code, rawBlock(help.lines))
     }
 
     case 'doctor': {
-      const lines: string[] = ['[saip] secret store']
-      lines.push(`  path:        ${store.path}`)
+      // Rows, not hand-padded strings (#113): alignment is the renderer's job, so a longer label
+      // elsewhere cannot desynchronise this report.
+      const rows: KvRow[] = [{ label: 'path', value: store.path }]
       let unlocked = 'none reachable'
       const ids = store.wrapIds()
       try { unlocked = (await store.activeWrap()) ?? 'none reachable' } catch { /* reported below */ }
-      lines.push(`  wraps:       ${ids.length ? ids.join(', ') : 'none (store not created)'}`)
-      lines.push(`  unlocked by: ${unlocked}`)
+      rows.push({ label: 'wraps', value: ids.length ? ids.join(', ') : 'none (store not created)' })
+      rows.push({ label: 'unlocked by', value: unlocked })
+      const report = (extra: KvRow[]): RunResult => res(0, lineBlock('secret store'), kvBlock([...rows, ...extra]))
       try {
         const mode = (statSync(store.path).mode & 0o777).toString(8)
-        lines.push(`  file mode:   ${mode}`)
+        rows.push({ label: 'file mode', value: mode })
         if (mode !== '600' && mode !== '0600') {
-          return { code: 1, lines: [...lines, `  [saip] permissive file mode ${mode} — run: chmod 600 ${store.path}`] }
+          return res(1, lineBlock('secret store'), kvBlock(rows), lineBlock(`permissive file mode ${mode} — run: chmod 600 ${store.path}`))
         }
       } catch {
-        lines.push('  file mode:   n/a (no store yet)')
+        rows.push({ label: 'file mode', value: 'n/a (no store yet)' })
       }
       if (!store.exists()) {
-        lines.push(`  key sources: passphrase${hasSecretTool() ? ', keyring (secret-tool found)' : ' only — no secret-tool found on this host'}`)
-        return { code: 0, lines: [...lines, '  status:      not created (first `set` will create it, prompting for a passphrase)'] }
+        rows.push({ label: 'key sources', value: `passphrase${hasSecretTool() ? ', keyring (secret-tool found)' : ' only — no secret-tool found on this host'}` })
+        return report([{ label: 'status', value: 'not created (first `set` will create it, prompting for a passphrase)' }])
       }
       try {
         const names = await store.names()
-        lines.push(`  status:      readable (${names.length} secret${names.length === 1 ? '' : 's'})`)
+        rows.push({ label: 'status', value: `readable (${names.length} secret${names.length === 1 ? '' : 's'})` })
         if (store.wrapIds().includes('unattended')) {
-          lines.push(`  WARNING:     an 'unattended' wrap exists at ${store.unattendedKeyPath} — these secrets unlock with no passphrase, for any process that can read your home directory`)
+          rows.push({ label: 'WARNING', value: `an 'unattended' wrap exists at ${store.unattendedKeyPath} — these secrets unlock with no passphrase, for any process that can read your home directory` })
         }
         // The answer to "why did it ask me for a password?", readable after the fact.
+        const notes: Block[] = []
         try {
           const history = readAudit(`${store.filePath}.access.json`)
           if (history.length) {
-            lines.push(`  recent access: ${history.length} record(s), latest first`)
+            rows.push({ label: 'recent access', value: `${history.length} record(s), latest first` })
             for (const r of history.slice(-5).reverse()) {
               const when = new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')
-              lines.push(`    ${when}  ${r.command} -> ${r.name}${r.declared ? '' : ' (sensitivity inferred)'}: ${r.purpose}`)
+              notes.push(noteBlock(`${when}  ${r.command} -> ${r.name}${r.declared ? '' : ' (sensitivity inferred)'}: ${r.purpose}`))
             }
           }
         } catch { /* history is diagnostic only */ }
         const shadowed = names.filter((n) => (env[n] ?? '') !== '')
         if (shadowed.length) {
-          lines.push(`  note:        ${shadowed.join(', ')} also set in shell — the shell value wins`)
+          rows.push({ label: 'note', value: `${shadowed.join(', ')} also set in shell — the shell value wins` })
         }
+        return res(0, lineBlock('secret store'), kvBlock(rows), ...notes)
       } catch (e) {
-        return { code: 1, lines: [...lines, `  status:      UNREADABLE — ${(e as Error).message}`] }
+        return res(1, lineBlock('secret store'), kvBlock([...rows, { label: 'status', value: `UNREADABLE — ${(e as Error).message}` }]))
       }
-      return { code: 0, lines }
     }
 
     case 'key': {
@@ -455,27 +398,30 @@ export async function runConfig(
       if (!sub || sub === 'list') {
         const ids = store.wrapIds()
         const active = await store.activeWrap().catch(() => undefined)
-        return { code: 0, lines: ['', ...ids.map((w) => `  ${w}${w === active ? '  (unlocked this session)' : ''}`), ''] }
+        return res(0, blankBlock(), listBlock(ids.map((w) => `${w}${w === active ? '  (unlocked this session)' : ''}`)), blankBlock())
       }
       if (sub === 'add') {
         if (id === 'unattended') {
           // Opt-in only, and explicit about the weaker guarantee it buys.
           try { await store.addWrap(new KeyFileKey(store.unattendedKeyPath)) }
           catch (e) { return fail((e as Error).message) }
-          return { code: 0, lines: [`[saip] added 'unattended' wrap; key at ${store.unattendedKeyPath} (mode 600)`, '[saip] WARNING: this unlock method can be used by any process reading your home directory — it defends against repo-scoped readers and other users, not against an agent running as you.'] }
+          return res(0,
+            lineBlock(`added 'unattended' wrap; key at ${store.unattendedKeyPath} (mode 600)`),
+            lineBlock('WARNING: this unlock method can be used by any process reading your home directory — it defends against repo-scoped readers and other users, not against an agent running as you.'),
+          )
         }
         if (id === 'keyring') {
           if (!hasSecretTool()) return fail('no secret-tool (libsecret) on this host; run `saip config doctor` to see what is available')
           try { await store.addWrap(new SecretToolKey(deps.toolRunner ?? secretToolRunner())) }
           catch (e) { return fail((e as Error).message) }
-          return { code: 0, lines: ["[saip] added 'keyring' wrap"] }
+          return res(0, lineBlock("added 'keyring' wrap"))
         }
         return fail("key add expects 'unattended' or 'keyring'")
       }
       if (sub === 'remove') {
         if (!id) return fail('key remove expects an id')
         try { await store.removeWrap(id) } catch (e) { return fail((e as Error).message) }
-        return { code: 0, lines: [`[saip] removed wrap '${id}'`] }
+        return res(0, lineBlock(`removed wrap '${id}'`))
       }
       return fail(`unknown key subcommand "${sub}" (expected list|add|remove)`)
     }
@@ -511,16 +457,21 @@ export async function runConfig(
       // Presentation comes from deps, injected by the command action, because runConfig
       // has no context of its own — keeping it pure is what makes it testable (#76).
       const formatItem = deps.formatItem
+      const ui = deps.ui ?? uiOr({})
       const io: Io = {
         // Immediate. The previous version pushed to `lines`, which the command printed only after
         // the whole wizard finished — so a user saw "NAME: " with none of the guidance that was
         // supposed to come first. That is the defect this closes.
-        say: (line) => process.stdout.write(`${line}\n`),
+        // Both halves of the interaction go through the seam (#106 slice 3): guidance is emitted as a
+        // `raw` block because it is pre-formatted presentation, and reading a value asks the service,
+        // which owns whichever input engine is active. `say` used to write to process.stdout itself and
+        // `ask` called promptTTY directly — two bypasses of the layer meant to be the only one.
+        say: (line) => ui.show(rawBlock([line])),
         // --non-interactive never prompts: runInit only calls `ask` when interactive is true, and
         // this guard makes that contract fail loudly rather than opening a terminal mid-report.
         ask: async (question, o) => {
           if (nonInteractive) throw new NoTerminalError('non-interactive mode does not prompt')
-          return promptTTY(question, { echo: !o.secret })
+          return ui.prompt(question, { echo: !o.secret })
         },
       }
       let envPath: string | undefined
@@ -528,6 +479,9 @@ export async function runConfig(
       try {
         const r = await runInit({
           store, items, io,
+          // The gateway this command already owns (#169): the wizard unlocks and writes through the
+          // same instance, so the KEK cache is shared and a second unlock cannot occur.
+          access,
           formatItem,
           deprecations: cfgDeprecations,
           envPath,
@@ -538,20 +492,20 @@ export async function runConfig(
         })
         // Nothing is appended to `lines` here: io.say already wrote every line to stdout as it
         // happened. Returning them again would print the whole transcript a second time.
-        return { code: r.code, lines: [] }
+        return res(r.code)
       } catch (e) {
         if (e instanceof NoTerminalError) {
-          return { code: 1, lines: [
+          return res(1, rawBlock([
             '[saip] no controlling terminal: `saip config init` needs one to hide your typing.',
             '[saip] set values non-interactively instead, e.g.:',
             ...items.filter((x) => x.required).map((i) => i.kind === 'secret'
               ? `  printf %s "$${i.name}" | saip config set ${i.name} --stdin`
               : `  echo '${i.name}=...' >> ${envPath ?? '.env'}`),
-          ] }
+          ]))
         }
         if (e instanceof WizardCancelled) {
           // Ctrl+C reaches here when it happens on the passphrase prompt, before the store exists.
-          return { code: 130, lines: ['[saip] cancelled. Nothing further was written.'] }
+          return res(130, lineBlock('cancelled. Nothing further was written.'))
         }
         return fail((e as Error).message)
       }
@@ -589,14 +543,19 @@ export default {
         // Single construction point. A second, separate `new SecretStore(...)` here is what
         // let a real key-source wiring bug live in one path while the other looked correct.
         const store = config.store ?? buildStore({})
-        // Cards when a human is at a terminal; plain lines otherwise. Decided once, here, from the
-        // DisplayService plugin — no command body branches on isTTY itself (#88).
-        const display = _ctx.display
-        const formatItem = display && !display.plain
-          ? (item: InitItem) => cardGuidance(item, display.options)
-          : undefined
-        const result = await runConfig(store, options, positional, { formatItem })
-        for (const l of result.lines) console.log(l)
+        // Capability selection lives in the seam, not here (#106): the command supplies a spec,
+        // `ctx.ui` decides Ink frame / plain lines / JSONL record. The old code asked
+        // `DisplayService.plain` and called `renderCard` directly, which was a second renderer
+        // outside the seam — the thing this migration exists to remove.
+        const ui = uiOr(_ctx)
+        const formatItem = (item: InitItem): string[] => ui.card(cardSpecFor(item)).split('\n')
+        const result = await runConfig(store, options, positional, {
+          ui: uiOr(_ctx),
+          formatItem,
+        })
+        // Rendered through the seam (#113): blocks become Ink frames on a terminal, plain text in a
+        // pipe, and JSONL records under --json. The command body builds no strings for display.
+        uiOr(_ctx).showAll(result.blocks)
         process.exitCode = result.code
       },
     })

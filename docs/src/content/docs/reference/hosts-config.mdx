@@ -38,6 +38,14 @@ At least one host must cover the `inference` role and one must cover the `traini
 | `host` | string | IP or hostname (often an OpenTofu output) |
 | `user` | string | SSH user (e.g. `ubuntu`) |
 | `key_secret` | string | Name of the secret holding the private key **material** (the PEM itself, not a path). Leave it out to use SAIP's managed key for this host, `SAIP_SSH_KEY_<host>` — see [Managing SSH keys](#managing-ssh-keys-saip-ssh) |
+| `port` | integer | SSH TCP port, **1–65535**, default `22` when omitted. Honoured by every place SAIP opens a connection to the host — `awake`/`sleep`/`down` via the compose commands, `status`, and `saip ssh verify` — because they all build their arguments from one helper rather than each remembering the flag (#98). |
+
+:::note[Why the port is a field and not a suffix on `host`]
+`host: "203.0.113.10:2222"` is not accepted, on purpose: SSH's own `host:port` syntax means something
+different in `scp`/`rsync` destination positions than it does in `-p`, and a string that has to be split
+apart correctly at every call site is how #98 happened in the first place. One typed field, one place
+that turns it into arguments.
+:::
 
 ### `tofu`
 
@@ -56,6 +64,18 @@ At least one host must cover the `inference` role and one must cover the `traini
 | `invalid_kind` | kind not in `local\|hyperstack` |
 | `missing_role` | role absent or invalid (also used for missing name) |
 | `host_unreachable_config` | hyperstack host has neither `tofu.workspace` nor `ssh` |
+| `invalid_ssh_port` | `ssh.port` is not an integer in 1–65535 |
+| `unknown_host_key` | a key at the top of a host entry that `HostConfig` has no field for |
+| `unknown_ssh_key` | a key inside `ssh:` that `SshConfig` has no field for |
+
+:::caution[Unknown keys are refused, not ignored]
+Before #98, `ssh: { host: …, port: 2222 }` parsed, validated, and **silently dropped the port**: every
+connection went to 22, and the failure the user saw was `connection refused` on a port they had never
+written down. A registry that accepts a key it will not use is the general form of that bug, so an
+unknown key at either level is now a validation error naming the key and listing the allowed ones. The
+same rule applies to `hosts.yaml` as a whole: add a field to the docs and to `HostConfig` together, or
+the loader will refuse the file rather than ignore it.
+:::
 | `role_coverage` | file does not cover both inference and training roles |
 | `invalid_secret_ref` | a `secrets` entry is empty/non-string |
 
@@ -75,6 +95,7 @@ hosts:
     role: inference
     tofu: { workspace: infra/tofu/hyperstack }
     ssh: { host: "203.0.113.10", user: ubuntu }   # managed key: SAIP_SSH_KEY_lab-inference
+    # ssh: { host: "203.0.113.10", user: ubuntu, port: 2222 }   # non-standard port, honoured everywhere
     secrets: { api_key: SAIP_HYPERSTACK_API_KEY }
 
   - name: cloud-training
@@ -109,7 +130,15 @@ Where things live:
 | Part | Location | Secret? |
 |---|---|---|
 | Private key (PEM) | encrypted store, name `SAIP_SSH_KEY_<host>` | yes — never written to disk at rest |
-| Public key | `~/.saip/keys/<host>.ed25519.pub` | no, and safe to share |
+| Public key | `<dir of the store>/keys/<host>.ed25519.pub` | no, and safe to share |
+| Temporary identity file | `<dir of the store>/keys/.tmp-<pid>-<rand>/id_ed25519` | yes, and only for the duration of one command |
+
+**The key directory follows the store, never `$HOME`.** With `SAIP_SECRETS_FILE=/srv/saip/secrets.enc.json`
+the public keys live in `/srv/saip/keys/`, not `~/.saip/keys` — so relocating the store relocates the
+keys with it. It is written this way because the earlier behaviour (derive the directory from the
+environment, fall back to the home folder) meant a command still touched `~/.saip` when the store lived
+elsewhere, and a **test** run could write key material into the maintainer's home (#145, #159). Every
+call site now passes the store-relative directory explicitly rather than relying on a default.
 
 **How a key reaches `ssh`.** OpenSSH needs a file, so for the duration of a command SAIP writes the
 private key into a private directory (`0700`) as a `0600` file, passes that path with `-i`, and

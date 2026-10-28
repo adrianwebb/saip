@@ -16,6 +16,15 @@ export interface SshConfig {
   user: string
   /** Name of the secret holding the private key — never the key itself. */
   key_secret?: string
+  /**
+   * TCP port, 1–65535; omitted means 22, and the omission is deliberate so `sshConnectionArgs()` adds
+   * no `-p` rather than pinning a value that overrides an ssh config `Port` the user set elsewhere.
+   *
+   * It is a FIELD and not a `host:port` string because ssh's colon syntax means different things in
+   * option position than in `scp`/`rsync` destination position, and #98 was exactly the cost of each
+   * call site splitting a string its own way: the port parsed, validated, and vanished.
+   */
+  port?: number
 }
 
 export interface TofuConfig {
@@ -52,6 +61,34 @@ export type ValidationCode =
   | 'host_unreachable_config'
   | 'role_coverage'
   | 'invalid_secret_ref'
+  | 'invalid_ssh_port'
+  | 'unknown_host_key'
+  | 'unknown_ssh_key'
+
+/** Keys `HostConfig` has a field for. Anything else in a host entry is refused (#98). */
+const HOST_KEYS = ['name', 'kind', 'role', 'gpu_node', 'compose_dir', 'ssh', 'tofu', 'secrets']
+const SSH_KEYS = ['host', 'user', 'key_secret', 'port']
+
+/**
+ * The argv every SAIP→host connection shares (#98).
+ *
+ * There were three ssh call sites — `sshComposeArgs`, the hyperstack `status()` probe, and
+ * `saip ssh verify` — each assembling `-i … -o BatchMode=yes …` by hand, which is why a port field
+ * added to the type would have reached one of them and not the others. One builder, three callers:
+ * `extra` is for the site-specific options (verify's `ConnectTimeout`), and the destination and the
+ * remote command stay with the caller, because their position relative to the options differs.
+ */
+export function sshConnectionArgs(host: HostConfig, identityPath: string, extra: readonly string[] = []): string[] {
+  const args = ['-i', identityPath]
+  const port = host.ssh?.port
+  if (port !== undefined) args.push('-p', String(port))
+  return [...args, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', ...extra]
+}
+
+/** `user@host` for the connection. The port never goes here — that is `-p`'s job. */
+export function sshDestination(host: HostConfig): string {
+  return `${host.ssh?.user ?? 'ubuntu'}@${host.ssh?.host}`
+}
 
 const KINDS: HostKind[] = ['local', 'hyperstack']
 const ROLES: HostRole[] = ['inference', 'training', 'both']
@@ -87,6 +124,29 @@ export function validateHostRegistry(reg: HostRegistryFile): HostValidationError
     // A hyperstack host must declare how to reach/drive it.
     if (h.kind === 'hyperstack' && !h.tofu?.workspace && !h.ssh) {
       errors.push({ path: p, code: 'host_unreachable_config', message: 'hyperstack host needs tofu.workspace or ssh' })
+    }
+
+    // Unknown keys are refused, not ignored (#98). `ssh: { …, port: 2222 }` used to parse, validate,
+    // and drop the port on the floor; the user then saw `connection refused` on a port they never
+    // wrote down. "Accepted but ignored" is the general failure mode, so a key with no field behind it
+    // is an error naming the key and the allowed set.
+    const unknownHost = Object.keys(h).filter((k) => !HOST_KEYS.includes(k))
+    for (const k of unknownHost) {
+      errors.push({ path: `${p}.${k}`, code: 'unknown_host_key', message: `unknown key "${k}" for a host entry (allowed: ${HOST_KEYS.join(', ')})` })
+    }
+    if (h.ssh) {
+      const sshPath = `${p}.ssh`
+      const unknownSsh = Object.keys(h.ssh).filter((k) => !SSH_KEYS.includes(k))
+      for (const k of unknownSsh) {
+        errors.push({ path: `${sshPath}.${k}`, code: 'unknown_ssh_key', message: `unknown key "${k}" under ssh: (allowed: ${SSH_KEYS.join(', ')})` })
+      }
+      const port = h.ssh.port
+      if (port !== undefined && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) {
+        errors.push({
+          path: `${sshPath}.port`, code: 'invalid_ssh_port',
+          message: `ssh.port must be an integer 1-65535, got ${JSON.stringify(port)}`,
+        })
+      }
     }
 
     // Secret refs must be non-empty strings (names, not values).
@@ -140,6 +200,15 @@ export class EnvSecrets implements SecretsProvider {
 export interface HostStatus {
   reachable: boolean
   mode?: 'awake' | 'asleep' | 'down' | 'unknown'
+  /**
+   * How long the stack has been running, as the host's own runtime reports it — e.g. `9 hours`.
+   *
+   * Optional by contract, not by laziness: a host that is not awake has no uptime, and a provider
+   * that cannot see one must leave this undefined so the CLI can say *why* rather than invent a
+   * value. `saip status` renders the absence in words (#114) — the placeholder this replaced was a
+   * bare `TODO`, which read as a measurement of zero.
+   */
+  uptime?: string
   adapters?: string[]
   detail?: string
 }

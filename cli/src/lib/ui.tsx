@@ -27,13 +27,18 @@
  * after the last one has gone.
  */
 import { Service, type Context } from 'cordis'
-import type { CardSpec, DisplayOptions } from './display.js'
-import { detectDisplay } from './display.js'
+import type { CardSpec } from '../ui/card.js'
+import type { DisplayOptions } from '../ui/card.js'
+import { detectDisplay } from '../ui/card.js'
 import { kvBlock, columnsBlock, lineBlock, ruleBlock, type Block, type KvRow } from '../ui/blocks.js'
 import type { Renderer } from '../ui/renderer.js'
 import { plainRenderer } from '../ui/plain.js'
 import { inkRenderer } from '../ui/ink.js'
 import { jsonlRenderer } from '../ui/json.js'
+import { ttyEngine, type InputEngine } from '../ui/input.js'
+// Already in this module's graph via `ui/input.js`; named directly because the release belongs to the
+// seam, not to the engine list (#172).
+import { releaseTty, ttyHeld } from '../ui/prompt.js'
 
 declare module 'cordis' {
   interface Context { ui?: UiService }
@@ -44,6 +49,8 @@ export type UiMode = 'ink' | 'plain'
 
 export { renderInkToString, inkRenderer } from '../ui/ink.js'
 export { Card, Columns, KeyValues, Line, Rule } from '../ui/components.js'
+export { ttyEngine } from '../ui/input.js'
+export type { InputEngine, AskOptions } from '../ui/input.js'
 export { CardView } from '../ui/compat.js'
 export type { Renderer } from '../ui/renderer.js'
 export type { Block, KvRow } from '../ui/blocks.js'
@@ -70,6 +77,8 @@ export interface UiConfig {
   ink?: boolean
   /** Replace the renderer entirely — the plugin seam (#113). */
   renderer?: Renderer
+  /** Replace the input engine — the same idea for reading values (#106 slice 3). */
+  input?: InputEngine
 }
 
 export class UiService extends Service {
@@ -79,6 +88,8 @@ export class UiService extends Service {
   private readonly out: (text: string) => void
   private active: Renderer
   private readonly registry = new Map<string, Renderer>()
+  private activeInput: InputEngine
+  private readonly inputRegistry = new Map<string, InputEngine>()
 
   constructor(ctx: Context, config: UiConfig = {}) {
     super(ctx, UI_SERVICE)
@@ -87,6 +98,8 @@ export class UiService extends Service {
     this.mode = chooseMode(config.env ?? process.env, isTTY, config.ink ?? true)
     this.display = detectDisplay(config.env ?? process.env, isTTY)
     this.active = config.renderer ?? (this.mode === 'ink' ? inkRenderer : plainRenderer)
+    this.activeInput = config.input ?? ttyEngine
+    this.inputRegistry.set(ttyEngine.kind, ttyEngine)
     this.registry.set(plainRenderer.kind, plainRenderer)
     this.registry.set(inkRenderer.kind, inkRenderer)
     // Registered but never the default: a machine target is chosen, not inferred from the stream
@@ -96,6 +109,51 @@ export class UiService extends Service {
 
   /** Which renderer is currently producing output. */
   get rendererKind(): string { return this.active.kind }
+
+  /** Which input engine reads values. */
+  get inputKind(): string { return this.activeInput.kind }
+  inputNames(): string[] { return [...this.inputRegistry.keys()] }
+
+  /**
+   * Register an input engine (validated for the same reason renderers are: a broken engine fails on the
+   * first secret prompt, far from the mistake). `activate` makes it the one commands use.
+   */
+  registerInput(engine: InputEngine, options: { activate?: boolean } = {}): void {
+    if (!engine || typeof engine.kind !== 'string' || engine.kind === '') {
+      throw new TypeError('registerInput: engine.kind must be a non-empty string')
+    }
+    if (typeof engine.ask !== 'function') {
+      throw new TypeError(`registerInput: engine "${engine.kind}" has no ask() method`)
+    }
+    this.inputRegistry.set(engine.kind, engine)
+    if (options.activate) this.activeInput = engine
+  }
+
+  useInput(kind: string): void {
+    const engine = this.inputRegistry.get(kind)
+    if (!engine) throw new TypeError(`no input engine named "${kind}"; registered: ${this.inputNames().join(', ')}`)
+    this.activeInput = engine
+  }
+
+  /**
+   * Read one value. Commands call this instead of importing a prompt implementation, so the terminal
+   * semantics stay in one tested place and the mechanism remains swappable (#106 slice 3).
+   */
+  prompt(question: string, opts: { secret?: boolean; echo?: boolean; stream?: import('node:tty').ReadStream } = {}): Promise<string> {
+    return this.activeInput.ask(question, opts)
+  }
+
+  /**
+   * Give the terminal back at the end of a command (#172). The process lifecycle owner calls this,
+   * not each command: a handle that is still flowing when the command reports is a command that
+   * prints its answer and then never exits, and only the seam knows which engine is holding it.
+   *
+   * `releaseTty` is a no-op when nothing was ever opened, so non-prompting commands pay nothing.
+   */
+  releaseTerminal(): void { releaseTty() }
+
+  /** Whether the prompt engine still holds the controlling-terminal handle (diagnostics, tests). */
+  get terminalHeld(): boolean { return ttyHeld() }
 
   /** True when the active renderer produces machine records, so commands skip decoration. */
   get structured(): boolean { return this.active.kind === 'jsonl' }
@@ -126,9 +184,12 @@ export class UiService extends Service {
     this.active = r
   }
 
-  /** Render any block. Commands may use this directly when a convenience method does not fit. */
+  /**
+   * Render any block. Commands use this directly when a convenience method does not fit — and
+   * when the destination is not the seam's own sink: `awake` renders its refusal to stderr with
+   * this rather than rebuilding the line by hand (#156).
+   */
   render(block: Block): string { return this.active.render(block) }
-
   card(spec: CardSpec): string { return this.active.render({ kind: 'card', spec }) }
   keyValues(rows: KvRow[]): string { return this.active.render(kvBlock(rows)) }
   columns(header: string[], rows: string[][]): string { return this.active.render(columnsBlock(header, rows)) }

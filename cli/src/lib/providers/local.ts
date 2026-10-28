@@ -40,6 +40,18 @@ export function composeArgs(host: HostConfig, verb: 'up' | 'down' | 'ps', stack?
   })
 }
 
+/**
+ * The duration out of a docker `Status` field: `Up 9 hours (healthy)` → `9 hours`.
+ *
+ * Everything the runtime says after `Up` is kept minus the health parenthetical, because health is a
+ * separate question from elapsed time and `status` has no line for it. Returns undefined when no
+ * `Up` is present — an asleep or down stack has no uptime to report, and saying so beats `0s`.
+ */
+export function uptimeOf(statusText: string): string | undefined {
+  const m = statusText.match(/\bUp\s+([^\n]+?)(?:\s\([^)]*\))?\s*$/im)
+  return m?.[1]?.trim() || undefined
+}
+
 export class LocalDeploymentProvider implements DeploymentProvider {
   readonly kind = 'local' as const
   constructor(private readonly runner: Runner = defaultRunner) {}
@@ -55,11 +67,26 @@ export class LocalDeploymentProvider implements DeploymentProvider {
   async status(host: HostConfig): Promise<HostStatus> {
     try {
       let out = ''
-      for (const [cmd, args] of composeArgs(host, 'ps')) out += this.runner.capture(cmd, [...args, '--format', '{{.Name}} {{.State}}'])
-      const running = /Up|running/i.test(out)
-      return { reachable: true, mode: running ? 'awake' : 'down', detail: out.trim() || undefined }
+      // `.Status` is requested alongside `.State` because it is the only field carrying the running
+      // duration ("Up 9 hours (healthy)"). Verified against docker 29.9.1 on a live container rather
+      // than assumed: `docker compose ps --format '{{.Name}} {{.State}} {{.Status}}'` printed
+      // `…-api-1 running Up 9 hours (healthy)`. (`docker ps --format '{{.Name}}'` alone FAILS on this
+      // docker version — the compose subcommand is what supports these keys.)
+      for (const [cmd, args] of composeArgs(host, 'ps')) out += this.runner.capture(cmd, [...args, '--format', '{{.Name}} {{.State}} {{.Status}}'])
+      const running = /\bUp\b|running/i.test(out)
+      return {
+        reachable: true,
+        mode: running ? 'awake' : 'down',
+        uptime: running ? uptimeOf(out) : undefined,
+        detail: out.trim() || undefined,
+      }
     } catch (e: any) {
-      return { reachable: false, mode: 'down', detail: e?.message }
+      // A failed `docker compose ps` is not "the stack is down" — it is "we could not ask". The
+      // hyperstack provider already refuses this conflation for the same reason (#89): reporting a
+      // permission or missing-file failure as `down` sends the operator to `saip down`/`awake` while
+      // the real problem is that the daemon or the compose file is unreadable. `unknown` plus the
+      // reason is the honest answer, and `saip status` prints that reason (#114).
+      return { reachable: false, mode: 'unknown', detail: e?.message }
     }
   }
 }

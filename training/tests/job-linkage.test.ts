@@ -14,13 +14,13 @@ const composite = (name: string): AdapterDefinition => ({
 })
 
 const baseCtx = {
-  adapters: [leaf('treeseed-project'), leaf('coding', { training: { strategy: 'knowledge_embedding', data_scopes: ['documents'] } }), composite('agent')],
+  adapters: [leaf('northstar-project'), leaf('coding', { training: { strategy: 'knowledge_embedding', data_scopes: ['documents'] } }), composite('agent')],
   registeredStrategies: ['corrective_sft', 'knowledge_embedding', 'weighted_kto'],
 }
 
 describe('resolveJobLinkage — inheritance', () => {
   it('inherits strategy + data_scopes when only adapter given', () => {
-    const r = resolveJobLinkage({ adapter: 'treeseed-project' }, baseCtx)
+    const r = resolveJobLinkage({ adapter: 'northstar-project' }, baseCtx)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.job.strategy).toBe('corrective_sft')
