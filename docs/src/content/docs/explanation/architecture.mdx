@@ -89,7 +89,7 @@ Like vLLM, Axolotl runs in its own container. The training gateway builds datase
 
 ### Cordis for Service Composition
 
-**All four Node.js packages — inference gateway, training gateway, CLI, and shared — are built on Cordis.** The two gateways are composed of Cordis plugins; the CLI registers each command as a plugin; `@saip/shared` provides injectable cross-cutting services (R2 client, adapter-manifest resolver, config validation) consumed by all three applications. See [Cordis Plugin Model](/saip/explanation/cordis-plugin-model/) for the full rationale, but the short version:
+**All four Node.js packages — inference gateway, training gateway, CLI, and shared — are built on Cordis.** The two gateways are composed of Cordis plugins; the CLI registers each command as a plugin; `@saip/shared` provides injectable cross-cutting services consumed by all three applications: adapter-registry validation, the host registry, the hardware-profile resolver, and the secret store with its access gateway. (Storage is not among them yet — there is no shared R2 client; the bucket layout is a documented convention rather than one injected implementation, and building it is [#63](https://github.com/adrianwebb/saip/issues/63)'s remaining A3 work.) See [Cordis Plugin Model](/saip/explanation/cordis-plugin-model/) for the full rationale, but the short version:
 
 - **Lifecycle management**: plugins declare dependencies on other plugins' services; Cordis handles load ordering, restart propagation, and graceful shutdown.
 - **Hot reload**: update a plugin's code or config without restarting the entire gateway. Critical for development and for swapping adapters at runtime.
